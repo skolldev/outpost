@@ -8,7 +8,7 @@ COPY ui/ ./
 RUN pnpm build
 
 # ── Stage 2: Spring Boot jar (UI packaged into static/) ────────────
-FROM eclipse-temurin:21-jdk AS server-build
+FROM eclipse-temurin:25-jdk AS server-build
 WORKDIR /workspace/server
 COPY server/ ./
 COPY --from=ui-build /workspace/ui/dist /workspace/ui/dist
