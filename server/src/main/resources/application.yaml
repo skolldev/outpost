@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: outpost
+  datasource:
+    url: ${OUTPOST_DB_URL:jdbc:postgresql://localhost:5432/outpost}
+    username: ${OUTPOST_DB_USER:outpost}
+    password: ${OUTPOST_DB_PASSWORD:outpost}
+
+outpost:
+  # Public base URL of this instance; used to render DSNs in the UI.
+  public-url: ${OUTPOST_PUBLIC_URL:http://localhost:8080}
+  admin:
+    email: ${OUTPOST_ADMIN_EMAIL:}
+    password: ${OUTPOST_ADMIN_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          additional-path: server:/healthz
+        readiness:
+          additional-path: server:/readyz
+          include: readinessState,db

@@ -1,0 +1,56 @@
+{
+  "name": "outpost-ui",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "test": "ng test",
+    "prettier:check": "prettier --check .",
+    "prettier:fix": "prettier --write .",
+    "lint": "ng lint",
+    "knip": "knip"
+  },
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "dependencies": {
+    "@angular/common": "22.0.5",
+    "@angular/compiler": "22.0.5",
+    "@angular/core": "22.0.5",
+    "@angular/forms": "22.0.5",
+    "@angular/platform-browser": "22.0.5",
+    "@angular/router": "22.0.5",
+    "rxjs": "7.8.2",
+    "tslib": "2.8.1"
+  },
+  "devDependencies": {
+    "@angular-eslint/builder": "22.0.0",
+    "@angular/build": "^22.0.5",
+    "@angular/cli": "22.0.5",
+    "@angular/compiler-cli": "22.0.5",
+    "@eslint/js": "9.39.3",
+    "@tailwindcss/postcss": "4.3.2",
+    "@testing-library/angular": "19.4.1",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/user-event": "14.6.1",
+    "@types/node": "25.9.4",
+    "angular-eslint": "22.0.0",
+    "eslint": "9.39.3",
+    "eslint-config-prettier": "10.1.8",
+    "jsdom": "29.1.1",
+    "knip": "6.14.2",
+    "msw": "2.14.6",
+    "postcss": "8.5.3",
+    "prettier": "3.9.4",
+    "tailwindcss": "4.3.2",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.62.1",
+    "vitest": "4.0.18"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
+}
