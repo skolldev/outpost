@@ -1,6 +1,8 @@
 spring:
   application:
     name: outpost
+  jackson:
+    property-naming-strategy: SNAKE_CASE
   datasource:
     url: ${OUTPOST_DB_URL:jdbc:postgresql://localhost:5432/outpost}
     username: ${OUTPOST_DB_USER:outpost}

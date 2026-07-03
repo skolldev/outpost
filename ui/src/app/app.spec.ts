@@ -1,9 +1,9 @@
-import { render, screen } from '@testing-library/angular';
+import { render } from '@testing-library/angular';
 import { App } from './app';
 
 describe('App', () => {
-  it('should render title', async () => {
-    await render(App);
-    expect(screen.getByText('Hello World')).toBeInTheDocument();
+  it('renders the router outlet shell', async () => {
+    const { container } = await render(App);
+    expect(container.querySelector('router-outlet')).not.toBeNull();
   });
 });

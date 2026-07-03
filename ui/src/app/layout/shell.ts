@@ -1,0 +1,138 @@
+import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+
+import { Api } from '../core/api';
+import { GlobalFilters } from '../core/filters';
+import { Project } from '../core/models';
+import { Session } from '../core/session';
+
+/**
+ * App shell (§9): global header with project selector, environment
+ * multi-select and time-range picker. Filter state lives in the URL so every
+ * view is shareable.
+ */
+@Component({
+  selector: 'app-shell',
+  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <div class="min-h-screen bg-slate-950 text-slate-200">
+      <header class="border-b border-slate-800 bg-slate-900">
+        <div class="mx-auto flex max-w-7xl items-center gap-6 px-4 py-3">
+          <a routerLink="/issues" class="flex items-center gap-2 text-lg font-semibold text-white">
+            <span class="text-amber-400">▲</span> Outpost
+          </a>
+          <nav class="flex gap-1 text-sm">
+            <a
+              routerLink="/issues"
+              queryParamsHandling="merge"
+              routerLinkActive="bg-slate-800 text-white"
+              class="rounded px-3 py-1.5 text-slate-400 hover:text-white"
+              >Issues</a
+            >
+            <a
+              routerLink="/settings"
+              routerLinkActive="bg-slate-800 text-white"
+              class="rounded px-3 py-1.5 text-slate-400 hover:text-white"
+              >Settings</a
+            >
+          </nav>
+          <div class="ml-auto flex items-center gap-3 text-sm text-slate-400">
+            <span>{{ session.user()?.email }}</span>
+            <button
+              (click)="session.logout()"
+              class="rounded border border-slate-700 px-2 py-1 text-xs hover:border-slate-500 hover:text-white"
+            >
+              Log out
+            </button>
+          </div>
+        </div>
+        <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 pb-3">
+          <select
+            [value]="filters.project() ?? ''"
+            (change)="onProjectChange($event)"
+            class="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm"
+          >
+            <option value="">All projects</option>
+            @for (project of projects(); track project.id) {
+              <option [value]="project.id">{{ project.name }}</option>
+            }
+          </select>
+
+          @if (environments().length > 0) {
+            <div class="flex items-center gap-1.5">
+              @for (env of environments(); track env) {
+                <button
+                  (click)="toggleEnvironment(env)"
+                  class="rounded-full border px-2.5 py-0.5 text-xs"
+                  [class]="
+                    filters.environments().includes(env)
+                      ? 'border-amber-500 bg-amber-500/15 text-amber-300'
+                      : 'border-slate-700 text-slate-400 hover:border-slate-500'
+                  "
+                >
+                  {{ env }}
+                </button>
+              }
+            </div>
+          }
+
+          <select
+            [value]="filters.range()"
+            (change)="onRangeChange($event)"
+            class="ml-auto rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm"
+          >
+            <option value="1h">Last hour</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="14d">Last 14 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+        </div>
+      </header>
+      <main class="mx-auto max-w-7xl px-4 py-6">
+        <router-outlet></router-outlet>
+      </main>
+    </div>
+  `,
+})
+export class Shell {
+  private readonly api = inject(Api);
+  readonly session = inject(Session);
+  readonly filters = inject(GlobalFilters);
+
+  readonly projects = signal<Project[]>([]);
+  readonly environments = signal<string[]>([]);
+
+  constructor() {
+    void firstValueFrom(this.api.projects()).then((projects) => this.projects.set(projects));
+    effect(() => {
+      const project = this.filters.project();
+      if (project == null) {
+        this.environments.set([]);
+        return;
+      }
+      void firstValueFrom(this.api.projectEnvironments(project)).then((envs) =>
+        this.environments.set(envs),
+      );
+    });
+  }
+
+  onProjectChange(event: Event): void {
+    const value = (event.target as HTMLSelectElement).value;
+    this.filters.setProject(value === '' ? undefined : Number(value));
+  }
+
+  onRangeChange(event: Event): void {
+    this.filters.setRange((event.target as HTMLSelectElement).value);
+  }
+
+  toggleEnvironment(env: string): void {
+    const current = this.filters.environments();
+    this.filters.setEnvironments(
+      current.includes(env) ? current.filter((e) => e !== env) : [...current, env],
+    );
+  }
+}

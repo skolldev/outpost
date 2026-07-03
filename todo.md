@@ -38,70 +38,73 @@ Goal: one runnable image + database, empty but deployable end-to-end.
 
 ### Domain & storage
 
-- [ ] Flyway migrations: `project`, `project_key`, `environment`, `release`, `app_user`, `api_token`, `issue`, `issue_env_stats`, `event` (weekly range partitions on `timestamp`) (§7)
-- [ ] Indexes: `event(project_id, timestamp)`, `event(issue_id, timestamp)`, `event(trace_id)`, `issue UNIQUE(project_id, fingerprint)` (§7)
-- [ ] Weekly partition auto-creation for `event` (needed before retention exists)
+- [x] Flyway migrations: `project`, `project_key`, `environment`, `release`, `app_user`, `api_token`, `issue`, `issue_env_stats`, `event` (weekly range partitions on `timestamp`) (§7) — `V2__phase1_domain.sql`
+- [x] Indexes: `event(project_id, timestamp)`, `event(issue_id, timestamp)`, `event(trace_id)`, `issue UNIQUE(project_id, fingerprint)` (§7)
+- [x] Weekly partition auto-creation for `event` (needed before retention exists) — `PartitionManager`: startup + on-demand per batch, advisory-lock-guarded DDL
 
 ### Ingest endpoint (§4.2)
 
-- [ ] `POST /api/{project_id}/envelope/` — newline-delimited envelope parser (envelope header line, item header + payload per item)
-- [ ] Auth precedence: `X-Sentry-Auth` header → `sentry_key` query param → `dsn` in envelope header; validate against active keys of `{project_id}`, else `403`
-- [ ] Accept `Content-Type: application/x-sentry-envelope` and `text/plain`; accept `Content-Encoding: gzip` (Java SDK default)
-- [ ] CORS: `OPTIONS` preflight, `Access-Control-Allow-Origin: *`, allow `sentry-trace, baggage, content-type` + auth headers, no credentials
-- [ ] Respond `200 {"id": "<event_id>"}` after parse + buffer; `400` malformed; `413` oversize (20 MiB/envelope, 1 MiB/item)
-- [ ] Item-type dispatch table: handle `event`; **skip unknown types silently** (compat contract); drop `session`/`sessions`/`check_in`/`profile`/`replay_*`/`statsd`/`metric_buckets`; parse `client_report` into counters (storage/UI in P5); `attachment` ≤ 1 MiB stored with parent event, else drop (§4.2 table)
-- [ ] `POST /api/{project_id}/security/` and `/minidump/` → `404` (§4.3)
+- [x] `POST /api/{project_id}/envelope/` — newline-delimited envelope parser (envelope header line, item header + payload per item)
+- [x] Auth precedence: `X-Sentry-Auth` header → `sentry_key` query param → `dsn` in envelope header; validate against active keys of `{project_id}`, else `403`
+- [x] Accept `Content-Type: application/x-sentry-envelope` and `text/plain`; accept `Content-Encoding: gzip` (Java SDK default)
+- [x] CORS: `OPTIONS` preflight, `Access-Control-Allow-Origin: *`, allow `sentry-trace, baggage, content-type` + auth headers, no credentials
+- [x] Respond `200 {"id": "<event_id>"}` after parse + buffer; `400` malformed; `413` oversize (20 MiB/envelope, 1 MiB/item)
+- [x] Item-type dispatch table: handle `event`; **skip unknown types silently** (compat contract); drop `session`/`sessions`/`check_in`/`profile`/`replay_*`/`statsd`/`metric_buckets`; parse `client_report` into counters (storage/UI in P5); `attachment` ≤ 1 MiB stored with parent event (in `event.data._outpost_attachments`), else drop (§4.2 table)
+- [x] `POST /api/{project_id}/security/` and `/minidump/` → `404` (§4.3)
 
 ### Ingest buffering (§6.1)
 
-- [ ] Bounded in-memory queue (default 10 000 items); envelope POST pushes items, responds immediately
-- [ ] Worker pool (2 threads) draining queue with JDBC batch inserts (≤ 500 rows or 1 s linger)
-- [ ] Queue-full path: `429` + `Retry-After` + `X-Sentry-Rate-Limits: <seconds>:all:organization` (§4.2)
+- [x] Bounded in-memory queue (default 10 000 items); envelope POST pushes items, responds immediately — capacity via `outpost.ingest.queue-capacity`
+- [x] Worker pool (2 threads) draining queue with JDBC batch inserts (≤ 500 rows or 1 s linger) — poison batches degrade to per-event inserts
+- [x] Queue-full path: `429` + `Retry-After` + `X-Sentry-Rate-Limits: <seconds>:all:organization` (§4.2) — load-verification against real SDKs stays in P5
 
 ### Error pipeline (§6.2 — no symbolication yet)
 
-- [ ] Fingerprinting priority chain:
-  - [ ] 1. SDK `fingerprint` array with `{{ default }}` substitution
-  - [ ] 2. Exception-based: SHA-256 over ordered in-app frames `(normalized_module, function)` + exception `type`, message excluded
-  - [ ] 3. Message fallback: SHA-256 of message with numbers/UUIDs/hex runs replaced by placeholders
-- [ ] Frame normalization: strip line numbers, lambda indices (`lambda$handle$3` → `lambda$handle`), proxy/CGLIB suffixes, webpack hash fragments
-- [ ] Issue upsert: `INSERT ... ON CONFLICT (project_id, fingerprint)` — update `last_seen`, counters; regression rule: new event in `resolved` issue → `unresolved` (§3)
-- [ ] Issue title = `ExceptionType: message-prefix` from primary (last) exception
-- [ ] Per-environment issue stats (`issue_env_stats`)
-- [ ] Environment auto-upsert on first sight; missing environment → `production` (§3)
-- [ ] Release auto-upsert from event `release` field (§3)
-- [ ] Store full processed payload in `event.data` jsonb; gzipped original in `event.raw`
+- [x] Fingerprinting priority chain (`Fingerprinter`, unit-tested):
+  - [x] 1. SDK `fingerprint` array with `{{ default }}` substitution
+  - [x] 2. Exception-based: SHA-256 over ordered in-app frames `(normalized_module, function)` + exception `type`, message excluded
+  - [x] 3. Message fallback: SHA-256 of message with numbers/UUIDs/hex runs replaced by placeholders
+- [x] Frame normalization: strip line numbers, lambda indices (`lambda$handle$3` → `lambda$handle`), proxy/CGLIB suffixes, webpack hash fragments
+- [x] Issue upsert: `INSERT ... ON CONFLICT (project_id, fingerprint)` — update `last_seen`, counters; regression rule: new event in `resolved` issue → `unresolved` (§3)
+- [x] Issue title = `ExceptionType: message-prefix` from primary (last) exception
+- [x] Per-environment issue stats (`issue_env_stats`)
+- [x] Environment auto-upsert on first sight; missing environment → `production` (§3)
+- [x] Release auto-upsert from event `release` field (§3)
+- [x] Store full processed payload in `event.data` jsonb; gzipped original in `event.raw` — timestamps clamped to received-at when skewed > 30 d past / 1 h future
 
 ### AuthN/AuthZ (§10)
 
-- [ ] Local email+password accounts, argon2id hashing
-- [ ] Server-signed session cookie (`HttpOnly`, `SameSite=Lax`), conventional Spring Security filter chain
-- [ ] Roles: `admin` / `member`
-- [ ] First-run bootstrap: seed admin from `OUTPOST_ADMIN_EMAIL`/`_PASSWORD`
-- [ ] DSN key generation (32-hex public key), disable/rotate, multiple active keys per project (§4.1)
+- [x] Local email+password accounts, argon2id hashing (Spring Security `Argon2PasswordEncoder`)
+- [x] Server-signed session cookie (`HttpOnly`, `SameSite=Lax`), conventional Spring Security filter chain — stateless HMAC cookie; signing secret persisted in `setting`, so sessions survive restarts/replicas
+- [x] Roles: `admin` / `member` — mutations guarded with `@PreAuthorize`
+- [x] First-run bootstrap: seed admin from `OUTPOST_ADMIN_EMAIL`/`_PASSWORD`
+- [x] DSN key generation (32-hex public key), disable/rotate, multiple active keys per project (§4.1)
 
 ### Query API (§8)
 
-- [ ] Common query-param layer: `project`, `environment` (multi), `from`, `to`, `release`, `query`, cursor pagination
-- [ ] `GET /issues` — status/env/release/time filters, title search, sort by last_seen/count, 14-day sparkline counts
-- [ ] `GET /issues/{id}`, `PATCH /issues/{id}` (resolve/unresolve)
-- [ ] `GET /issues/{id}/events`, `GET /events/{id}` (frames, breadcrumbs, tags, contexts)
-- [ ] `GET /projects` + CRUD, `GET/POST /projects/{id}/keys` (admin)
-- [ ] `GET/POST /users` (admin)
+- [x] Common query-param layer: `project`, `environment` (multi), `from`, `to`, `release`, `query`, cursor pagination (keyset on `(sort value, id)`)
+- [x] `GET /issues` — status/env/release/time filters, title search, sort by last_seen/count, 14-day sparkline counts (+ users-affected, env chips per row)
+- [x] `GET /issues/{id}`, `PATCH /issues/{id}` (resolve/unresolve)
+- [x] `GET /issues/{id}/events`, `GET /events/{id}` (frames, breadcrumbs, tags, contexts; prev/next event ids for the navigator)
+- [x] `GET /projects` + CRUD, `GET/POST /projects/{id}/keys` (admin) — plus `GET /projects/{id}/environments` for the filter bar
+- [x] `GET/POST /users` (admin)
 
 ### UI (§9 pages 1, 2, 6 — partial)
 
-- [ ] Global header: project selector + environment multi-select + time-range picker; URL-addressable filter state everywhere
-- [ ] Login page + session handling
-- [ ] **Issues** page: table (level badge, title + culprit, event count, users affected, env chips, first/last seen, sparkline), status tabs, search
-- [ ] **Issue detail**: header with status toggle + per-env counts; event navigator (latest/oldest/prev/next); stacktrace (raw, in-app/vendor toggle), breadcrumbs timeline, tags, user/browser/OS/request contexts
-- [ ] **Settings**: Projects & DSNs (create, copy DSN, revoke/rotate keys, per-SDK setup snippets per §5), Users
+- [x] Global header: project selector + environment multi-select + time-range picker; URL-addressable filter state everywhere
+- [x] Login page + session handling (401 interceptor redirects to login with returnUrl)
+- [x] **Issues** page: table (level badge, title + culprit, event count, users affected, env chips, first/last seen, sparkline), status tabs, search
+- [x] **Issue detail**: header with status toggle + per-env counts; event navigator (latest/newer/older); stacktrace (in-app/vendor toggle), breadcrumbs timeline, tags, user/browser/OS/request contexts
+- [x] **Settings**: Projects & DSNs (create, copy DSN, revoke/rotate keys, per-SDK setup snippets per §5), Users
 
 ### Validation
 
 - [ ] Demo apps: minimal Angular 22 + `@sentry/angular` and Spring Boot 4 + `sentry-spring-boot-4-starter`, configured per §5
-- [ ] Compat test suite skeleton: real SDK demo apps fire errors at Outpost in CI (§13.1) — the gate for all later SDK bumps
-- [ ] Exit check: errors from both SDKs ingested, grouped into issues, env-filterable in UI
+- [ ] Compat test suite skeleton: real SDK demo apps fire errors at Outpost in CI (§13.1) — the gate for all later SDK bumps.
+      Interim: `EnvelopeIngestIntegrationTest` runs SDK-**shaped** envelopes (both families, incl. gzip + all three auth
+      paths) through ingest → pipeline → query API in CI; swap its payload source for the real demo apps.
+- [x] Exit check: errors from both SDK payload shapes ingested, grouped into issues, env-filterable (verified in CI test
+      and live against `bootRun` + compose db) — re-verify with real SDKs once demo apps exist
 
 ---
 
