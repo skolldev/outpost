@@ -1,0 +1,114 @@
+<div class="mb-4 flex items-center gap-3">
+  <div class="flex rounded border border-slate-700 text-sm">
+    @for (tab of statusTabs; track tab.value) {
+      <button
+        (click)="setStatus(tab.value)"
+        class="px-3 py-1.5"
+        [class]="
+          status() === tab.value ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+        "
+      >
+        {{ tab.label }}
+      </button>
+    }
+  </div>
+  <input
+    type="search"
+    placeholder="Search title or culprit…"
+    [ngModel]="search()"
+    (ngModelChange)="onSearch($event)"
+    class="w-72 rounded border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm placeholder:text-slate-500 focus:border-amber-500 focus:outline-none"
+  />
+  <select
+    [value]="sort()"
+    (change)="onSortChange($event)"
+    class="ml-auto rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm"
+  >
+    <option value="last_seen">Sort: last seen</option>
+    <option value="count">Sort: event count</option>
+  </select>
+</div>
+
+@if (loading()) {
+  <p class="py-12 text-center text-sm text-slate-500">Loading…</p>
+} @else if (issues().length === 0) {
+  <div class="rounded-lg border border-slate-800 py-16 text-center">
+    <p class="text-slate-400">No issues match the current filters.</p>
+    <p class="mt-1 text-sm text-slate-500">
+      Waiting for the first event? Check the DSN under Settings → Projects.
+    </p>
+  </div>
+} @else {
+  <div class="overflow-x-auto rounded-lg border border-slate-800">
+    <table class="w-full text-sm">
+      <thead class="border-b border-slate-800 bg-slate-900 text-left text-xs text-slate-500">
+        <tr>
+          <th class="px-4 py-2 font-medium">Issue</th>
+          <th class="px-3 py-2 text-right font-medium">Events</th>
+          <th class="px-3 py-2 text-right font-medium">Users</th>
+          <th class="px-3 py-2 font-medium">Envs</th>
+          <th class="px-3 py-2 font-medium">Age</th>
+          <th class="px-3 py-2 font-medium">Last 14d</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (issue of issues(); track issue.id) {
+          <tr
+            class="cursor-pointer border-b border-slate-800/60 last:border-0 hover:bg-slate-900"
+            [routerLink]="['/issues', issue.id]"
+            queryParamsHandling="merge"
+          >
+            <td class="max-w-xl px-4 py-2.5">
+              <div class="flex items-center gap-2">
+                <span
+                  class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                  [class]="levelClass(issue.level)"
+                  >{{ issue.level }}</span
+                >
+                <span class="truncate font-medium text-slate-100">{{ issue.title }}</span>
+                @if (issue.status === 'resolved') {
+                  <span
+                    class="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                    >resolved</span
+                  >
+                }
+              </div>
+              @if (issue.culprit) {
+                <div class="mt-0.5 truncate text-xs text-slate-500">{{ issue.culprit }}</div>
+              }
+            </td>
+            <td class="px-3 py-2.5 text-right tabular-nums">{{ issue.event_count }}</td>
+            <td class="px-3 py-2.5 text-right tabular-nums">{{ issue.users_affected }}</td>
+            <td class="px-3 py-2.5">
+              <div class="flex flex-wrap gap-1">
+                @for (env of issue.environments; track env) {
+                  <span
+                    class="rounded-full border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400"
+                    >{{ env }}</span
+                  >
+                }
+              </div>
+            </td>
+            <td class="whitespace-nowrap px-3 py-2.5 text-xs text-slate-400">
+              <div>{{ timeAgo(issue.last_seen) }}</div>
+              <div class="text-slate-600">first {{ timeAgo(issue.first_seen) }}</div>
+            </td>
+            <td class="px-3 py-2.5">
+              <app-sparkline [data]="issue.sparkline ?? []" />
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+  @if (nextCursor()) {
+    <div class="mt-4 text-center">
+      <button
+        (click)="loadMore()"
+        class="rounded border border-slate-700 px-4 py-1.5 text-sm text-slate-300 hover:border-slate-500"
+      >
+        Load more
+      </button>
+    </div>
+  }
+}
