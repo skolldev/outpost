@@ -12,7 +12,7 @@
     "knip": "knip"
   },
   "private": true,
-  "packageManager": "pnpm@10.27.0",
+  "packageManager": "pnpm@11.9.0",
   "dependencies": {
     "@angular/common": "22.0.5",
     "@angular/compiler": "22.0.5",
@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "@angular-eslint/builder": "22.0.0",
-    "@angular/build": "^22.0.5",
+    "@angular/build": "22.0.5",
     "@angular/cli": "22.0.5",
     "@angular/compiler-cli": "22.0.5",
     "@eslint/js": "9.39.3",
