@@ -1,5 +1,5 @@
 # ── Stage 1: Angular UI ─────────────────────────────────────────────
-FROM node:24-alpine AS ui-build
+FROM node:26-alpine AS ui-build
 WORKDIR /workspace/ui
 RUN corepack enable
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
