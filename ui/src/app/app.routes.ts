@@ -22,6 +22,10 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/issue-detail').then((m) => m.IssueDetailPage),
       },
       {
+        path: 'releases',
+        loadComponent: () => import('./pages/releases').then((m) => m.ReleasesPage),
+      },
+      {
         path: 'settings',
         loadComponent: () => import('./pages/settings').then((m) => m.SettingsPage),
       },

@@ -107,7 +107,8 @@ public class EventStore {
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
-					event.exceptionType(), event.userIdent(), json(event), event.rawGzip(), "none" };
+					event.exceptionType(), event.userIdent(), json(event), event.rawGzip(),
+					event.symbolicationStatus() };
 		}).toList();
 
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);

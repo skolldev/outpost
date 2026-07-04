@@ -114,43 +114,45 @@ Goal: one runnable image + database, empty but deployable end-to-end.
 
 ### Risk spike (do first — §13.2)
 
-- [ ] Week 1: validate `com.atlassian.sourcemap` against real Angular CLI output (incl. index maps); if unfit, plan own VLQ decoder (~200 LoC) + section-map support
+- [x] Week 1: validate `com.atlassian.sourcemap` against real Angular CLI output (incl. index maps); if unfit, plan own VLQ decoder (~200 LoC) + section-map support — **unfit**: no index-map support, published only to Atlassian's own Maven repo (not Central), drags in gson. Wrote own `SourceMapConsumer` (~200 LoC, zero deps, standard + index maps); validated against 600+ lookups on a real `ng build --source-map` output, expected values from Node's built-in `node:module` SourceMap **and** a second spec-faithful decoder (Node's parser has a name-carry-over quirk on 4-field segments; ours follows the spec). Fixtures + generator in `server/src/test/resources/sourcemap/`
+- [x] Learned along the way: Angular 22 (esbuild) emits plain `src/…` source paths (no `webpack://` prefix — in_app heuristic handles both); sentry-cli bundles are zips behind an 8-byte `SYSB` header (stream unzip must skip it)
 
 ### Storage
 
-- [ ] Migrations: `artifact_bundle`, `artifact_bundle_release`, `artifact` (UNIQUE `(debug_id, artifact_type)`), `upload_chunk` (§7)
-- [ ] Index: `artifact(debug_id)`
+- [x] Migrations: `artifact_bundle`, `artifact_bundle_release`, `artifact` (UNIQUE `(debug_id, artifact_type)`), `upload_chunk` (§7) — `V3__phase2_artifacts.sql`
+- [x] Index: `artifact(debug_id)`
 
 ### Upload API — sentry-cli compat (§4.4)
 
-- [ ] Bearer `ApiToken` auth: opaque tokens, hashed at rest, scope `artifacts:write` (§10)
-- [ ] `GET /api/0/organizations/{org}/chunk-upload/` — capability discovery response steering CLI to debug-ID flow (`accept: ["artifact_bundles"]`)
-- [ ] `POST .../chunk-upload/` — multipart gzip chunks named by SHA-1, staging table, dedupe by hash
-- [ ] `POST .../artifactbundle/assemble/` — synchronous assembly: verify checksum, report `missingChunks` / `not_found`, unpack zip, parse `manifest.json`, insert `artifact` per `(debug_id, type)`, keep raw bundle, dedupe by bundle checksum
-- [ ] Accept legacy per-project assemble path `/api/0/projects/{org}/{project}/artifactbundle/assemble/`; `{org}` accepted but ignored
-- [ ] `POST/PUT /api/0/organizations/{org}/releases/` as trivial upserts to `release` (keep CI recipes working)
-- [ ] Legacy release-file upload + `dif` upload: explicitly not implemented
+- [x] Bearer `ApiToken` auth: opaque tokens, hashed at rest (SHA-256 — tokens are 192-bit random), scope `artifacts:write` (§10) — `ApiTokenService` + filter in `SecurityConfig`
+- [x] `GET /api/0/organizations/{org}/chunk-upload/` — capability discovery response steering CLI to debug-ID flow (`accept: ["artifact_bundles"]`)
+- [x] `POST .../chunk-upload/` — multipart gzip chunks named by SHA-1 (`file` + `file_gzip` part names), staging table, dedupe by hash
+- [x] `POST .../artifactbundle/assemble/` — synchronous assembly: verify checksum, report `missingChunks` / `not_found`, unpack zip, parse `manifest.json`, insert `artifact` per `(debug_id, type)`, keep raw bundle, dedupe by bundle checksum — responds final `ok` (not spec-sketch `created`: only ok/error are terminal for `--wait`); staged chunks deleted after use
+- [x] Accept legacy per-project assemble path `/api/0/projects/{org}/{project}/artifactbundle/assemble/`; `{org}` accepted but ignored
+- [x] `POST/PUT /api/0/organizations/{org}/releases/` as trivial upserts to `release` (keep CI recipes working)
+- [x] Legacy release-file upload + `dif` upload: explicitly not implemented
 
 ### Symbolication pipeline (§6.2)
 
-- [ ] Ingest-time, synchronous in worker, JS events only:
-  - [ ] Resolve frame debug ID via `debug_meta.images[]` (`code_file` ↔ frame `abs_path`)
-  - [ ] Lookup `artifact` by `(debug_id, source_map)`; fallback to release+URL matching; total miss → keep minified frame, flag `symbolication: "missing_sourcemap"`
-  - [ ] Apply map: rewrite `filename/function/lineno/colno`; attach `pre_context`/`context_line`/`post_context` from `sourcesContent`; `in_app` heuristic (`webpack://<project>/src/`, strip node_modules)
-- [ ] Store both raw and symbolicated stacktraces
-- [ ] Re-symbolication background job: triggered by bundle assembly, re-processes flagged events of matching release from raw payload
+- [x] Ingest-time, synchronous in worker, JS events only (`Symbolicator`, runs before fingerprinting):
+  - [x] Resolve frame debug ID via `debug_meta.images[]` (`code_file` ↔ frame `abs_path`)
+  - [x] Lookup `artifact` by `(debug_id, source_map)` (LRU-cached, invalidated on new bundles); fallback to release+URL matching; total miss → keep minified frame, flag `missing_sourcemap` (+ `partial` when only some frames mapped; missing debug IDs stored in `event.data._outpost_symbolication` for the UI)
+  - [x] Apply map: rewrite `filename/function/lineno/colno`; attach `pre_context`/`context_line`/`post_context` from `sourcesContent`; `in_app` heuristic (`webpack://<project>/src/` **and** esbuild's plain `src/…`, strip node_modules)
+- [x] Store both raw and symbolicated stacktraces (`raw_stacktrace` per exception, like Sentry)
+- [x] Re-symbolication background job: triggered by bundle assembly (after commit), re-processes flagged events of matching release from raw payload — updates frames + status in place; intentionally does **not** re-group (event keeps its issue)
 
 ### UI
 
-- [ ] Issue detail: symbolicated stacktrace with expandable source context; warning banner listing missing debug IDs (§9.2)
-- [ ] **Releases** page: versions per project, bundles received (file count, debug IDs), first-seen, issue counts (§9.5)
-- [ ] Query API: `GET /releases`, `GET /releases/{v}/artifacts` (§8)
-- [ ] Settings: API tokens (create, shown once) (§8, §10)
+- [x] Issue detail: symbolicated stacktrace with expandable source context (newest in-app frame auto-expanded); warning banner listing missing debug IDs (§9.2)
+- [x] **Releases** page: versions per project, bundles received (file count, debug IDs), first-seen, issue counts (§9.5)
+- [x] Query API: `GET /releases`, `GET /releases/{v}/artifacts` (§8)
+- [x] Settings: API tokens (create, shown once, revoke; CI snippet) (§8, §10)
 
 ### Validation
 
-- [ ] Demo Angular app CI: `ng build` with `"sourceMap": {"scripts": true, "hidden": true}` → `sentry-cli sourcemaps inject` + `upload` against Outpost (§5)
-- [ ] Exit check: prod Angular stack trace shows original TS source with context lines
+- [ ] Demo Angular app CI: `ng build` with `"sourceMap": {"scripts": true, "hidden": true}` → `sentry-cli sourcemaps inject` + `upload` against Outpost (§5) — demo apps still pending from Phase 1; interim validation below used Outpost's own UI build
+- [x] `SourceMapUploadIntegrationTest` (CI): wire-exact CLI simulation — token auth, chunk upload, assemble (incl. missing-chunk retry, idempotent re-assemble, legacy path), symbolicated ingest, late-upload re-symbolication, releases API
+- [x] Exit check: prod Angular stack trace shows original TS source with context lines — verified **live** with unmodified `sentry-cli 3.6.0` (`npx @sentry/cli`) against `bootRun` + compose db: inject + upload of the real `ui/` production build, then a minified event symbolicated to `src/app/core/api.ts:23:27` with context lines; re-verify from a real demo-app CI once demo apps exist
 
 ---
 

@@ -5,6 +5,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 import dev.outpost.ingest.IngestItem;
+import dev.outpost.symbolication.Symbolicator;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -18,10 +19,10 @@ import java.util.zip.GZIPOutputStream;
 import org.springframework.stereotype.Component;
 
 /**
- * Turns a raw event item into a {@link ProcessedEvent}: extracts the indexed
- * columns, computes the grouping fingerprint and issue title, clamps wildly
- * skewed timestamps, and keeps the gzipped original for later re-processing
- * (symbolication arrives in Phase 2).
+ * Turns a raw event item into a {@link ProcessedEvent}: symbolicates JS
+ * stacktraces (§6.2), extracts the indexed columns, computes the grouping
+ * fingerprint and issue title, clamps wildly skewed timestamps, and keeps the
+ * gzipped original for later re-processing.
  */
 @Component
 public class ErrorPipeline {
@@ -31,14 +32,19 @@ public class ErrorPipeline {
 	private static final int TITLE_MESSAGE_PREFIX = 120;
 
 	private final ObjectMapper mapper;
+	private final Symbolicator symbolicator;
 
-	public ErrorPipeline(ObjectMapper mapper) {
+	public ErrorPipeline(ObjectMapper mapper, Symbolicator symbolicator) {
 		this.mapper = mapper;
+		this.symbolicator = symbolicator;
 	}
 
 	public ProcessedEvent process(IngestItem item) {
-		JsonNode event = item.event();
-		byte[] rawGzip = gzip(event);
+		// The pristine original is what re-symbolication reruns from.
+		byte[] rawGzip = gzip(item.event());
+		ObjectNode event = (ObjectNode) item.event().deepCopy();
+		// Symbolicate before fingerprinting so grouping sees original frames.
+		String symbolicationStatus = symbolicator.symbolicate(event, item.projectId());
 		JsonNode data = withAttachments(event, item);
 
 		UUID id = parseEventId(event.path("event_id").asText(null));
@@ -58,7 +64,7 @@ public class ErrorPipeline {
 		String userIdent = userIdent(event.path("user"));
 
 		return new ProcessedEvent(id, item.projectId(), environment, release, timestamp, traceId, level, message,
-				exceptionType, title, culprit, fingerprint, userIdent, data, rawGzip);
+				exceptionType, title, culprit, fingerprint, userIdent, data, rawGzip, symbolicationStatus);
 	}
 
 	private String title(JsonNode primary, String message, String level) {

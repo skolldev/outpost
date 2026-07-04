@@ -7,6 +7,11 @@ spring:
     url: ${OUTPOST_DB_URL:jdbc:postgresql://localhost:5432/outpost}
     username: ${OUTPOST_DB_USER:outpost}
     password: ${OUTPOST_DB_PASSWORD:outpost}
+  servlet:
+    multipart:
+      # sentry-cli chunk upload (§4.4): 8 MiB chunks, 64/request, 32 MiB request cap.
+      max-file-size: 9MB
+      max-request-size: 34MB
 
 outpost:
   # Public base URL of this instance; used to render DSNs in the UI.

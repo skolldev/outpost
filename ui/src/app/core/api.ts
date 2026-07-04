@@ -3,6 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 import {
+  ApiToken,
   AppUser,
   EventDetail,
   EventPage,
@@ -11,6 +12,8 @@ import {
   IssuePage,
   Project,
   ProjectKey,
+  Release,
+  ReleaseArtifact,
   SessionUser,
 } from './models';
 
@@ -89,6 +92,33 @@ export class Api {
     return this.http.patch<ProjectKey>(`${this.base}/projects/${projectId}/keys/${keyId}`, {
       is_active: isActive,
     });
+  }
+
+  // releases & artifacts
+  releases(projectId: number): Observable<Release[]> {
+    const params = new HttpParams().set('project', projectId);
+    return this.http.get<Release[]>(`${this.base}/releases`, { params });
+  }
+
+  releaseArtifacts(version: string, projectId: number): Observable<ReleaseArtifact[]> {
+    const params = new HttpParams().set('project', projectId);
+    return this.http.get<ReleaseArtifact[]>(
+      `${this.base}/releases/${encodeURIComponent(version)}/artifacts`,
+      { params },
+    );
+  }
+
+  // API tokens (sentry-cli)
+  tokens(): Observable<ApiToken[]> {
+    return this.http.get<ApiToken[]>(`${this.base}/tokens`);
+  }
+
+  createToken(name: string): Observable<ApiToken> {
+    return this.http.post<ApiToken>(`${this.base}/tokens`, { name });
+  }
+
+  deleteToken(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/tokens/${id}`);
   }
 
   // users

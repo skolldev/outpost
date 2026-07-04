@@ -22,9 +22,7 @@ import { Sparkline, levelClass, timeAgo } from '../shared/ui';
             (click)="setStatus(tab.value)"
             class="px-3 py-1.5"
             [class]="
-              status() === tab.value
-                ? 'bg-slate-800 text-white'
-                : 'text-slate-400 hover:text-white'
+              status() === tab.value ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
             "
           >
             {{ tab.label }}

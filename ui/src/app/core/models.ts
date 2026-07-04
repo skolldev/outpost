@@ -81,6 +81,11 @@ export interface SentryEventData {
   user?: Record<string, unknown>;
   contexts?: Record<string, Record<string, unknown>>;
   request?: { url?: string; method?: string; headers?: Record<string, string> };
+  // Added by the symbolicator when source maps were missing (§6.2).
+  _outpost_symbolication?: {
+    status: string;
+    missing: { debug_id: string; abs_path: string }[];
+  };
   [key: string]: unknown;
 }
 
@@ -89,10 +94,13 @@ export interface SentryException {
   value?: string;
   module?: string;
   stacktrace?: { frames?: StackFrame[] };
+  // Pre-symbolication frames, kept by the symbolicator (like Sentry).
+  raw_stacktrace?: { frames?: StackFrame[] };
 }
 
 export interface StackFrame {
   filename?: string;
+  abs_path?: string;
   module?: string;
   function?: string;
   lineno?: number;
@@ -110,6 +118,34 @@ export interface Breadcrumb {
   level?: string;
   message?: string;
   data?: Record<string, unknown>;
+}
+
+export interface Release {
+  id: number;
+  version: string;
+  created_at: string;
+  bundle_count: number;
+  artifact_count: number;
+  issue_count: number;
+}
+
+export interface ReleaseArtifact {
+  id: number;
+  debug_id: string;
+  artifact_type: 'source_map' | 'minified_source';
+  file_path: string;
+  size_bytes: number;
+  bundle_checksum: string;
+  uploaded_at: string;
+}
+
+export interface ApiToken {
+  id: number;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  // Only present on the creation response — shown once.
+  token?: string;
 }
 
 export interface AppUser {

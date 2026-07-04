@@ -34,7 +34,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class SecurityConfig {
 
 	@Bean
-	SecurityFilterChain filterChain(HttpSecurity http, SessionCookieService sessions) throws Exception {
+	SecurityFilterChain filterChain(HttpSecurity http, SessionCookieService sessions, ApiTokenService apiTokens)
+			throws Exception {
 		return http
 			.csrf(csrf -> csrf.disable())
 			.cors(cors -> cors.configurationSource(ingestCorsSource()))
@@ -44,10 +45,12 @@ public class SecurityConfig {
 			.authorizeHttpRequests(auth -> auth
 				.requestMatchers("/api/internal/auth/login").permitAll()
 				.requestMatchers("/api/internal/**").authenticated()
+				.requestMatchers("/api/0/**").hasAuthority("SCOPE_" + ApiTokenService.SCOPE_ARTIFACTS_WRITE)
 				.anyRequest().permitAll())
 			.exceptionHandling(handling -> handling
 				.authenticationEntryPoint((request, response, e) -> response.sendError(HttpStatus.UNAUTHORIZED.value())))
 			.addFilterBefore(new SessionCookieFilter(sessions), UsernamePasswordAuthenticationFilter.class)
+			.addFilterBefore(new ApiTokenFilter(apiTokens), UsernamePasswordAuthenticationFilter.class)
 			.build();
 	}
 
@@ -63,6 +66,38 @@ public class SecurityConfig {
 		UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
 		source.registerCorsConfiguration("/api/{projectId:\\d+}/**", ingest);
 		return source;
+	}
+
+	/** Populates the security context from a sentry-cli bearer token (§10) on the /api/0/** surface. */
+	static final class ApiTokenFilter extends OncePerRequestFilter {
+
+		private final ApiTokenService apiTokens;
+
+		ApiTokenFilter(ApiTokenService apiTokens) {
+			this.apiTokens = apiTokens;
+		}
+
+		@Override
+		protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+				throws ServletException, IOException {
+			String header = request.getHeader("Authorization");
+			if (request.getRequestURI().startsWith("/api/0/") && header != null && header.startsWith("Bearer ")
+					&& SecurityContextHolder.getContext().getAuthentication() == null) {
+				apiTokens.authenticate(header.substring("Bearer ".length()).strip()).ifPresent(token -> {
+					var authorities = token.scopes().stream()
+						.map(scope -> new SimpleGrantedAuthority("SCOPE_" + scope))
+						.toList();
+					SecurityContextHolder.getContext().setAuthentication(
+							UsernamePasswordAuthenticationToken.authenticated("token:" + token.name(), null, authorities));
+				});
+			}
+			try {
+				chain.doFilter(request, response);
+			}
+			finally {
+				SecurityContextHolder.clearContext();
+			}
+		}
 	}
 
 	/** Populates the security context from the signed session cookie. */

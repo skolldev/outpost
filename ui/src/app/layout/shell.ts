@@ -32,6 +32,13 @@ import { Session } from '../core/session';
               >Issues</a
             >
             <a
+              routerLink="/releases"
+              queryParamsHandling="merge"
+              routerLinkActive="bg-slate-800 text-white"
+              class="rounded px-3 py-1.5 text-slate-400 hover:text-white"
+              >Releases</a
+            >
+            <a
               routerLink="/settings"
               routerLinkActive="bg-slate-800 text-white"
               class="rounded px-3 py-1.5 text-slate-400 hover:text-white"

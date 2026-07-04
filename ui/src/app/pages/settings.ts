@@ -1,19 +1,20 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 
 import { Api } from '../core/api';
-import { AppUser, Project, ProjectKey } from '../core/models';
+import { ApiToken, AppUser, Project, ProjectKey } from '../core/models';
 import { Session } from '../core/session';
 
-/** Settings (§9 page 6): projects & DSNs, users. Admin-only mutations. */
+/** Settings (§9 page 6): projects & DSNs, sentry-cli API tokens, users. Admin-only mutations. */
 @Component({
   selector: 'app-settings',
-  imports: [FormsModule],
+  imports: [DatePipe, FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="mb-6 flex gap-1 border-b border-slate-800 text-sm">
-      @for (tab of tabs; track tab) {
+      @for (tab of tabs(); track tab) {
         <button
           (click)="activeTab.set(tab)"
           class="-mb-px border-b-2 px-4 py-2 capitalize"
@@ -95,9 +96,10 @@ import { Session } from '../core/session';
                 <div
                   class="mb-2 flex flex-wrap items-center gap-2 rounded bg-slate-900 px-3 py-2 font-mono text-xs"
                 >
-                  <span [class]="key.is_active ? 'text-slate-200' : 'text-slate-600 line-through'">{{
-                    key.dsn
-                  }}</span>
+                  <span
+                    [class]="key.is_active ? 'text-slate-200' : 'text-slate-600 line-through'"
+                    >{{ key.dsn }}</span
+                  >
                   <button
                     (click)="copy(key.dsn)"
                     class="rounded border border-slate-700 px-1.5 py-0.5 font-sans text-slate-400 hover:border-slate-500"
@@ -121,12 +123,10 @@ import { Session } from '../core/session';
                 </p>
                 <pre
                   class="mb-3 overflow-x-auto rounded bg-slate-900 p-3 text-xs leading-relaxed text-slate-300"
-                  >{{ angularSnippet(dsn) }}</pre
-                >
+                  >{{ angularSnippet(dsn) }}</pre>
                 <pre
                   class="overflow-x-auto rounded bg-slate-900 p-3 text-xs leading-relaxed text-slate-300"
-                  >{{ springSnippet(dsn) }}</pre
-                >
+                  >{{ springSnippet(dsn) }}</pre>
               }
             </div>
           }
@@ -136,6 +136,98 @@ import { Session } from '../core/session';
           No projects yet{{ session.isAdmin() ? ' — create one above' : '' }}.
         </p>
       }
+    }
+
+    @if (activeTab() === 'tokens') {
+      <p class="mb-4 text-sm text-slate-400">
+        API tokens authenticate <code class="rounded bg-slate-900 px-1">sentry-cli</code> source-map
+        uploads from CI (scope <code class="rounded bg-slate-900 px-1">artifacts:write</code>).
+      </p>
+      <form (ngSubmit)="createToken()" class="mb-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label class="mb-1 block text-xs text-slate-500" for="tokenName">Name</label>
+          <input
+            id="tokenName"
+            name="tokenName"
+            [(ngModel)]="newTokenName"
+            placeholder="ci-shop-frontend"
+            required
+            class="rounded border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm"
+          />
+        </div>
+        <button
+          type="submit"
+          class="rounded bg-amber-500 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-amber-400"
+        >
+          Create token
+        </button>
+        @if (error()) {
+          <span class="text-sm text-red-400">{{ error() }}</span>
+        }
+      </form>
+
+      @if (createdToken(); as created) {
+        <div
+          class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm"
+        >
+          <p class="mb-2 text-emerald-300">
+            Token <span class="font-semibold">{{ created.name }}</span> created — copy it now, it is
+            shown only once.
+          </p>
+          <div class="flex flex-wrap items-center gap-2 font-mono text-xs">
+            <span class="rounded bg-slate-900 px-2 py-1 text-slate-200">{{ created.token }}</span>
+            <button
+              (click)="copy(created.token!)"
+              class="rounded border border-slate-700 px-1.5 py-0.5 font-sans text-slate-400 hover:border-slate-500"
+            >
+              {{ copied() === created.token ? 'Copied!' : 'Copy' }}
+            </button>
+          </div>
+          <pre
+            class="mt-3 overflow-x-auto rounded bg-slate-900 p-3 text-xs leading-relaxed text-slate-300"
+            >{{ cliSnippet(created.token!) }}</pre>
+        </div>
+      }
+
+      <div class="overflow-hidden rounded-lg border border-slate-800">
+        <table class="w-full text-sm">
+          <thead class="border-b border-slate-800 bg-slate-900 text-left text-xs text-slate-500">
+            <tr>
+              <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Scopes</th>
+              <th class="px-4 py-2 font-medium">Created</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (token of tokens(); track token.id) {
+              <tr class="border-b border-slate-800/60 last:border-0">
+                <td class="px-4 py-2">{{ token.name }}</td>
+                <td class="px-4 py-2 font-mono text-xs text-slate-400">
+                  {{ token.scopes.join(', ') }}
+                </td>
+                <td class="px-4 py-2 text-xs text-slate-400">
+                  {{ token.created_at | date: 'mediumDate' }}
+                </td>
+                <td class="px-4 py-2 text-right">
+                  <button
+                    (click)="deleteToken(token)"
+                    class="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-400 hover:border-red-500 hover:text-red-400"
+                  >
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="4" class="px-4 py-6 text-center text-sm text-slate-500">
+                  No tokens yet.
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
     }
 
     @if (activeTab() === 'users') {
@@ -212,12 +304,17 @@ export class SettingsPage {
   private readonly api = inject(Api);
   readonly session = inject(Session);
 
-  readonly tabs = ['projects', 'users'] as const;
-  readonly activeTab = signal<'projects' | 'users'>('projects');
+  // API tokens are admin-only end to end, so members don't get the tab.
+  readonly tabs = computed<('projects' | 'tokens' | 'users')[]>(() =>
+    this.session.isAdmin() ? ['projects', 'tokens', 'users'] : ['projects', 'users'],
+  );
+  readonly activeTab = signal<'projects' | 'tokens' | 'users'>('projects');
 
   readonly projects = signal<Project[]>([]);
   readonly keys = signal<ProjectKey[]>([]);
   readonly users = signal<AppUser[]>([]);
+  readonly tokens = signal<ApiToken[]>([]);
+  readonly createdToken = signal<ApiToken | null>(null);
   readonly expandedProject = signal<number | null>(null);
   readonly copied = signal<string | null>(null);
   readonly error = signal<string | null>(null);
@@ -227,11 +324,13 @@ export class SettingsPage {
   newEmail = '';
   newPassword = '';
   newRole = 'member';
+  newTokenName = '';
 
   constructor() {
     void this.reloadProjects();
     if (this.session.isAdmin()) {
       void firstValueFrom(this.api.users()).then((users) => this.users.set(users));
+      void firstValueFrom(this.api.tokens()).then((tokens) => this.tokens.set(tokens));
     }
   }
 
@@ -272,7 +371,9 @@ export class SettingsPage {
   async createProject(): Promise<void> {
     this.error.set(null);
     try {
-      await firstValueFrom(this.api.createProject(this.newSlug, this.newSlug, this.newPlatform || null));
+      await firstValueFrom(
+        this.api.createProject(this.newSlug, this.newSlug, this.newPlatform || null),
+      );
       this.newSlug = '';
       await this.reloadProjects();
     } catch {
@@ -288,6 +389,36 @@ export class SettingsPage {
   async setKeyActive(projectId: number, key: ProjectKey): Promise<void> {
     await firstValueFrom(this.api.setKeyActive(projectId, key.id, !key.is_active));
     this.keys.set(await firstValueFrom(this.api.projectKeys(projectId)));
+  }
+
+  async createToken(): Promise<void> {
+    this.error.set(null);
+    try {
+      const created = await firstValueFrom(this.api.createToken(this.newTokenName));
+      this.createdToken.set(created);
+      this.newTokenName = '';
+      this.tokens.set(await firstValueFrom(this.api.tokens()));
+    } catch {
+      this.error.set('Could not create token.');
+    }
+  }
+
+  async deleteToken(token: ApiToken): Promise<void> {
+    await firstValueFrom(this.api.deleteToken(token.id));
+    if (this.createdToken()?.id === token.id) {
+      this.createdToken.set(null);
+    }
+    this.tokens.set(await firstValueFrom(this.api.tokens()));
+  }
+
+  cliSnippet(token: string): string {
+    return `# CI: upload source maps after ng build
+export SENTRY_URL=${location.origin}
+export SENTRY_AUTH_TOKEN=${token}
+export SENTRY_ORG=outpost
+export SENTRY_PROJECT=<project-slug>
+sentry-cli sourcemaps inject ./dist/<app>/browser
+sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
   }
 
   async createUser(): Promise<void> {
