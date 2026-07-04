@@ -10,12 +10,27 @@ import {
   IssueDetail,
   IssueFilters,
   IssuePage,
+  LogFilters,
+  LogPage,
   Project,
   ProjectKey,
   Release,
   ReleaseArtifact,
   SessionUser,
 } from './models';
+
+function logParams(filters: LogFilters): HttpParams {
+  let params = new HttpParams();
+  if (filters.project != null) params = params.set('project', filters.project);
+  for (const env of filters.environment ?? []) params = params.append('environment', env);
+  for (const level of filters.level ?? []) params = params.append('level', level);
+  if (filters.traceId) params = params.set('trace_id', filters.traceId);
+  if (filters.query) params = params.set('query', filters.query);
+  if (filters.from) params = params.set('from', filters.from);
+  if (filters.to) params = params.set('to', filters.to);
+  if (filters.cursor) params = params.set('cursor', filters.cursor);
+  return params;
+}
 
 @Injectable({ providedIn: 'root' })
 export class Api {
@@ -65,6 +80,17 @@ export class Api {
 
   event(id: string): Observable<EventDetail> {
     return this.http.get<EventDetail>(`${this.base}/events/${id}`);
+  }
+
+  // logs
+  logs(filters: LogFilters): Observable<LogPage> {
+    return this.http.get<LogPage>(`${this.base}/logs`, { params: logParams(filters) });
+  }
+
+  /** URL for the SSE live tail (§9.3) — same filters, consumed via EventSource. */
+  logTailUrl(filters: LogFilters): string {
+    const params = logParams(filters).set('live', 'true');
+    return `${this.base}/logs?${params.toString()}`;
   }
 
   // projects & keys

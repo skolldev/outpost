@@ -13,7 +13,14 @@ import { firstValueFrom } from 'rxjs';
 
 import { Api } from '../core/api';
 import { GlobalFilters } from '../core/filters';
-import { Breadcrumb, EventDetail, IssueDetail, SentryException, StackFrame } from '../core/models';
+import {
+  Breadcrumb,
+  EventDetail,
+  IssueDetail,
+  LogRecord,
+  SentryException,
+  StackFrame,
+} from '../core/models';
 import { levelClass, timeAgo } from '../shared/ui';
 
 /** Issue detail (§9 page 2): stacktrace, breadcrumbs, tags, contexts, event navigator. */
@@ -294,6 +301,62 @@ import { levelClass, timeAgo } from '../shared/ui';
             </div>
           </section>
         </div>
+
+        <!-- Logs around this event (§9.2): by trace_id, or ±60 s same-service window. -->
+        <section class="mt-6 rounded-lg border border-slate-800">
+          <div class="flex items-center justify-between border-b border-slate-800 px-4 py-2">
+            <button
+              (click)="toggleLogs()"
+              class="flex items-center gap-1.5 text-sm font-semibold text-slate-200"
+            >
+              <span class="inline-block w-3 text-slate-500">{{ logsOpen() ? '▾' : '▸' }}</span>
+              Logs around this event
+              <span class="font-normal text-slate-500">
+                {{ event.trace_id ? '(same trace)' : '(±60 s, same project)' }}
+              </span>
+            </button>
+            @if (event.trace_id) {
+              <a
+                [routerLink]="['/logs']"
+                [queryParams]="{ trace_id: event.trace_id }"
+                queryParamsHandling="merge"
+                class="text-xs text-sky-300 hover:text-sky-200"
+                >Open in Logs →</a
+              >
+            }
+          </div>
+          @if (logsOpen()) {
+            @if (eventLogs(); as records) {
+              @if (records.length === 0) {
+                <p class="px-4 py-6 text-center text-sm text-slate-500">
+                  No log records found
+                  {{ event.trace_id ? 'for this trace' : 'within ±60 s in this project' }}.
+                </p>
+              } @else {
+                <div class="max-h-96 overflow-y-auto font-mono text-xs">
+                  @for (record of records; track record.id) {
+                    <div class="flex gap-3 border-b border-slate-800/60 px-4 py-1.5 last:border-0">
+                      <span class="w-24 shrink-0 text-slate-500">{{
+                        record.timestamp | date: 'HH:mm:ss.SSS'
+                      }}</span>
+                      <span
+                        class="w-12 shrink-0 rounded px-1 text-center text-[10px] font-semibold uppercase"
+                        [class]="levelClass(record.level)"
+                        >{{ record.level }}</span
+                      >
+                      <span class="w-16 shrink-0 truncate text-[10px] leading-4 text-slate-500">{{
+                        record.environment
+                      }}</span>
+                      <span class="truncate text-slate-300">{{ record.body }}</span>
+                    </div>
+                  }
+                </div>
+              }
+            } @else {
+              <p class="px-4 py-6 text-center text-sm text-slate-500">Loading logs…</p>
+            }
+          }
+        </section>
       } @else {
         <p class="py-8 text-center text-sm text-slate-500">Loading event…</p>
       }
@@ -312,6 +375,8 @@ export class IssueDetailPage {
   readonly event = signal<EventDetail | null>(null);
   readonly showVendor = signal(true);
   readonly expandedFrames = signal<ReadonlySet<StackFrame>>(new Set());
+  readonly logsOpen = signal(false);
+  readonly eventLogs = signal<LogRecord[] | null>(null);
 
   readonly timeAgo = timeAgo;
   readonly levelClass = levelClass;
@@ -455,6 +520,28 @@ export class IssueDetailPage {
       frames.find((f) => f.in_app && this.hasContext(f)) ?? frames.find((f) => this.hasContext(f));
     this.expandedFrames.set(first ? new Set([first]) : new Set());
     this.event.set(event);
+    this.eventLogs.set(null);
+    if (this.logsOpen()) void this.loadEventLogs();
+  }
+
+  toggleLogs(): void {
+    this.logsOpen.set(!this.logsOpen());
+    if (this.logsOpen() && this.eventLogs() === null) void this.loadEventLogs();
+  }
+
+  /** Correlated logs (§9.2): by trace_id, else a ±60 s window in the same project. */
+  private async loadEventLogs(): Promise<void> {
+    const event = this.event();
+    if (!event) return;
+    const filters = event.trace_id
+      ? { traceId: event.trace_id }
+      : {
+          project: event.project_id,
+          from: new Date(new Date(event.timestamp).getTime() - 60_000).toISOString(),
+          to: new Date(new Date(event.timestamp).getTime() + 60_000).toISOString(),
+        };
+    const page = await firstValueFrom(this.api.logs(filters));
+    this.eventLogs.set(page.logs);
   }
 
   toggleStatus(): void {

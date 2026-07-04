@@ -65,7 +65,10 @@ public class EventStore {
 			return;
 		}
 		// Partition DDL runs in its own transaction, before the insert transaction.
-		batch.stream().map(ProcessedEvent::timestamp).distinct().forEach(partitions::ensurePartition);
+		batch.stream()
+			.map(ProcessedEvent::timestamp)
+			.distinct()
+			.forEach(timestamp -> partitions.ensurePartition(PartitionManager.EVENT, timestamp));
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 		}

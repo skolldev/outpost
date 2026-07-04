@@ -120,6 +120,37 @@ export interface Breadcrumb {
   data?: Record<string, unknown>;
 }
 
+export interface LogRecord {
+  id: string;
+  project_id: number;
+  environment: string;
+  timestamp: string;
+  trace_id: string | null;
+  span_id: string | null;
+  level: string;
+  severity_number: number | null;
+  body: string;
+  // Flattened Sentry log attributes: {"sentry.release": "x@1.0.0", "cart.size": 3, ...}
+  attributes: Record<string, unknown>;
+  release: string | null;
+}
+
+export interface LogPage {
+  logs: LogRecord[];
+  next_cursor: string | null;
+}
+
+export interface LogFilters {
+  project?: number;
+  environment?: string[];
+  level?: string[];
+  traceId?: string;
+  query?: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+}
+
 export interface Release {
   id: number;
   version: string;

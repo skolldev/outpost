@@ -2,7 +2,10 @@ package dev.outpost.ingest;
 
 import dev.outpost.pipeline.ErrorPipeline;
 import dev.outpost.pipeline.EventStore;
+import dev.outpost.pipeline.LogPipeline;
+import dev.outpost.pipeline.LogStore;
 import dev.outpost.pipeline.ProcessedEvent;
+import dev.outpost.pipeline.ProcessedLog;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -13,8 +16,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * The ingest worker pool (§6.1): drains the queue in batches (≤ 500 items or
- * 1 s linger), runs the error pipeline, and hands batches to the store. A
- * failing item is logged and dropped — ingest must never wedge on bad input.
+ * 1 s linger), runs the per-signal pipeline, and hands batches to the stores.
+ * A failing item is logged and dropped — ingest must never wedge on bad input.
  */
 @Component
 public class IngestWorkers implements SmartLifecycle {
@@ -24,19 +27,23 @@ public class IngestWorkers implements SmartLifecycle {
 	private final IngestQueue queue;
 	private final ErrorPipeline pipeline;
 	private final EventStore store;
+	private final LogPipeline logPipeline;
+	private final LogStore logStore;
 	private final int workerCount;
 	private final int maxBatch;
 	private final long lingerMillis;
 	private final List<Thread> workers = new ArrayList<>();
 	private volatile boolean running;
 
-	public IngestWorkers(IngestQueue queue, ErrorPipeline pipeline, EventStore store,
-			@Value("${outpost.ingest.workers:2}") int workerCount,
+	public IngestWorkers(IngestQueue queue, ErrorPipeline pipeline, EventStore store, LogPipeline logPipeline,
+			LogStore logStore, @Value("${outpost.ingest.workers:2}") int workerCount,
 			@Value("${outpost.ingest.max-batch:500}") int maxBatch,
 			@Value("${outpost.ingest.linger-millis:1000}") long lingerMillis) {
 		this.queue = queue;
 		this.pipeline = pipeline;
 		this.store = store;
+		this.logPipeline = logPipeline;
+		this.logStore = logStore;
 		this.workerCount = workerCount;
 		this.maxBatch = maxBatch;
 		this.lingerMillis = lingerMillis;
@@ -60,23 +67,28 @@ public class IngestWorkers implements SmartLifecycle {
 				if (batch.isEmpty()) {
 					continue;
 				}
-				List<ProcessedEvent> processed = new ArrayList<>(batch.size());
+				List<ProcessedEvent> events = new ArrayList<>(batch.size());
+				List<ProcessedLog> logs = new ArrayList<>();
 				for (IngestItem item : batch) {
 					try {
-						processed.add(pipeline.process(item));
+						switch (item) {
+							case IngestItem.ErrorEvent event -> events.add(pipeline.process(event));
+							case IngestItem.LogBatch logBatch -> logs.addAll(logPipeline.process(logBatch));
+						}
 					}
 					catch (RuntimeException e) {
-						log.warn("dropping unprocessable event for project {}: {}", item.projectId(), e.toString());
+						log.warn("dropping unprocessable item for project {}: {}", item.projectId(), e.toString());
 					}
 				}
-				store.store(processed);
+				store.store(events);
+				logStore.store(logs);
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
 				return;
 			}
 			catch (RuntimeException e) {
-				// EventStore already degrades to per-event storage; anything reaching
+				// The stores already degrade to per-row storage; anything reaching
 				// here is unexpected — log and keep the worker alive.
 				log.error("ingest worker iteration failed", e);
 			}

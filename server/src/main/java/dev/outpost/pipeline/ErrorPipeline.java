@@ -9,10 +9,7 @@ import dev.outpost.symbolication.Symbolicator;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.time.Duration;
 import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.UUID;
 import java.util.zip.GZIPOutputStream;
@@ -27,8 +24,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class ErrorPipeline {
 
-	private static final Duration MAX_PAST_SKEW = Duration.ofDays(30);
-	private static final Duration MAX_FUTURE_SKEW = Duration.ofHours(1);
 	private static final int TITLE_MESSAGE_PREFIX = 120;
 
 	private final ObjectMapper mapper;
@@ -39,7 +34,7 @@ public class ErrorPipeline {
 		this.symbolicator = symbolicator;
 	}
 
-	public ProcessedEvent process(IngestItem item) {
+	public ProcessedEvent process(IngestItem.ErrorEvent item) {
 		// The pristine original is what re-symbolication reruns from.
 		byte[] rawGzip = gzip(item.event());
 		ObjectNode event = (ObjectNode) item.event().deepCopy();
@@ -51,7 +46,7 @@ public class ErrorPipeline {
 		String environment = event.hasNonNull("environment") && !event.get("environment").asText().isBlank()
 				? event.get("environment").asText() : "production";
 		String release = event.hasNonNull("release") ? event.get("release").asText() : null;
-		Instant timestamp = clamp(parseTimestamp(event.get("timestamp")), item.receivedAt());
+		Instant timestamp = Timestamps.clamp(Timestamps.parse(event.get("timestamp")), item.receivedAt());
 		String traceId = event.path("contexts").path("trace").path("trace_id").asText(null);
 		String level = event.path("level").asText("error");
 		String message = EventFields.message(event);
@@ -123,7 +118,7 @@ public class ErrorPipeline {
 		return null;
 	}
 
-	private JsonNode withAttachments(JsonNode event, IngestItem item) {
+	private JsonNode withAttachments(JsonNode event, IngestItem.ErrorEvent item) {
 		if (item.attachments().isEmpty() || !event.isObject()) {
 			return event;
 		}
@@ -153,35 +148,6 @@ public class ErrorPipeline {
 			}
 		}
 		return UUID.randomUUID();
-	}
-
-	private Instant parseTimestamp(JsonNode timestamp) {
-		if (timestamp == null) {
-			return null;
-		}
-		if (timestamp.isNumber()) {
-			double seconds = timestamp.asDouble();
-			return Instant.ofEpochMilli(Math.round(seconds * 1000));
-		}
-		try {
-			return Instant.parse(timestamp.asText());
-		}
-		catch (DateTimeParseException e) {
-			try {
-				return OffsetDateTime.parse(timestamp.asText()).toInstant();
-			}
-			catch (DateTimeParseException e2) {
-				return null;
-			}
-		}
-	}
-
-	private Instant clamp(Instant timestamp, Instant receivedAt) {
-		if (timestamp == null || timestamp.isBefore(receivedAt.minus(MAX_PAST_SKEW))
-				|| timestamp.isAfter(receivedAt.plus(MAX_FUTURE_SKEW))) {
-			return receivedAt;
-		}
-		return timestamp;
 	}
 
 	private byte[] gzip(JsonNode event) {

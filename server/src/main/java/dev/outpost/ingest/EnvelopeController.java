@@ -66,12 +66,19 @@ public class EnvelopeController {
 		Instant receivedAt = Instant.now();
 		List<IngestItem.Attachment> attachments = new ArrayList<>();
 		List<JsonNode> events = new ArrayList<>();
+		List<JsonNode> logBatches = new ArrayList<>();
 		for (Envelope.Item item : envelope.items()) {
 			switch (item.type()) {
 				case "event" -> {
 					JsonNode event = parseItemJson(item);
 					if (event != null) {
 						events.add(event);
+					}
+				}
+				case "log" -> {
+					JsonNode batch = parseItemJson(item);
+					if (batch != null) {
+						logBatches.add(batch);
 					}
 				}
 				case "attachment" -> attachments.add(new IngestItem.Attachment(
@@ -84,16 +91,23 @@ public class EnvelopeController {
 					}
 				}
 				// session, sessions, check_in, profile, replay_*, statsd, metric_buckets,
-				// transaction/log/span (until their phases) and anything unknown: skip silently.
+				// transaction/span (until their phases) and anything unknown: skip silently.
 				default -> {
 				}
 			}
 		}
 
+		List<IngestItem> queued = new ArrayList<>();
 		for (JsonNode event : events) {
 			// Attachments in an envelope belong to its (single) event; multi-event
 			// envelopes don't occur in practice, so attach to each parsed event.
-			if (!queue.offer(new IngestItem(projectId, receivedAt, event, attachments))) {
+			queued.add(new IngestItem.ErrorEvent(projectId, receivedAt, event, attachments));
+		}
+		for (JsonNode batch : logBatches) {
+			queued.add(new IngestItem.LogBatch(projectId, receivedAt, batch));
+		}
+		for (IngestItem item : queued) {
+			if (!queue.offer(item)) {
 				return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
 					.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS))
 					.header("X-Sentry-Rate-Limits", RETRY_AFTER_SECONDS + ":all:organization")

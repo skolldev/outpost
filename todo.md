@@ -162,25 +162,25 @@ Goal: one runnable image + database, empty but deployable end-to-end.
 
 ### Storage
 
-- [ ] Migration: `log_record` (range-partitioned on `timestamp`) (§7)
-- [ ] Indexes: `log_record(project_id, environment, timestamp)`, `log_record(trace_id)`, GIN on `attributes`, `pg_trgm` GIN on `body` for `ILIKE` substring search
+- [x] Migration: `log_record` (range-partitioned on `timestamp`) (§7) — `V4__phase3_logs.sql`; weekly partitions via `PartitionManager`, generalized to cover both `event` and `log_record`
+- [x] Indexes: `log_record(project_id, environment, timestamp)`, `log_record(trace_id)`, GIN on `attributes`, `pg_trgm` GIN on `body` for `ILIKE` substring search — `pg_trgm` is a trusted extension, created in the migration
 
 ### Pipeline (§6.3)
 
-- [ ] Handle `log` envelope items: unpack batch (`application/vnd.sentry.items.log+json`, `item_count` header)
-- [ ] Insert one row per record: project, environment, timestamp, trace_id, span_id, level, severity_number, body, attributes jsonb, release — append-only, no grouping
+- [x] Handle `log` envelope items: unpack batch (`application/vnd.sentry.items.log+json`, `item_count` header) — `IngestItem` is now sealed (`ErrorEvent` | `LogBatch`), same queue/workers/backpressure
+- [x] Insert one row per record: project, environment, timestamp, trace_id, span_id, level, severity_number, body, attributes jsonb, release — append-only, no grouping. Typed attributes (`{"k":{"value":v,"type":t}}`) flattened to plain `{"k":v}`; environment/release/span_id extracted from `sentry.environment` / `sentry.release` / `sentry.trace.parent_span_id` attributes; env+release auto-upserted; timestamps clamped like events
 
 ### Query API & UI
 
-- [ ] `GET /logs` — filters: level, env, project, trace_id, attribute key/value, body substring; keyset pagination descending (§8)
-- [ ] `?live=true` → SSE tail
-- [ ] **Logs** page (Kibana-lite): filters + substring search, virtual-scrolled table, expandable rows (all attributes, copy JSON), Live-tail toggle, trace_id links (§9.3)
-- [ ] Issue detail: **"Logs around this event"** — logs by trace_id, or ±60 s same-service window when no trace (§9.2)
+- [x] `GET /logs` — filters: level, env, project, trace_id, attribute key/value, body substring; keyset pagination descending (§8) — attribute filter is `attr=key=value` (bare `attr=key` matches presence)
+- [x] `?live=true` → SSE tail — `LogTail` broadcaster fed by `LogStore`, same filters applied in-process, 25 s keepalive comments, emitters completed on shutdown (SmartLifecycle, ahead of Tomcat's graceful-shutdown wait)
+- [x] **Logs** page (Kibana-lite): filters + substring search, expandable rows (all attributes, copy JSON), Live-tail toggle, trace_id links (§9.3) — trace_id links filter the logs page for now (trace view lands in P4). **Deviation:** load-more keyset pagination + live buffer capped at 500 rows instead of a virtual-scrolled table (no CDK dep; revisit if row counts hurt)
+- [x] Issue detail: **"Logs around this event"** — logs by trace_id, or ±60 s same-project window when no trace (§9.2) — collapsible section, lazy-loaded, plus "Open in Logs" link when traced
 
 ### Validation
 
-- [ ] Demo apps: `enableLogs: true` (Angular) + `logs.enabled: true` and `sentry-logback` (Spring) (§5)
-- [ ] Exit check: logs from both SDKs searchable; event↔log correlation works both with and without trace_id
+- [ ] Demo apps: `enableLogs: true` (Angular) + `logs.enabled: true` and `sentry-logback` (Spring) (§5) — still pending from Phase 1
+- [x] Exit check: logs from both SDKs searchable; event↔log correlation works both with and without trace_id — interim, like P1: `LogIngestIntegrationTest` runs SDK-**shaped** log batches through ingest → query API in CI (all filters, both correlation modes, SSE tail); re-verify with real SDKs once demo apps exist
 
 ---
 
