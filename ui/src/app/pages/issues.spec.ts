@@ -104,4 +104,51 @@ describe('IssuesPage', () => {
     expect(await screen.findByText('RangeError: out of bounds')).toBeInTheDocument();
     expect(screen.getByText('TypeError: cannot read x')).toBeInTheDocument();
   });
+
+  it('debounces the search box into a query param', async () => {
+    const seen: (string | null)[] = [];
+    server.use(
+      http.get(`${BASE}/issues`, ({ request }) => {
+        seen.push(new URL(request.url).searchParams.get('query'));
+        return HttpResponse.json(page([ISSUE]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    await user.type(screen.getByPlaceholderText(/search title/i), 'boom');
+
+    await waitFor(() => expect(seen).toContain('boom'));
+    // Debounced: the intermediate keystrokes must not each fire a request.
+    expect(seen.filter((q) => q && q !== 'boom' && 'boom'.startsWith(q))).toHaveLength(0);
+  });
+
+  it('keeps the current rows visible while a reload is in flight', async () => {
+    let resolveSecond: (() => void) | undefined;
+    let call = 0;
+    server.use(
+      http.get(`${BASE}/issues`, async () => {
+        call += 1;
+        if (call >= 2) {
+          await new Promise<void>((resolve) => (resolveSecond = resolve));
+          return HttpResponse.json(page([{ ...ISSUE, id: 9, title: 'Fresh page' }]));
+        }
+        return HttpResponse.json(page([ISSUE]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    // Trigger a reload; its response is held open.
+    await user.click(screen.getByRole('button', { name: 'Resolved' }));
+
+    // No flicker: the previous rows remain on screen during the reload.
+    await waitFor(() => expect(screen.getByLabelText('Loading')).toBeInTheDocument());
+    expect(screen.getByText('TypeError: cannot read x')).toBeInTheDocument();
+
+    resolveSecond?.();
+    expect(await screen.findByText('Fresh page')).toBeInTheDocument();
+  });
 });

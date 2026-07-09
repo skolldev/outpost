@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+} from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
@@ -234,7 +242,9 @@ export class TraceDetailPage {
         transaction: node.transaction,
         span: node.span,
       });
-      node.children.sort((a, b) => a.startMs - b.startMs).forEach((child) => walk(child, depth + 1));
+      node.children
+        .sort((a, b) => a.startMs - b.startMs)
+        .forEach((child) => walk(child, depth + 1));
     };
     roots.sort((a, b) => a.startMs - b.startMs).forEach((root) => walk(root, 0));
     return rows;
@@ -254,7 +264,10 @@ export class TraceDetailPage {
     const total = this.totalMs();
     return t.logs.map((logRecord) => ({
       id: logRecord.id,
-      leftPct: total > 0 ? Math.min(100, Math.max(0, ((ms(logRecord.timestamp) - start) / total) * 100)) : 0,
+      leftPct:
+        total > 0
+          ? Math.min(100, Math.max(0, ((ms(logRecord.timestamp) - start) / total) * 100))
+          : 0,
       offsetMs: ms(logRecord.timestamp) - start,
       level: logRecord.level,
       body: logRecord.body,
@@ -298,11 +311,13 @@ export class TraceDetailPage {
       delete flat['data'];
       Object.assign(flat, raw['data'] as Record<string, unknown>);
     }
-    return Object.entries(flat)
-      .filter(([key]) => !HIDDEN_DATA_KEYS.has(key) && key !== 'spans')
-      // Scalars only — nested objects/arrays would just be walls of JSON here.
-      .filter(([, value]) => value !== null && typeof value !== 'object')
-      .map(([key, value]) => [key, String(value)]);
+    return (
+      Object.entries(flat)
+        .filter(([key]) => !HIDDEN_DATA_KEYS.has(key) && key !== 'spans')
+        // Scalars only — nested objects/arrays would just be walls of JSON here.
+        .filter(([, value]) => value !== null && typeof value !== 'object')
+        .map(([key, value]) => [key, String(value)])
+    );
   }
 }
 

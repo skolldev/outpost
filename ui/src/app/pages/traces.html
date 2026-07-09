@@ -5,8 +5,11 @@
     placeholder="Search by transaction name…"
     class="h-8 w-72"
     [ngModel]="search()"
-    (ngModelChange)="onSearch($event)"
+    (ngModelChange)="search.set($event)"
   />
+  @if (loading()) {
+    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
+  }
   <span class="flex items-center gap-2 text-sm text-muted-foreground">
     <hlm-switch
       [checked]="hasErrors()"
@@ -17,43 +20,42 @@
   </span>
 </div>
 
-@if (loading()) {
-  <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-    <hlm-spinner class="size-4" /> Loading…
-  </div>
-} @else if (traces().length === 0) {
+@if (traces().length === 0 && !loading()) {
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
       <h3 hlmEmptyTitle>No traces match the current filters.</h3>
       <p hlmEmptyDescription>
-        Enable tracing in the SDK
-        (<code class="rounded bg-muted px-1">tracesSampleRate: 1.0</code>) and add
-        <code class="rounded bg-muted px-1">browserTracingIntegration()</code> — snippets under
-        Settings → Projects.
+        Enable tracing in the SDK (<code class="rounded bg-muted px-1">tracesSampleRate: 1.0</code>)
+        and add <code class="rounded bg-muted px-1">browserTracingIntegration()</code> — snippets
+        under Settings → Projects.
       </p>
     </div>
   </div>
 } @else {
-  <div class="overflow-x-auto rounded-lg border border-border">
-    <table class="w-full text-sm">
-      <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
-        <tr>
-          <th class="px-3 py-2 font-medium">Root transaction</th>
-          <th class="w-24 px-3 py-2 font-medium">Op</th>
-          <th class="w-24 px-3 py-2 text-right font-medium">Duration</th>
-          <th class="w-20 px-3 py-2 text-right font-medium">Spans</th>
-          <th class="w-24 px-3 py-2 text-center font-medium">Errors</th>
-          <th class="w-44 px-3 py-2 font-medium">When</th>
+  <div hlmTableContainer class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+    <table hlmTable class="w-full text-sm">
+      <thead
+        hlmTHead
+        class="sticky top-0 z-10 bg-muted text-left text-xs text-muted-foreground [&_th]:h-auto [&_th]:px-3 [&_th]:py-2"
+      >
+        <tr hlmTr>
+          <th hlmTh>Root transaction</th>
+          <th hlmTh class="w-24">Op</th>
+          <th hlmTh class="w-24 text-right">Duration</th>
+          <th hlmTh class="w-20 text-right">Spans</th>
+          <th hlmTh class="w-24 text-center">Errors</th>
+          <th hlmTh class="w-44">When</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody hlmTBody>
         @for (trace of traces(); track trace.id) {
           <tr
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+            hlmTr
+            class="cursor-pointer [&_td]:px-3 [&_td]:py-2"
             [routerLink]="['/traces', trace.trace_id]"
             queryParamsHandling="merge"
           >
-            <td class="px-3 py-2">
+            <td hlmTd class="whitespace-normal">
               <div class="flex items-center gap-2">
                 <span
                   class="inline-block size-2.5 shrink-0 rounded-full"
@@ -64,14 +66,14 @@
                 <span hlmBadge variant="outline">{{ trace.environment }}</span>
               </div>
             </td>
-            <td class="px-3 py-2 font-mono text-xs text-muted-foreground">{{ trace.op }}</td>
-            <td class="px-3 py-2 text-right font-mono text-xs">
+            <td hlmTd class="font-mono text-xs text-muted-foreground">{{ trace.op }}</td>
+            <td hlmTd class="text-right font-mono text-xs">
               {{ formatDuration(trace.duration_ms) }}
             </td>
-            <td class="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
+            <td hlmTd class="text-right font-mono text-xs text-muted-foreground">
               {{ trace.span_count }}
             </td>
-            <td class="px-3 py-2 text-center">
+            <td hlmTd class="text-center">
               @if (trace.error_count > 0) {
                 <span
                   hlmBadge
@@ -86,17 +88,19 @@
                 <span class="text-xs text-muted-foreground">—</span>
               }
             </td>
-            <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+            <td hlmTd class="text-xs text-muted-foreground">
               {{ trace.start_ts | date: 'MMM d, HH:mm:ss' }}
             </td>
           </tr>
         }
       </tbody>
     </table>
+    @if (nextCursor()) {
+      <div class="p-4 text-center">
+        <button hlmBtn variant="outline" size="sm" [disabled]="loading()" (click)="loadMore()">
+          Load more
+        </button>
+      </div>
+    }
   </div>
-  @if (nextCursor()) {
-    <div class="mt-4 text-center">
-      <button hlmBtn variant="outline" size="sm" (click)="loadMore()">Load more</button>
-    </div>
-  }
 }

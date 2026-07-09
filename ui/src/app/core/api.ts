@@ -21,18 +21,11 @@ import {
   TraceFilters,
   TracePage,
 } from './models';
+import { issueParams, logParams, QueryParams, traceParams } from './query-params';
 
-function logParams(filters: LogFilters): HttpParams {
-  let params = new HttpParams();
-  if (filters.project != null) params = params.set('project', filters.project);
-  for (const env of filters.environment ?? []) params = params.append('environment', env);
-  for (const level of filters.level ?? []) params = params.append('level', level);
-  if (filters.traceId) params = params.set('trace_id', filters.traceId);
-  if (filters.query) params = params.set('query', filters.query);
-  if (filters.from) params = params.set('from', filters.from);
-  if (filters.to) params = params.set('to', filters.to);
-  if (filters.cursor) params = params.set('cursor', filters.cursor);
-  return params;
+/** Turn a plain params record (arrays → repeated params) into HttpParams. */
+function httpParams(params: QueryParams): HttpParams {
+  return new HttpParams({ fromObject: params });
 }
 
 @Injectable({ providedIn: 'root' })
@@ -53,15 +46,9 @@ export class Api {
   }
 
   issues(filters: IssueFilters): Observable<IssuePage> {
-    let params = new HttpParams();
-    if (filters.project != null) params = params.set('project', filters.project);
-    for (const env of filters.environment ?? []) params = params.append('environment', env);
-    if (filters.status) params = params.set('status', filters.status);
-    if (filters.query) params = params.set('query', filters.query);
-    if (filters.sort) params = params.set('sort', filters.sort);
-    if (filters.from) params = params.set('from', filters.from);
-    if (filters.cursor) params = params.set('cursor', filters.cursor);
-    return this.http.get<IssuePage>(`${this.base}/issues`, { params });
+    return this.http.get<IssuePage>(`${this.base}/issues`, {
+      params: httpParams(issueParams(filters)),
+    });
   }
 
   issue(id: number): Observable<IssueDetail> {
@@ -84,28 +71,19 @@ export class Api {
   }
 
   logs(filters: LogFilters): Observable<LogPage> {
-    return this.http.get<LogPage>(`${this.base}/logs`, { params: logParams(filters) });
+    return this.http.get<LogPage>(`${this.base}/logs`, { params: httpParams(logParams(filters)) });
   }
 
   /** URL for the SSE live tail (§9.3) — same filters, consumed via EventSource. */
   logTailUrl(filters: LogFilters): string {
-    const params = logParams(filters).set('live', 'true');
+    const params = httpParams(logParams(filters)).set('live', 'true');
     return `${this.base}/logs?${params.toString()}`;
   }
 
   traces(filters: TraceFilters): Observable<TracePage> {
-    let params = new HttpParams();
-    if (filters.project != null) params = params.set('project', filters.project);
-    for (const env of filters.environment ?? []) params = params.append('environment', env);
-    if (filters.release) params = params.set('release', filters.release);
-    if (filters.query) params = params.set('query', filters.query);
-    if (filters.minDuration != null) params = params.set('min_duration', filters.minDuration);
-    if (filters.maxDuration != null) params = params.set('max_duration', filters.maxDuration);
-    if (filters.hasErrors) params = params.set('has_errors', 'true');
-    if (filters.from) params = params.set('from', filters.from);
-    if (filters.to) params = params.set('to', filters.to);
-    if (filters.cursor) params = params.set('cursor', filters.cursor);
-    return this.http.get<TracePage>(`${this.base}/traces`, { params });
+    return this.http.get<TracePage>(`${this.base}/traces`, {
+      params: httpParams(traceParams(filters)),
+    });
   }
 
   trace(traceId: string): Observable<TraceDetail> {
