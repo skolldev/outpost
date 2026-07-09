@@ -127,7 +127,12 @@ export class LogsPage {
       this.filterKey(); // reconnect when filters change
       const source = new EventSource(this.api.logTailUrl(untracked(() => this.currentFilters())));
       source.onmessage = (message: MessageEvent<string>) => {
-        const record = JSON.parse(message.data) as LogRecord;
+        let record: LogRecord;
+        try {
+          record = JSON.parse(message.data) as LogRecord;
+        } catch {
+          return;
+        }
         this.logs.update((list) => [record, ...list].slice(0, LIVE_BUFFER));
       };
       onCleanup(() => source.close());
