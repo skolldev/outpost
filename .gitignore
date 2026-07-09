@@ -1,0 +1,22 @@
+# Java / Gradle
+server/build/
+server/.gradle/
+*.class
+
+# Node / Angular
+node_modules/
+ui/dist/
+ui/.angular/
+
+# IDE
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# OS
+.DS_Store
+
+# Local env overrides
+.env

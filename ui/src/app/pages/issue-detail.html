@@ -1,0 +1,338 @@
+@if (issue(); as issue) {
+  <div class="mb-6">
+    <a
+      routerLink="/issues"
+      queryParamsHandling="merge"
+      class="text-xs text-muted-foreground hover:text-foreground"
+      >← Issues</a
+    >
+    <div class="mt-2 flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <h1 class="flex items-center gap-2 text-lg font-semibold text-foreground">
+          <app-level-badge [level]="issue.level" />
+          <span class="truncate">{{ issue.title }}</span>
+        </h1>
+        @if (issue.culprit) {
+          <p class="mt-1 text-sm text-muted-foreground">{{ issue.culprit }}</p>
+        }
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{{ issue.event_count }} events</span>
+          <span>·</span>
+          <span>first seen {{ timeAgo(issue.first_seen) }}</span>
+          <span>·</span>
+          <span>last seen {{ timeAgo(issue.last_seen) }}</span>
+          @for (stat of issue.env_stats; track stat.environment) {
+            <span hlmBadge variant="outline">{{ stat.environment }}: {{ stat.event_count }}</span>
+          }
+        </div>
+      </div>
+      <button
+        hlmBtn
+        size="sm"
+        [variant]="issue.status === 'resolved' ? 'outline' : 'default'"
+        (click)="toggleStatus()"
+      >
+        {{ issue.status === 'resolved' ? 'Unresolve' : 'Resolve' }}
+      </button>
+    </div>
+  </div>
+
+  @if (event(); as event) {
+    <div class="mb-4 flex items-center gap-2 text-sm">
+      <div hlmButtonGroup>
+        <button
+          hlmBtn
+          variant="outline"
+          size="sm"
+          [disabled]="!event.next_event_id"
+          (click)="loadLatest()"
+        >
+          « Latest
+        </button>
+        <button
+          hlmBtn
+          variant="outline"
+          size="sm"
+          [disabled]="!event.next_event_id"
+          (click)="loadEvent(event.next_event_id!)"
+        >
+          ‹ Newer
+        </button>
+        <button
+          hlmBtn
+          variant="outline"
+          size="sm"
+          [disabled]="!event.prev_event_id"
+          (click)="loadEvent(event.prev_event_id!)"
+        >
+          Older ›
+        </button>
+      </div>
+      <span class="text-muted-foreground">{{ event.timestamp | date: 'medium' }}</span>
+      <span hlmBadge variant="outline">{{ event.environment }}</span>
+      @if (event.release) {
+        <span hlmBadge variant="outline">{{ event.release }}</span>
+      }
+      @if (event.trace_id) {
+        <a
+          hlmBtn
+          variant="outline"
+          size="sm"
+          [routerLink]="['/traces', event.trace_id]"
+          queryParamsHandling="merge"
+        >
+          View trace →
+        </a>
+      }
+      <span class="ml-auto font-mono text-xs text-muted-foreground/70">{{ event.id }}</span>
+    </div>
+
+    <!-- Symbolication warning (§9.2) -->
+    @if (symbolicationWarning(); as warning) {
+      <div
+        hlmAlert
+        variant="destructive"
+        class="mb-4"
+        [style.background-color]="'var(--level-warn-bg)'"
+        [style.border-color]="'color-mix(in oklch, var(--level-warn) 40%, transparent)'"
+        [style.color]="'var(--level-warn)'"
+      >
+        <p hlmAlertTitle>
+          {{
+            warning.status === 'partial'
+              ? 'Some frames could not be symbolicated — source maps are missing.'
+              : 'This stack trace is minified — no matching source maps were found.'
+          }}
+        </p>
+        <div hlmAlertDescription>
+          @if (warning.missing.length > 0) {
+            <p class="mt-1 text-xs">Missing debug IDs:</p>
+            <ul class="mt-1 space-y-0.5 font-mono text-xs">
+              @for (miss of warning.missing; track miss.debug_id) {
+                <li>
+                  {{ miss.debug_id }} <span class="opacity-70">({{ miss.abs_path }})</span>
+                </li>
+              }
+            </ul>
+          }
+          <p class="mt-2 text-xs">
+            Upload source maps with
+            <code class="rounded bg-muted px-1 text-foreground"
+              >sentry-cli sourcemaps inject && sentry-cli sourcemaps upload</code
+            >
+            — see uploaded bundles on the
+            <a routerLink="/releases" queryParamsHandling="merge" class="underline">Releases</a>
+            page.
+          </p>
+        </div>
+      </div>
+    }
+
+    @if (exceptions().length > 0) {
+      <section hlmCard class="mb-6">
+        <div class="flex items-center justify-between border-b border-border px-4 py-2">
+          <h2 class="text-sm font-semibold text-foreground">Stacktrace</h2>
+          <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <hlm-checkbox
+              [checked]="showVendor()"
+              (checkedChange)="showVendor.set($event)"
+              aria-label="Show vendor frames"
+            />
+            Show vendor frames
+          </span>
+        </div>
+        @for (exception of exceptions(); track $index) {
+          <div class="px-4 py-3">
+            <p class="mb-2 font-mono text-sm" [style.color]="'var(--level-error)'">
+              {{ exception.type }}<span class="text-muted-foreground">: {{ exception.value }}</span>
+            </p>
+            <div class="overflow-x-auto rounded bg-muted/50 font-mono text-xs">
+              @for (frame of visibleFrames(exception); track $index) {
+                <div class="border-b border-border/60 last:border-0">
+                  <button
+                    type="button"
+                    class="block w-full px-3 py-1.5 text-left"
+                    [class.opacity-50]="!frame.in_app"
+                    [class.cursor-pointer]="hasContext(frame)"
+                    [class.cursor-default]="!hasContext(frame)"
+                    [class.hover:bg-muted]="hasContext(frame)"
+                    (click)="toggleFrame(frame)"
+                  >
+                    @if (hasContext(frame)) {
+                      <span class="mr-1 inline-block w-3 text-muted-foreground">{{
+                        expandedFrames().has(frame) ? '▾' : '▸'
+                      }}</span>
+                    } @else {
+                      <span class="mr-1 inline-block w-3"></span>
+                    }
+                    <span class="text-foreground">{{ frame.module || frame.filename }}</span>
+                    <span class="text-muted-foreground"> in </span>
+                    <span [style.color]="'var(--primary)'">{{ frame.function || '?' }}</span>
+                    @if (frame.lineno !== undefined) {
+                      <span class="text-muted-foreground"> at line </span>
+                      <span class="text-foreground"
+                        >{{ frame.lineno
+                        }}{{ frame.colno !== undefined ? ':' + frame.colno : '' }}</span
+                      >
+                    }
+                    @if (!frame.in_app) {
+                      <span class="ml-2 rounded bg-muted px-1 text-[10px] text-muted-foreground"
+                        >vendor</span
+                      >
+                    }
+                  </button>
+                  @if (hasContext(frame) && expandedFrames().has(frame)) {
+                    <div class="border-t border-border/60 bg-background/60 py-1">
+                      @for (line of contextLines(frame); track line.no) {
+                        <div
+                          class="flex gap-3 px-3 leading-5"
+                          [style.background-color]="
+                            line.current
+                              ? 'color-mix(in oklch, var(--level-error) 15%, transparent)'
+                              : null
+                          "
+                        >
+                          <span
+                            class="w-10 shrink-0 select-none text-right text-muted-foreground/70"
+                            >{{ line.no }}</span
+                          >
+                          <span
+                            class="whitespace-pre"
+                            [class]="line.current ? 'text-foreground' : 'text-muted-foreground'"
+                            >{{ line.text }}</span
+                          >
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+        }
+      </section>
+    }
+
+    @if (exceptions().length === 0 && event.message) {
+      <section hlmCard class="mb-6 px-4 py-3">
+        <h2 class="mb-2 text-sm font-semibold text-foreground">Message</h2>
+        <p class="font-mono text-sm text-muted-foreground">{{ event.message }}</p>
+      </section>
+    }
+
+    <div class="grid gap-6 lg:grid-cols-2">
+      @if (breadcrumbs().length > 0) {
+        <section hlmCard>
+          <h2 class="border-b border-border px-4 py-2 text-sm font-semibold text-foreground">
+            Breadcrumbs
+          </h2>
+          <div class="max-h-96 overflow-y-auto">
+            @for (crumb of breadcrumbs(); track $index) {
+              <div class="flex gap-3 border-b border-border/60 px-4 py-1.5 text-xs last:border-0">
+                <span class="w-14 shrink-0 text-muted-foreground">{{ crumbTime(crumb) }}</span>
+                <span class="w-24 shrink-0 truncate text-muted-foreground">{{
+                  crumb.category || crumb.type || '—'
+                }}</span>
+                <span class="truncate text-foreground">{{ crumbText(crumb) }}</span>
+              </div>
+            }
+          </div>
+        </section>
+      }
+
+      <section hlmCard>
+        <h2 class="border-b border-border px-4 py-2 text-sm font-semibold text-foreground">
+          Tags & context
+        </h2>
+        <div class="px-4 py-3 text-xs">
+          @if (tags().length > 0) {
+            <div class="mb-3 flex flex-wrap gap-1.5">
+              @for (tag of tags(); track tag[0]) {
+                <span hlmBadge variant="outline">
+                  <span class="text-muted-foreground">{{ tag[0] }}:</span>
+                  <span class="text-foreground">{{ tag[1] }}</span>
+                </span>
+              }
+            </div>
+          }
+          @for (ctx of contexts(); track ctx.name) {
+            <div class="mb-2">
+              <h3 class="mb-1 font-semibold uppercase tracking-wide text-muted-foreground">
+                {{ ctx.name }}
+              </h3>
+              <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+                @for (entry of ctx.entries; track entry[0]) {
+                  <span class="text-muted-foreground">{{ entry[0] }}</span>
+                  <span class="break-all text-foreground">{{ entry[1] }}</span>
+                }
+              </div>
+            </div>
+          }
+          @if (tags().length === 0 && contexts().length === 0) {
+            <p class="text-muted-foreground">No tags or contexts on this event.</p>
+          }
+        </div>
+      </section>
+    </div>
+
+    <!-- Logs around this event (§9.2): by trace_id, or ±60 s same-service window. -->
+    <section hlmCard class="mt-6">
+      <div class="flex items-center justify-between border-b border-border px-4 py-2">
+        <button
+          (click)="toggleLogs()"
+          class="flex items-center gap-1.5 text-sm font-semibold text-foreground"
+        >
+          <span class="inline-block w-3 text-muted-foreground">{{ logsOpen() ? '▾' : '▸' }}</span>
+          Logs around this event
+          <span class="font-normal text-muted-foreground">
+            {{ event.trace_id ? '(same trace)' : '(±60 s, same project)' }}
+          </span>
+        </button>
+        @if (event.trace_id) {
+          <a
+            [routerLink]="['/logs']"
+            [queryParams]="{ trace_id: event.trace_id }"
+            queryParamsHandling="merge"
+            class="text-xs underline"
+            [style.color]="'var(--level-info)'"
+            >Open in Logs →</a
+          >
+        }
+      </div>
+      @if (logsOpen()) {
+        @if (eventLogs(); as records) {
+          @if (records.length === 0) {
+            <p class="px-4 py-6 text-center text-sm text-muted-foreground">
+              No log records found
+              {{ event.trace_id ? 'for this trace' : 'within ±60 s in this project' }}.
+            </p>
+          } @else {
+            <div class="max-h-96 overflow-y-auto font-mono text-xs">
+              @for (record of records; track record.id) {
+                <div
+                  class="flex items-center gap-3 border-b border-border/60 px-4 py-1.5 last:border-0"
+                >
+                  <span class="w-24 shrink-0 text-muted-foreground">{{
+                    record.timestamp | date: 'HH:mm:ss.SSS'
+                  }}</span>
+                  <app-level-badge [level]="record.level" />
+                  <span
+                    class="w-16 shrink-0 truncate text-[10px] leading-4 text-muted-foreground"
+                    >{{ record.environment }}</span
+                  >
+                  <span class="truncate text-foreground">{{ record.body }}</span>
+                </div>
+              }
+            </div>
+          }
+        } @else {
+          <p class="px-4 py-6 text-center text-sm text-muted-foreground">Loading logs…</p>
+        }
+      }
+    </section>
+  } @else {
+    <p class="py-8 text-center text-sm text-muted-foreground">Loading event…</p>
+  }
+} @else {
+  <p class="py-12 text-center text-sm text-muted-foreground">Loading…</p>
+}

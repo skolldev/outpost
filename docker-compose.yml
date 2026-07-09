@@ -1,0 +1,22 @@
+# docker-compose.yml — the whole product (spec §11.1)
+services:
+  outpost:
+    build: .
+    image: outpost/outpost:latest
+    ports: ["8080:8080"]
+    environment:
+      OUTPOST_DB_URL: jdbc:postgresql://db:5432/outpost
+      OUTPOST_DB_USER: outpost
+      OUTPOST_DB_PASSWORD: outpost
+      OUTPOST_PUBLIC_URL: http://localhost:8080 # DSN host shown in UI
+      OUTPOST_ADMIN_EMAIL: admin@local
+      OUTPOST_ADMIN_PASSWORD: change-me
+    depends_on:
+      db: { condition: service_healthy }
+  db:
+    image: postgres:17-alpine
+    ports: ["5432:5432"] # published for local backend development (./gradlew bootRun)
+    environment: { POSTGRES_DB: outpost, POSTGRES_USER: outpost, POSTGRES_PASSWORD: outpost }
+    volumes: ["outpost-pg:/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U outpost"], interval: 5s }
+volumes: { outpost-pg: {} }

@@ -1,0 +1,102 @@
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <input
+    hlmInput
+    type="search"
+    placeholder="Search by transaction name…"
+    class="h-8 w-72"
+    [ngModel]="search()"
+    (ngModelChange)="onSearch($event)"
+  />
+  <span class="flex items-center gap-2 text-sm text-muted-foreground">
+    <hlm-switch
+      [checked]="hasErrors()"
+      (checkedChange)="toggleErrorsOnly()"
+      aria-label="Only traces with errors"
+    />
+    With errors only
+  </span>
+</div>
+
+@if (loading()) {
+  <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+    <hlm-spinner class="size-4" /> Loading…
+  </div>
+} @else if (traces().length === 0) {
+  <div hlmEmpty class="rounded-lg border border-border">
+    <div hlmEmptyHeader>
+      <h3 hlmEmptyTitle>No traces match the current filters.</h3>
+      <p hlmEmptyDescription>
+        Enable tracing in the SDK
+        (<code class="rounded bg-muted px-1">tracesSampleRate: 1.0</code>) and add
+        <code class="rounded bg-muted px-1">browserTracingIntegration()</code> — snippets under
+        Settings → Projects.
+      </p>
+    </div>
+  </div>
+} @else {
+  <div class="overflow-x-auto rounded-lg border border-border">
+    <table class="w-full text-sm">
+      <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
+        <tr>
+          <th class="px-3 py-2 font-medium">Root transaction</th>
+          <th class="w-24 px-3 py-2 font-medium">Op</th>
+          <th class="w-24 px-3 py-2 text-right font-medium">Duration</th>
+          <th class="w-20 px-3 py-2 text-right font-medium">Spans</th>
+          <th class="w-24 px-3 py-2 text-center font-medium">Errors</th>
+          <th class="w-44 px-3 py-2 font-medium">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (trace of traces(); track trace.id) {
+          <tr
+            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+            [routerLink]="['/traces', trace.trace_id]"
+            queryParamsHandling="merge"
+          >
+            <td class="px-3 py-2">
+              <div class="flex items-center gap-2">
+                <span
+                  class="inline-block size-2.5 shrink-0 rounded-full"
+                  [style.background-color]="projectColor(trace.project_id)"
+                  [title]="'project ' + trace.project_id"
+                ></span>
+                <span class="truncate font-medium text-foreground">{{ trace.name }}</span>
+                <span hlmBadge variant="outline">{{ trace.environment }}</span>
+              </div>
+            </td>
+            <td class="px-3 py-2 font-mono text-xs text-muted-foreground">{{ trace.op }}</td>
+            <td class="px-3 py-2 text-right font-mono text-xs">
+              {{ formatDuration(trace.duration_ms) }}
+            </td>
+            <td class="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
+              {{ trace.span_count }}
+            </td>
+            <td class="px-3 py-2 text-center">
+              @if (trace.error_count > 0) {
+                <span
+                  hlmBadge
+                  variant="outline"
+                  [style.background-color]="'var(--level-error-bg)'"
+                  [style.color]="'var(--level-error)'"
+                  [style.border-color]="'color-mix(in oklch, var(--level-error) 30%, transparent)'"
+                >
+                  {{ trace.error_count }}
+                </span>
+              } @else {
+                <span class="text-xs text-muted-foreground">—</span>
+              }
+            </td>
+            <td class="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+              {{ trace.start_ts | date: 'MMM d, HH:mm:ss' }}
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+  @if (nextCursor()) {
+    <div class="mt-4 text-center">
+      <button hlmBtn variant="outline" size="sm" (click)="loadMore()">Load more</button>
+    </div>
+  }
+}

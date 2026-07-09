@@ -1,0 +1,12 @@
+<svg [attr.width]="width" [attr.height]="height" class="block">
+  @for (bar of bars(); track bar.x) {
+    <rect
+      [attr.x]="bar.x"
+      [attr.y]="bar.y"
+      [attr.width]="barWidth"
+      [attr.height]="bar.h"
+      rx="1"
+      [attr.class]="bar.value > 0 ? 'fill-primary/80' : 'fill-muted'"
+    />
+  }
+</svg>

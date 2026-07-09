@@ -1,0 +1,90 @@
+<div class="min-h-screen bg-background text-foreground">
+  <header class="border-b border-border bg-card">
+    <div class="mx-auto flex max-w-7xl items-center gap-6 px-4 py-3">
+      <a routerLink="/issues" class="flex items-center gap-2 text-lg font-semibold text-foreground">
+        <ng-icon class="text-foreground" name="lucideTowerControl" /> Outpost
+      </a>
+      <nav class="flex gap-1 text-sm">
+        <a
+          routerLink="/issues"
+          queryParamsHandling="merge"
+          routerLinkActive="bg-accent text-accent-foreground"
+          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+          >Issues</a
+        >
+        <a
+          routerLink="/logs"
+          queryParamsHandling="merge"
+          routerLinkActive="bg-accent text-accent-foreground"
+          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+          >Logs</a
+        >
+        <a
+          routerLink="/traces"
+          queryParamsHandling="merge"
+          routerLinkActive="bg-accent text-accent-foreground"
+          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+          >Traces</a
+        >
+        <a
+          routerLink="/releases"
+          queryParamsHandling="merge"
+          routerLinkActive="bg-accent text-accent-foreground"
+          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+          >Releases</a
+        >
+        <a
+          routerLink="/settings"
+          routerLinkActive="bg-accent text-accent-foreground"
+          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+          >Settings</a
+        >
+      </nav>
+      <div class="ml-auto flex items-center gap-3 text-sm text-muted-foreground">
+        <span>{{ session.user()?.email }}</span>
+        <button hlmBtn variant="outline" size="sm" (click)="session.logout()">Log out</button>
+      </div>
+    </div>
+    <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 pb-3">
+      <hlm-native-select size="sm" [value]="projectValue()" (change)="onProjectChange($event)">
+        <option hlmNativeSelectOption value="">All projects</option>
+        @for (project of projects(); track project.id) {
+          <option hlmNativeSelectOption [value]="project.id">{{ project.name }}</option>
+        }
+      </hlm-native-select>
+
+      @if (environments().length > 0) {
+        <div class="flex items-center gap-1.5">
+          @for (env of environments(); track env) {
+            <button
+              hlmBadge
+              type="button"
+              class="cursor-pointer"
+              [variant]="filters.environments().includes(env) ? 'default' : 'outline'"
+              (click)="toggleEnvironment(env)"
+            >
+              {{ env }}
+            </button>
+          }
+        </div>
+      }
+
+      <hlm-native-select
+        size="sm"
+        class="ml-auto"
+        [value]="filters.range()"
+        (change)="onRangeChange($event)"
+      >
+        <option hlmNativeSelectOption value="1h">Last hour</option>
+        <option hlmNativeSelectOption value="24h">Last 24 hours</option>
+        <option hlmNativeSelectOption value="7d">Last 7 days</option>
+        <option hlmNativeSelectOption value="14d">Last 14 days</option>
+        <option hlmNativeSelectOption value="30d">Last 30 days</option>
+        <option hlmNativeSelectOption value="all">All time</option>
+      </hlm-native-select>
+    </div>
+  </header>
+  <main class="mx-auto max-w-7xl px-4 py-6">
+    <router-outlet></router-outlet>
+  </main>
+</div>

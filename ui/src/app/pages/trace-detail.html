@@ -1,0 +1,237 @@
+@if (loading()) {
+  <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+    <hlm-spinner class="size-4" /> Loading trace…
+  </div>
+} @else if (notFound()) {
+  <div class="rounded-lg border border-border p-8 text-center">
+    <p class="text-foreground">Trace not found.</p>
+    <p class="mt-1 text-sm text-muted-foreground">
+      No transaction has arrived for
+      <code class="rounded bg-muted px-1 font-mono">{{ traceId() }}</code> yet.
+    </p>
+    <a hlmBtn variant="outline" size="sm" class="mt-4" routerLink="/traces" queryParamsHandling="merge">
+      ← Back to traces
+    </a>
+  </div>
+} @else if (trace(); as t) {
+  <div class="mb-4 flex flex-wrap items-center gap-3">
+    <a
+      hlmBtn
+      variant="ghost"
+      size="sm"
+      routerLink="/traces"
+      queryParamsHandling="merge"
+      class="text-muted-foreground"
+      >← Traces</a
+    >
+    <h1 class="text-lg font-semibold text-foreground">
+      {{ rows()[0]?.title ?? 'Trace' }}
+    </h1>
+    <span class="font-mono text-xs text-muted-foreground">{{ t.trace_id }}</span>
+    <div class="ml-auto flex items-center gap-4 text-sm text-muted-foreground">
+      <span>{{ formatDuration(totalMs()) }}</span>
+      <span>{{ rows().length }} spans</span>
+      @if (errorCount() > 0) {
+        <span
+          hlmBadge
+          variant="outline"
+          [style.background-color]="'var(--level-error-bg)'"
+          [style.color]="'var(--level-error)'"
+          [style.border-color]="'color-mix(in oklch, var(--level-error) 30%, transparent)'"
+        >
+          {{ errorCount() }} {{ errorCount() === 1 ? 'error' : 'errors' }}
+        </span>
+      }
+    </div>
+  </div>
+
+  <div class="mb-3 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+    @for (project of projects(); track project.id) {
+      <span class="flex items-center gap-1.5">
+        <span class="inline-block size-2.5 rounded-full" [style.background-color]="project.color"></span>
+        project {{ project.id }}
+      </span>
+    }
+  </div>
+
+  <div class="flex gap-4">
+    <div class="min-w-0 flex-1 overflow-x-auto rounded-lg border border-border">
+      <div class="divide-y divide-border/60">
+        @for (row of rows(); track row.key) {
+          <div
+            class="flex cursor-pointer items-center gap-2 py-1.5 pr-3 hover:bg-muted/50"
+            [class.bg-muted]="selected()?.key === row.key"
+            tabindex="0"
+            role="button"
+            (click)="select(row)"
+            (keydown.enter)="select(row)"
+            (keydown.space)="select(row); $event.preventDefault()"
+          >
+            <div class="flex w-72 shrink-0 items-center gap-1.5" [style.padding-left.px]="8 + row.depth * 14">
+              <span
+                class="inline-block size-2 shrink-0 rounded-full"
+                [style.background-color]="row.color"
+              ></span>
+              @if (row.kind === 'transaction') {
+                <span hlmBadge variant="outline" class="shrink-0 text-[10px] uppercase">txn</span>
+              }
+              <span class="truncate text-xs text-foreground" [title]="row.title">{{ row.title }}</span>
+              @if (row.errors.length > 0) {
+                <span
+                  class="shrink-0 text-xs"
+                  [style.color]="'var(--level-error)'"
+                  [title]="row.errors.length + ' error(s) on this span'"
+                  >⚠</span
+                >
+              }
+            </div>
+            <div class="relative h-5 min-w-0 flex-1">
+              <div
+                class="absolute top-0.5 flex h-4 items-center rounded-sm"
+                [style.left.%]="row.leftPct"
+                [style.width.%]="row.widthPct"
+                [style.background-color]="row.color"
+                [style.opacity]="row.kind === 'transaction' ? 0.9 : 0.6"
+              ></div>
+              <!-- Duration label flips inside the bar when it ends near the right edge -->
+              @if (row.endPct > 88) {
+                <span
+                  class="pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[10px] leading-4 text-muted-foreground"
+                  [style.right]="'calc(' + (100 - row.endPct) + '%)'"
+                >
+                  {{ formatDuration(row.durationMs) }}
+                </span>
+              } @else {
+                <span
+                  class="pointer-events-none absolute top-0.5 whitespace-nowrap pl-1 text-[10px] leading-4 text-muted-foreground"
+                  [style.left.%]="row.endPct"
+                >
+                  {{ formatDuration(row.durationMs) }}
+                </span>
+              }
+              @for (error of row.errors; track error.id) {
+                <span
+                  class="absolute top-0 size-2 -translate-x-full rotate-45"
+                  [style.left.%]="row.endPct"
+                  [style.background-color]="'var(--level-error)'"
+                  [title]="(error.exception_type ?? 'error') + ': ' + (error.message ?? '')"
+                ></span>
+              }
+            </div>
+          </div>
+        }
+      </div>
+
+      @if (logCount() > 0) {
+        <div class="border-t border-border">
+          <button
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50"
+            (click)="toggleLogs()"
+          >
+            <span>{{ showLogs() ? '▾' : '▸' }}</span>
+            Logs ({{ logCount() }})
+          </button>
+          @if (showLogs()) {
+            <div class="flex items-center gap-2 px-3 pb-2">
+              <div class="w-72 shrink-0"></div>
+              <div class="relative h-6 min-w-0 flex-1">
+                @for (marker of logMarkers(); track marker.id) {
+                  <hlm-popover sideOffset="6" align="center">
+                    <button
+                      hlmPopoverTrigger
+                      type="button"
+                      class="absolute top-1 size-2 -translate-x-1/2 cursor-pointer rounded-full outline-none transition-transform hover:scale-150 focus-visible:scale-150 focus-visible:ring-2 focus-visible:ring-ring"
+                      [style.left.%]="marker.leftPct"
+                      [style.background-color]="levelColor(marker.level)"
+                      [attr.aria-label]="'Log: ' + marker.body"
+                    ></button>
+                    <hlm-popover-content class="w-80 max-w-[90vw]" *hlmPopoverPortal="let ctx">
+                      <hlm-popover-header>
+                        <div hlmPopoverTitle class="flex items-center gap-2">
+                          <span
+                            class="inline-block size-2 shrink-0 rounded-full"
+                            [style.background-color]="levelColor(marker.level)"
+                          ></span>
+                          <span class="uppercase" [style.color]="levelColor(marker.level)">{{ marker.level }}</span>
+                          <span class="ml-auto font-mono text-xs font-normal text-muted-foreground">
+                            +{{ formatDuration(marker.offsetMs) }}
+                          </span>
+                        </div>
+                      </hlm-popover-header>
+                      <p class="font-mono text-xs break-words whitespace-pre-wrap text-foreground">{{ marker.body }}</p>
+                      <p class="text-[10px] text-muted-foreground">{{ marker.timestamp }}</p>
+                    </hlm-popover-content>
+                  </hlm-popover>
+                }
+              </div>
+            </div>
+          }
+        </div>
+      }
+    </div>
+
+    @if (selected(); as row) {
+      <aside class="w-80 shrink-0 rounded-lg border border-border p-4 text-sm">
+        <div class="mb-3 flex items-start justify-between gap-2">
+          <h2 class="font-semibold text-foreground">{{ row.title }}</h2>
+          <button class="text-muted-foreground hover:text-foreground" (click)="select(row)">✕</button>
+        </div>
+        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          <dt class="text-muted-foreground">kind</dt>
+          <dd class="text-foreground">{{ row.kind }}</dd>
+          @if (row.op) {
+            <dt class="text-muted-foreground">op</dt>
+            <dd class="font-mono text-foreground">{{ row.op }}</dd>
+          }
+          <dt class="text-muted-foreground">duration</dt>
+          <dd class="font-mono text-foreground">{{ formatDuration(row.durationMs) }}</dd>
+          <dt class="text-muted-foreground">start +</dt>
+          <dd class="font-mono text-foreground">{{ formatDuration(row.startMs) }}</dd>
+          @if (row.status) {
+            <dt class="text-muted-foreground">status</dt>
+            <dd class="text-foreground">{{ row.status }}</dd>
+          }
+          <dt class="text-muted-foreground">project</dt>
+          <dd class="text-foreground">
+            <span class="inline-block size-2 rounded-full align-middle" [style.background-color]="row.color"></span>
+            {{ row.projectId }}
+          </dd>
+          <dt class="text-muted-foreground">span_id</dt>
+          <dd class="break-all font-mono text-foreground">{{ row.spanId }}</dd>
+        </dl>
+
+        @if (row.errors.length > 0) {
+          <div class="mt-4">
+            <h3 class="mb-1 text-xs font-semibold text-foreground">Errors</h3>
+            @for (error of row.errors; track error.id) {
+              <a
+                [routerLink]="['/issues', error.issue_id]"
+                queryParamsHandling="merge"
+                class="mb-1 block rounded border border-border px-2 py-1 text-xs hover:bg-muted/50"
+              >
+                <span [style.color]="'var(--level-error)'">{{ error.exception_type ?? 'Error' }}</span>
+                <span class="text-muted-foreground"> — {{ error.message }}</span>
+              </a>
+            }
+          </div>
+        }
+
+        @if (dataEntries(row).length > 0) {
+          <div class="mt-4">
+            <h3 class="mb-1 text-xs font-semibold text-foreground">Data</h3>
+            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+              @for (entry of dataEntries(row); track entry[0]) {
+                <span class="text-muted-foreground">{{ entry[0] }}</span>
+                <span class="break-all text-foreground">{{ entry[1] }}</span>
+              }
+            </div>
+          </div>
+        }
+      </aside>
+    }
+  </div>
+} @else {
+  <div class="rounded-lg border border-border p-8 text-center text-muted-foreground">
+    No trace data.
+  </div>
+}

@@ -1,0 +1,33 @@
+<div class="flex min-h-screen items-center justify-center bg-background">
+  <form (ngSubmit)="submit()" hlmCard class="w-full max-w-sm p-8">
+    <h1 class="mb-6 flex items-center gap-2 text-xl font-semibold text-foreground">
+      <span class="text-primary">▲</span> Outpost
+    </h1>
+    <label hlmLabel class="mb-1" for="email">Email</label>
+    <input
+      hlmInput
+      id="email"
+      name="email"
+      type="email"
+      required
+      [(ngModel)]="email"
+      class="mb-4"
+    />
+    <label hlmLabel class="mb-1" for="password">Password</label>
+    <input
+      hlmInput
+      id="password"
+      name="password"
+      type="password"
+      required
+      [(ngModel)]="password"
+      class="mb-6"
+    />
+    @if (error()) {
+      <p class="mb-4 text-sm text-destructive">{{ error() }}</p>
+    }
+    <button hlmBtn type="submit" class="w-full" [disabled]="busy()">
+      {{ busy() ? 'Signing in…' : 'Sign in' }}
+    </button>
+  </form>
+</div>
