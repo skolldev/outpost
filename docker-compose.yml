@@ -19,4 +19,42 @@ services:
     environment: { POSTGRES_DB: outpost, POSTGRES_USER: outpost, POSTGRES_PASSWORD: outpost }
     volumes: ["outpost-pg:/var/lib/postgresql/data"]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U outpost"], interval: 5s }
+
+  # ── Demo apps (docker compose --profile demo up -d --build) ────────────────
+  # Sentry-SDK-instrumented shop that sends real errors/logs/traces to Outpost.
+  # Setup: seed projects with demo/scripts/demo-setup.sql, resolve project ids
+  # with demo/scripts/print-dsns.sh --write-env, see demo/README.md.
+  demo-backend:
+    build: { context: demo/backend }
+    image: outpost/demo-backend:latest
+    profiles: ["demo"]
+    ports: ["8081:8081"]
+    environment:
+      # In-network DSN host: ingest never validates the host, only key+project id.
+      DEMO_SENTRY_DSN: http://cccccccccccccccccccccccccccccccc@outpost:8080/${DEMO_BACKEND_PROJECT_ID:-2}
+      DEMO_SENTRY_ENVIRONMENT: ${DEMO_SENTRY_ENVIRONMENT:-dev}
+      DEMO_SENTRY_RELEASE: shop-backend@2.2.0
+      DEMO_SELF_URL: http://demo-backend:8081
+      DEMO_CORS_ORIGINS: http://localhost:4300
+      DEMO_TRAFFIC: ${DEMO_TRAFFIC:-true}
+    depends_on:
+      outpost: { condition: service_started }
+
+  demo-frontend:
+    build: { context: demo/frontend }
+    image: outpost/demo-frontend:latest
+    profiles: ["demo"]
+    ports: ["4300:80"]
+    environment:
+      # Browser-side values → host-published ports, NOT compose service names.
+      DEMO_SENTRY_DSN: http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@localhost:8080/${DEMO_FRONTEND_PROJECT_ID:-1}
+      DEMO_SENTRY_ENVIRONMENT: ${DEMO_SENTRY_ENVIRONMENT:-dev}
+      DEMO_SENTRY_RELEASE: shop-frontend@1.5.0
+      DEMO_API_BASE: http://localhost:8081
+      # Container-side URL for the entrypoint's source map self-upload; set
+      # SENTRY_AUTH_TOKEN (artifacts:write) to enable symbolication.
+      OUTPOST_INTERNAL_URL: http://outpost:8080
+      SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+    depends_on: [outpost, demo-backend]
+
 volumes: { outpost-pg: {} }

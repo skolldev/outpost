@@ -1,0 +1,33 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.0'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'dev.outpost.demo'
+version = '2.2.0'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+ext {
+	sentryVersion = '8.48.0'
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'org.springframework.boot:spring-boot-starter-restclient'
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation "io.sentry:sentry-spring-boot-4-starter:${sentryVersion}"
+	implementation "io.sentry:sentry-logback:${sentryVersion}"
+	implementation "io.sentry:sentry-jdbc:${sentryVersion}"
+	implementation 'p6spy:p6spy:3.9.1'
+	runtimeOnly 'com.h2database:h2'
+}

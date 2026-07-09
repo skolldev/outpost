@@ -18,6 +18,7 @@ Health: `GET /healthz` (liveness), `GET /readyz` (readiness, checks the database
 | ------------ | ----------------------------------------------------------------------------- |
 | `server/`    | Spring Boot 4 / Java 21 backend (Gradle). Ingest API, processing, query API.  |
 | `ui/`        | Angular 22 frontend (pnpm). Packaged into the server jar as static resources. |
+| `demo/`      | Sentry-SDK-instrumented demo shop (Angular 22 + Spring Boot 4) that feeds Outpost real errors/logs/traces — see [`demo/README.md`](demo/README.md). |
 | `Dockerfile` | Multi-stage: UI build → jar build → distroless Java 21 runtime.               |
 
 ## Development

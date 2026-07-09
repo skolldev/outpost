@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!--
+      Explicit Sentry appender (sentry.logging.enabled=false disables the
+      starter's auto-install, so this is the single source of truth):
+      - every DEBUG+ line becomes a breadcrumb on captured events
+      - minimumEventLevel OFF: log lines never create issues themselves; errors
+        are captured by the MVC integration / explicit captureException, so
+        nothing gets double-reported
+      - minimumLevel TRACE: every line ships as a Sentry structured log
+        (the logs feature itself is switched on in SentryConfig)
+    -->
+    <appender name="SENTRY" class="io.sentry.logback.SentryAppender">
+        <minimumBreadcrumbLevel>DEBUG</minimumBreadcrumbLevel>
+        <minimumEventLevel>OFF</minimumEventLevel>
+        <minimumLevel>TRACE</minimumLevel>
+    </appender>
+
+    <logger name="dev.outpost.demo" level="TRACE"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="SENTRY"/>
+    </root>
+</configuration>

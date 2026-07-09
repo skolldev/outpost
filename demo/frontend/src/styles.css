@@ -1,0 +1,165 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f4f5f7;
+  color: #1f2430;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 0.75rem 1.5rem;
+  background: #1f2430;
+  color: #fff;
+}
+
+.topbar h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.topbar nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.topbar a {
+  color: #aeb6c8;
+  text-decoration: none;
+}
+
+.topbar a.active {
+  color: #fff;
+  font-weight: 600;
+}
+
+.user-picker {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-picker .user {
+  font-weight: 600;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+button {
+  border: 1px solid #cdd3e0;
+  background: #fff;
+  border-radius: 6px;
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+button:hover {
+  background: #eef1f7;
+}
+
+button.primary {
+  background: #4056c9;
+  border-color: #4056c9;
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: #fff;
+  border: 1px solid #e1e5ee;
+  border-radius: 10px;
+  padding: 1rem;
+  height: fit-content;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel .subtitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: #6b7387;
+}
+
+.panel .status {
+  font-size: 0.85rem;
+  color: #2e7d32;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e1e5ee;
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.card h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.95rem;
+}
+
+.card .sku,
+.card .stock {
+  color: #6b7387;
+  font-size: 0.8rem;
+  margin: 0.15rem 0;
+}
+
+.price {
+  font-weight: 700;
+  margin: 0.35rem 0;
+}
+
+.checkout-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.checkout-grid section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: #fff;
+  border: 1px solid #e1e5ee;
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.ok {
+  color: #2e7d32;
+}
+
+.error {
+  color: #c62828;
+}
