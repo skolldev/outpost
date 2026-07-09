@@ -104,4 +104,104 @@ describe('IssuesPage', () => {
     expect(await screen.findByText('RangeError: out of bounds')).toBeInTheDocument();
     expect(screen.getByText('TypeError: cannot read x')).toBeInTheDocument();
   });
+
+  it('debounces the search box into a query param', async () => {
+    const seen: (string | null)[] = [];
+    server.use(
+      http.get(`${BASE}/issues`, ({ request }) => {
+        seen.push(new URL(request.url).searchParams.get('query'));
+        return HttpResponse.json(page([ISSUE]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    await user.type(screen.getByPlaceholderText(/search title/i), 'boom');
+
+    await waitFor(() => expect(seen).toContain('boom'));
+    // Debounced: the intermediate keystrokes must not each fire a request.
+    expect(seen.filter((q) => q && q !== 'boom' && 'boom'.startsWith(q))).toHaveLength(0);
+  });
+
+  it('keeps the current rows visible while a reload is in flight', async () => {
+    let resolveSecond: (() => void) | undefined;
+    let call = 0;
+    server.use(
+      http.get(`${BASE}/issues`, async () => {
+        call += 1;
+        if (call >= 2) {
+          await new Promise<void>((resolve) => (resolveSecond = resolve));
+          return HttpResponse.json(page([{ ...ISSUE, id: 9, title: 'Fresh page' }]));
+        }
+        return HttpResponse.json(page([ISSUE]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    // Trigger a reload; its response is held open.
+    await user.click(screen.getByRole('button', { name: 'Resolved' }));
+
+    // No flicker: the previous rows remain on screen during the reload.
+    await waitFor(() => expect(screen.getByLabelText('Loading')).toBeInTheDocument());
+    expect(screen.getByText('TypeError: cannot read x')).toBeInTheDocument();
+
+    resolveSecond?.();
+    expect(await screen.findByText('Fresh page')).toBeInTheDocument();
+  });
+
+  it('resets to page one — dropping any accumulated pages — when the status filter changes', async () => {
+    const next: Issue = { ...ISSUE, id: 2, title: 'RangeError: out of bounds' };
+    const fresh: Issue = { ...ISSUE, id: 3, title: 'Resolved issue' };
+    let call = 0;
+    server.use(
+      http.get(`${BASE}/issues`, ({ request }) => {
+        call += 1;
+        const status = new URL(request.url).searchParams.get('status');
+        if (call === 1) return HttpResponse.json(page([ISSUE], 'cursor-2'));
+        if (status === 'resolved') return HttpResponse.json(page([fresh]));
+        return HttpResponse.json(page([next]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    // Accumulate a second page before switching filters.
+    await user.click(screen.getByRole('button', { name: /load more/i }));
+    await screen.findByText('RangeError: out of bounds');
+
+    await user.click(screen.getByRole('button', { name: 'Resolved' }));
+
+    // The fresh, single-page result replaces the accumulated list rather than appending.
+    expect(await screen.findByText('Resolved issue')).toBeInTheDocument();
+    expect(screen.queryByText('TypeError: cannot read x')).not.toBeInTheDocument();
+    expect(screen.queryByText('RangeError: out of bounds')).not.toBeInTheDocument();
+  });
+
+  it('disables the Load more button while a page is loading', async () => {
+    let resolveSecond: (() => void) | undefined;
+    let call = 0;
+    server.use(
+      http.get(`${BASE}/issues`, async () => {
+        call += 1;
+        if (call === 1) return HttpResponse.json(page([ISSUE], 'cursor-2'));
+        await new Promise<void>((resolve) => (resolveSecond = resolve));
+        return HttpResponse.json(page([{ ...ISSUE, id: 2, title: 'RangeError: out of bounds' }]));
+      }),
+    );
+    await renderIssues();
+    const user = userEvent.setup();
+    await screen.findByText('TypeError: cannot read x');
+
+    const loadMoreButton = screen.getByRole('button', { name: /load more/i });
+    await user.click(loadMoreButton);
+
+    await waitFor(() => expect(loadMoreButton).toBeDisabled());
+
+    resolveSecond?.();
+    await waitFor(() => expect(loadMoreButton).not.toBeDisabled());
+  });
 });
