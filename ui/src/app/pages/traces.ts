@@ -1,13 +1,24 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  debounced,
+  effect,
+  inject,
+  linkedSignal,
+  signal,
+  untracked,
+} from '@angular/core';
+import { httpResource } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Params, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmInput } from '@spartan-ng/helm/input';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmSwitch } from '@spartan-ng/helm/switch';
+import { HlmTableImports } from '@spartan-ng/helm/table';
 import {
   HlmEmpty,
   HlmEmptyHeader,
@@ -16,10 +27,12 @@ import {
 } from '@spartan-ng/helm/empty';
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
-import { Api } from '../core/api';
 import { GlobalFilters } from '../core/filters';
-import { TraceFilters, TraceSummary } from '../core/models';
+import { TracePage, TraceSummary } from '../core/models';
+import { traceParams } from '../core/query-params';
 import { formatDuration, projectColor } from '../shared/ui';
+
+const BASE = '/api/internal';
 
 /** Traces page (§9 page 4): searchable list of distributed traces. */
 @Component({
@@ -32,6 +45,7 @@ import { formatDuration, projectColor } from '../shared/ui';
     HlmInput,
     HlmBadge,
     HlmSwitch,
+    HlmTableImports,
     HlmEmpty,
     HlmEmptyHeader,
     HlmEmptyTitle,
@@ -39,10 +53,10 @@ import { formatDuration, projectColor } from '../shared/ui';
     HlmSpinner,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { class: 'flex min-h-0 flex-1 flex-col' },
   templateUrl: './traces.html',
 })
 export class TracesPage {
-  private readonly api = inject(Api);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   readonly filters = inject(GlobalFilters);
@@ -54,54 +68,68 @@ export class TracesPage {
     initialValue: this.route.snapshot.queryParams,
   });
 
-  // Page-local filters live in the URL (shareable), like the other pages.
-  readonly query = computed<string>(() => this.queryParams()['query'] ?? '');
   readonly hasErrors = computed<boolean>(() => this.queryParams()['has_errors'] === 'true');
-  readonly minDuration = computed<number | undefined>(() => this.num(this.queryParams()['min_duration']));
+  readonly minDuration = computed<number | undefined>(() =>
+    this.num(this.queryParams()['min_duration']),
+  );
 
-  readonly traces = signal<TraceSummary[]>([]);
-  readonly nextCursor = signal<string | null>(null);
-  readonly loading = signal(true);
-  readonly search = signal('');
+  readonly search = signal(this.route.snapshot.queryParams['query'] ?? '');
+  readonly debouncedQuery = debounced(this.search, 300);
 
-  private searchDebounce?: ReturnType<typeof setTimeout>;
-
-  constructor() {
-    this.search.set(this.route.snapshot.queryParams['query'] ?? '');
-    effect(() => {
-      this.queryParams();
-      void this.load();
-    });
-  }
-
-  private currentFilters(): TraceFilters {
-    return {
+  // Request key minus cursor; a change resets the cursor to page one.
+  private readonly filterKey = computed(() =>
+    JSON.stringify({
       project: this.filters.project(),
       environment: this.filters.environments(),
       from: this.filters.from(),
-      query: this.query() || undefined,
+      hasErrors: this.hasErrors(),
+      minDuration: this.minDuration(),
+      query: this.debouncedQuery.value(),
+    }),
+  );
+
+  private readonly cursor = linkedSignal<string, string | undefined>({
+    source: this.filterKey,
+    computation: () => undefined,
+  });
+
+  private readonly page = httpResource<TracePage>(() => ({
+    url: `${BASE}/traces`,
+    params: traceParams({
+      project: this.filters.project(),
+      environment: this.filters.environments(),
+      from: this.filters.from(),
       hasErrors: this.hasErrors() || undefined,
       minDuration: this.minDuration(),
-    };
-  }
+      query: this.debouncedQuery.value() || undefined,
+      cursor: this.cursor(),
+    }),
+  }));
 
-  private async load(cursor?: string): Promise<void> {
-    if (!cursor) this.loading.set(true);
-    const page = await firstValueFrom(this.api.traces({ ...this.currentFilters(), cursor }));
-    this.traces.set(cursor ? [...this.traces(), ...page.traces] : page.traces);
-    this.nextCursor.set(page.next_cursor);
-    this.loading.set(false);
+  readonly traces = signal<TraceSummary[]>([]);
+  readonly loading = this.page.isLoading;
+  readonly nextCursor = computed(() => this.page.value()?.next_cursor ?? null);
+
+  constructor() {
+    effect(() => {
+      const page = this.page.value();
+      if (!page) return;
+      untracked(() =>
+        this.traces.set(this.cursor() ? [...this.traces(), ...page.traces] : page.traces),
+      );
+    });
+    let lastSynced = this.search();
+    effect(() => {
+      const query = this.debouncedQuery.value();
+      if (query === lastSynced) return;
+      lastSynced = query;
+      this.syncUrl({ query: query || null });
+    });
   }
 
   loadMore(): void {
     const cursor = this.nextCursor();
-    if (cursor) void this.load(cursor);
-  }
-
-  onSearch(query: string): void {
-    this.search.set(query);
-    clearTimeout(this.searchDebounce);
-    this.searchDebounce = setTimeout(() => this.syncUrl({ query: query || null }), 300);
+    if (cursor) this.cursor.set(cursor);
   }
 
   toggleErrorsOnly(): void {

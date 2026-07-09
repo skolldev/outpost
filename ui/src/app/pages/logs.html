@@ -17,8 +17,11 @@
     placeholder="Search log body…"
     class="h-8 w-72"
     [ngModel]="search()"
-    (ngModelChange)="onSearch($event)"
+    (ngModelChange)="search.set($event)"
   />
+  @if (loading()) {
+    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
+  }
   @if (traceId()) {
     <button
       hlmBadge
@@ -40,11 +43,7 @@
   </span>
 </div>
 
-@if (loading()) {
-  <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-    <hlm-spinner class="size-4" /> Loading…
-  </div>
-} @else if (logs().length === 0) {
+@if (logs().length === 0 && !loading() && !live()) {
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
       <h3 hlmEmptyTitle>No log records match the current filters.</h3>
@@ -56,38 +55,42 @@
     </div>
   </div>
 } @else {
-  <div class="overflow-x-auto rounded-lg border border-border">
-    <table class="w-full text-sm">
-      <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
-        <tr>
-          <th class="w-44 px-3 py-2 font-medium">Time</th>
-          <th class="w-16 px-3 py-2 font-medium">Level</th>
-          <th class="w-24 px-3 py-2 font-medium">Env</th>
-          <th class="px-3 py-2 font-medium">Body</th>
+  <div hlmTableContainer class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+    <table hlmTable class="w-full text-sm">
+      <thead
+        hlmTHead
+        class="sticky top-0 z-10 bg-muted text-left text-xs text-muted-foreground [&_th]:h-auto [&_th]:px-3 [&_th]:py-2"
+      >
+        <tr hlmTr>
+          <th hlmTh class="w-44">Time</th>
+          <th hlmTh class="w-16">Level</th>
+          <th hlmTh class="w-24">Env</th>
+          <th hlmTh>Body</th>
         </tr>
       </thead>
-      <tbody class="font-mono text-xs">
+      <tbody hlmTBody class="font-mono text-xs">
         @for (record of logs(); track record.id) {
           <tr
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+            hlmTr
+            class="cursor-pointer [&_td]:px-3 [&_td]:py-1.5"
             (click)="toggleExpanded(record.id)"
           >
-            <td class="whitespace-nowrap px-3 py-1.5 text-muted-foreground">
+            <td hlmTd class="text-muted-foreground">
               {{ record.timestamp | date: 'MMM d, HH:mm:ss.SSS' }}
             </td>
-            <td class="px-3 py-1.5">
+            <td hlmTd>
               <app-level-badge [level]="record.level" />
             </td>
-            <td class="px-3 py-1.5">
+            <td hlmTd>
               <span hlmBadge variant="outline">{{ record.environment }}</span>
             </td>
-            <td class="max-w-0 px-3 py-1.5">
+            <td hlmTd class="max-w-0">
               <span class="block truncate text-foreground">{{ record.body }}</span>
             </td>
           </tr>
           @if (expanded().has(record.id)) {
-            <tr class="border-b border-border/60 bg-muted/40 last:border-0">
-              <td colspan="4" class="px-6 py-3">
+            <tr hlmTr class="bg-muted/40">
+              <td hlmTd colspan="4" class="whitespace-normal px-6 py-3">
                 <p class="mb-2 whitespace-pre-wrap break-all text-foreground">
                   {{ record.body }}
                 </p>
@@ -137,14 +140,16 @@
         }
       </tbody>
     </table>
+    @if (live()) {
+      <p class="p-3 text-center text-xs text-muted-foreground">
+        Live tail — newest records appear on top (buffer capped at {{ liveBuffer }}).
+      </p>
+    } @else if (nextCursor()) {
+      <div class="p-4 text-center">
+        <button hlmBtn variant="outline" size="sm" [disabled]="loading()" (click)="loadMore()">
+          Load more
+        </button>
+      </div>
+    }
   </div>
-  @if (live()) {
-    <p class="mt-3 text-center text-xs text-muted-foreground">
-      Live tail — newest records appear on top (buffer capped at {{ liveBuffer }}).
-    </p>
-  } @else if (nextCursor()) {
-    <div class="mt-4 text-center">
-      <button hlmBtn variant="outline" size="sm" (click)="loadMore()">Load more</button>
-    </div>
-  }
 }

@@ -17,19 +17,18 @@
     placeholder="Search title or culprit…"
     class="h-8 w-72"
     [ngModel]="search()"
-    (ngModelChange)="onSearch($event)"
+    (ngModelChange)="search.set($event)"
   />
+  @if (loading()) {
+    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
+  }
   <hlm-native-select size="sm" class="ml-auto" [value]="sort()" (change)="onSortChange($event)">
     <option hlmNativeSelectOption value="last_seen">Sort: last seen</option>
     <option hlmNativeSelectOption value="count">Sort: event count</option>
   </hlm-native-select>
 </div>
 
-@if (loading()) {
-  <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-    <hlm-spinner class="size-4" /> Loading…
-  </div>
-} @else if (issues().length === 0) {
+@if (issues().length === 0 && !loading()) {
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
       <h3 hlmEmptyTitle>No issues match the current filters.</h3>
@@ -39,26 +38,30 @@
     </div>
   </div>
 } @else {
-  <div class="overflow-x-auto rounded-lg border border-border">
-    <table class="w-full text-sm">
-      <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
-        <tr>
-          <th class="px-4 py-2 font-medium">Issue</th>
-          <th class="px-3 py-2 text-right font-medium">Events</th>
-          <th class="px-3 py-2 text-right font-medium">Users</th>
-          <th class="px-3 py-2 font-medium">Envs</th>
-          <th class="px-3 py-2 font-medium">Age</th>
-          <th class="px-3 py-2 font-medium">Last 14d</th>
+  <div hlmTableContainer class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+    <table hlmTable class="w-full text-sm">
+      <thead
+        hlmTHead
+        class="sticky top-0 z-10 bg-muted text-left text-xs text-muted-foreground [&_th]:h-auto [&_th]:px-3 [&_th]:py-2"
+      >
+        <tr hlmTr>
+          <th hlmTh class="px-4">Issue</th>
+          <th hlmTh class="text-right">Events</th>
+          <th hlmTh class="text-right">Users</th>
+          <th hlmTh>Envs</th>
+          <th hlmTh>Age</th>
+          <th hlmTh>Last 14d</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody hlmTBody>
         @for (issue of issues(); track issue.id) {
           <tr
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+            hlmTr
+            class="cursor-pointer [&_td]:px-3 [&_td]:py-2.5"
             [routerLink]="['/issues', issue.id]"
             queryParamsHandling="merge"
           >
-            <td class="max-w-xl px-4 py-2.5">
+            <td hlmTd class="max-w-xl px-4 whitespace-normal">
               <div class="flex items-center gap-2">
                 <app-level-badge [level]="issue.level" />
                 <span class="truncate font-medium text-foreground">{{ issue.title }}</span>
@@ -77,30 +80,32 @@
                 <div class="mt-0.5 truncate text-xs text-muted-foreground">{{ issue.culprit }}</div>
               }
             </td>
-            <td class="px-3 py-2.5 text-right tabular-nums">{{ issue.event_count }}</td>
-            <td class="px-3 py-2.5 text-right tabular-nums">{{ issue.users_affected }}</td>
-            <td class="px-3 py-2.5">
+            <td hlmTd class="text-right tabular-nums">{{ issue.event_count }}</td>
+            <td hlmTd class="text-right tabular-nums">{{ issue.users_affected }}</td>
+            <td hlmTd>
               <div class="flex flex-wrap gap-1">
                 @for (env of issue.environments; track env) {
                   <span hlmBadge variant="outline">{{ env }}</span>
                 }
               </div>
             </td>
-            <td class="whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground">
+            <td hlmTd class="text-xs text-muted-foreground">
               <div>{{ timeAgo(issue.last_seen) }}</div>
               <div class="text-muted-foreground/70">first {{ timeAgo(issue.first_seen) }}</div>
             </td>
-            <td class="px-3 py-2.5">
+            <td hlmTd>
               <app-sparkline [data]="issue.sparkline ?? []" />
             </td>
           </tr>
         }
       </tbody>
     </table>
+    @if (nextCursor()) {
+      <div class="p-4 text-center">
+        <button hlmBtn variant="outline" size="sm" [disabled]="loading()" (click)="loadMore()">
+          Load more
+        </button>
+      </div>
+    }
   </div>
-  @if (nextCursor()) {
-    <div class="mt-4 text-center">
-      <button hlmBtn variant="outline" size="sm" (click)="loadMore()">Load more</button>
-    </div>
-  }
 }
