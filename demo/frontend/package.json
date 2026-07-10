@@ -1,0 +1,32 @@
+{
+  "name": "shop-frontend",
+  "version": "1.5.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "start": "ng serve --port 4300",
+    "build": "ng build",
+    "sourcemaps:upload": "bash scripts/upload-sourcemaps.sh",
+    "demo:prod": "ng build && bash scripts/upload-sourcemaps.sh && serve -s dist/shop-frontend/browser -l 4300"
+  },
+  "dependencies": {
+    "@angular/common": "22.0.5",
+    "@angular/compiler": "22.0.5",
+    "@angular/core": "22.0.5",
+    "@angular/forms": "22.0.5",
+    "@angular/platform-browser": "22.0.5",
+    "@angular/router": "22.0.5",
+    "@sentry/angular": "^10.64.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.8.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "22.0.5",
+    "@angular/cli": "22.0.5",
+    "@angular/compiler-cli": "22.0.5",
+    "@sentry/cli": "^2.43.0",
+    "serve": "^14.2.0",
+    "typescript": "6.0.3"
+  }
+}

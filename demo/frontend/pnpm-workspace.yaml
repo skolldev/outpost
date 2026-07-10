@@ -1,0 +1,14 @@
+# Marks demo/frontend as its own pnpm root so it never entangles with ui/'s workspace.
+packages: []
+
+# esbuild powers the Angular build; @sentry/cli downloads its binary in postinstall.
+allowBuilds:
+  '@parcel/watcher': true
+  '@sentry/cli': true
+  esbuild: true
+  lmdb: true
+  msgpackr-extract: true
+
+# Demo app: don't reject freshly published transitive deps (pnpm 11's default
+# 24h supply-chain quarantine breaks reproducible docker builds of this demo).
+minimumReleaseAge: 0

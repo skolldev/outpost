@@ -1,0 +1,6 @@
+{
+  "sentryDsn": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@localhost:8080/1",
+  "environment": "dev",
+  "release": "shop-frontend@1.5.0",
+  "apiBase": "http://localhost:8081"
+}

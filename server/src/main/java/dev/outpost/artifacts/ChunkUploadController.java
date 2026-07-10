@@ -1,6 +1,5 @@
 package dev.outpost.artifacts;
 
-import dev.outpost.config.OutpostProperties;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
@@ -33,29 +32,40 @@ public class ChunkUploadController {
 	static final int MAX_REQUEST_SIZE = 32 * 1024 * 1024;
 
 	private final ArtifactBundleService artifacts;
-	private final OutpostProperties properties;
 
-	public ChunkUploadController(ArtifactBundleService artifacts, OutpostProperties properties) {
+	public ChunkUploadController(ArtifactBundleService artifacts) {
 		this.artifacts = artifacts;
-		this.properties = properties;
 	}
 
 	/**
 	 * Capability discovery. {@code accept: ["artifact_bundles"]} steers the CLI
 	 * to the debug-ID flow; camelCase keys are part of the wire contract, hence
 	 * the explicit map (the app default is snake_case).
+	 *
+	 * {@code release_files} must be advertised too, even though we never assemble
+	 * release files: sentry-cli's {@code FileUpload::upload} only takes the
+	 * chunked path at all when the server accepts release_files, and only then
+	 * selects the artifact-bundle assemble endpoint via artifact_bundles. Without
+	 * it the CLI falls back to its legacy upload and aborts with "a release is
+	 * required for this upload" (observed with sentry-cli 2.58.6).
+	 *
+	 * {@code url} is a bare path on purpose: sentry-cli resolves paths against
+	 * its {@code --url} base and attaches auth. An absolute URL built from
+	 * OUTPOST_PUBLIC_URL breaks any uploader whose network view differs from the
+	 * public URL (e.g. a container that reaches Outpost as http://outpost:8080
+	 * while the public URL says http://localhost:8080).
 	 */
 	@GetMapping("/api/0/organizations/{org}/chunk-upload/")
 	public Map<String, Object> capabilities(@PathVariable String org) {
 		Map<String, Object> response = new LinkedHashMap<>();
-		response.put("url", properties.publicUrl() + "/api/0/organizations/" + org + "/chunk-upload/");
+		response.put("url", "/api/0/organizations/" + org + "/chunk-upload/");
 		response.put("chunkSize", CHUNK_SIZE);
 		response.put("chunksPerRequest", 64);
 		response.put("maxFileSize", MAX_REQUEST_SIZE);
 		response.put("maxRequestSize", MAX_REQUEST_SIZE);
 		response.put("concurrency", 4);
 		response.put("hashAlgorithm", "sha1");
-		response.put("accept", List.of("artifact_bundles"));
+		response.put("accept", List.of("artifact_bundles", "release_files"));
 		response.put("compression", List.of("gzip"));
 		return response;
 	}

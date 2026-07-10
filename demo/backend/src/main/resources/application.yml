@@ -1,0 +1,38 @@
+server:
+  port: ${DEMO_BACKEND_PORT:8081}
+
+spring:
+  application:
+    name: shop-backend
+  datasource:
+    # p6spy wraps H2 so sentry-jdbc's listener can emit a db.query span per statement.
+    url: jdbc:p6spy:h2:mem:shop;DB_CLOSE_DELAY=-1
+    driver-class-name: com.p6spy.engine.spy.P6SpyDriver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create
+    properties:
+      hibernate:
+        # The p6spy URL defeats Hibernate's dialect autodetection.
+        dialect: org.hibernate.dialect.H2Dialect
+
+sentry:
+  dsn: ${DEMO_SENTRY_DSN:http://cccccccccccccccccccccccccccccccc@localhost:8080/2}
+  environment: ${DEMO_SENTRY_ENVIRONMENT:dev}
+  release: ${DEMO_SENTRY_RELEASE:shop-backend@2.2.0}
+  traces-sample-rate: 1.0
+  send-default-pii: true
+  attach-stacktrace: true
+  in-app-includes: dev.outpost.demo
+  # Breadcrumb/event thresholds for the auto-installed logback appender are set
+  # in logback-spring.xml instead; logs + session tracking in SentryConfig.
+  logging:
+    enabled: false
+
+demo:
+  traffic:
+    enabled: ${DEMO_TRAFFIC:true}
+  self-url: ${DEMO_SELF_URL:http://localhost:8081}
+  cors-origins: ${DEMO_CORS_ORIGINS:http://localhost:4300}
