@@ -30,7 +30,7 @@
     "embla-carousel-angular": "22.0.0",
     "ngx-scrollbar": "19.1.5",
     "rxjs": "7.8.2",
-    "tailwind-merge": "3.5.0",
+    "tailwind-merge": "3.6.0",
     "tslib": "2.8.1"
   },
   "devDependencies": {
