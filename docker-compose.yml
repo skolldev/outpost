@@ -1,18 +1,28 @@
-# docker-compose.yml — the whole product (spec §11.1)
+# docker-compose.yml — the whole product (spec §11.1): API server + nginx UI + Postgres.
+# App entry: http://localhost:8088/outpost/
 services:
-  outpost:
-    build: .
-    image: outpost/outpost:latest
-    ports: ["8080:8080"]
+  outpost: # API server (name kept: demo services reference outpost:8080)
+    build: server
+    image: outpost/outpost-server:latest
+    ports: ["8080:8080"] # still published: local `ng serve` proxy + demo DSNs hit it directly
     environment:
       OUTPOST_DB_URL: jdbc:postgresql://db:5432/outpost
       OUTPOST_DB_USER: outpost
       OUTPOST_DB_PASSWORD: outpost
-      OUTPOST_PUBLIC_URL: http://localhost:8080 # DSN host shown in UI
+      OUTPOST_PUBLIC_URL: http://localhost:8088/outpost # DSN base shown in UI; path is kept, ingest flows through the UI nginx
       OUTPOST_ADMIN_EMAIL: admin@local
       OUTPOST_ADMIN_PASSWORD: change-me
     depends_on:
       db: { condition: service_healthy }
+
+  ui:
+    build: ui
+    image: outpost/outpost-ui:latest
+    ports: ["8088:80"]
+    environment:
+      OUTPOST_API_URL: http://outpost:8080 # upstream for /outpost/api/
+    depends_on: [outpost]
+    healthcheck: { test: ["CMD", "curl", "-f", "http://localhost/nginx-healthz"], interval: 10s }
   db:
     image: postgres:17-alpine
     ports: ["5432:5432"] # published for local backend development (./gradlew bootRun)

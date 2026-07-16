@@ -27,12 +27,13 @@ import {
 } from '@spartan-ng/helm/empty';
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
+import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
 import { TracePage, TraceSummary } from '../core/models';
 import { traceParams } from '../core/query-params';
 import { formatDuration, projectColor } from '../shared/ui';
 
-const BASE = '/api/internal';
+const BASE = API_BASE;
 
 /** Traces page (§9 page 4): searchable list of distributed traces. */
 @Component({

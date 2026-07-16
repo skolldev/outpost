@@ -29,12 +29,13 @@ import {
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
 import { Api } from '../core/api';
+import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
 import { LogFilters, LogPage, LogRecord } from '../core/models';
 import { logParams } from '../core/query-params';
 import { LevelBadge } from '../shared/level-badge';
 
-const BASE = '/api/internal';
+const BASE = API_BASE;
 const LIVE_BUFFER = 500;
 
 /** Logs page (§9 page 3): Kibana-lite filterable stream with SSE live tail. */

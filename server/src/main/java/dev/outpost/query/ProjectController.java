@@ -160,10 +160,16 @@ public class ProjectController {
 				rs.getTimestamp("created_at").toInstant(), dsn(publicKey, projectId));
 	}
 
-	/** DSN per §4.1: {@code scheme://<public_key>@<host>/<project_id>}. */
+	/**
+	 * DSN per §4.1: {@code scheme://<public_key>@<host>[/<path>]/<project_id>}. A path in
+	 * {@code outpost.public-url} (e.g. {@code https://host/outpost}) is kept so SDKs post to
+	 * {@code <path>/api/<project_id>/envelope/} — required when the app is served under a
+	 * path prefix behind a reverse proxy.
+	 */
 	private String dsn(String publicKey, long projectId) {
 		URI base = URI.create(properties.publicUrl());
 		String authority = base.getPort() > 0 ? base.getHost() + ":" + base.getPort() : base.getHost();
-		return base.getScheme() + "://" + publicKey + "@" + authority + "/" + projectId;
+		String path = base.getPath() == null ? "" : base.getPath().replaceAll("/+$", "");
+		return base.getScheme() + "://" + publicKey + "@" + authority + path + "/" + projectId;
 	}
 }

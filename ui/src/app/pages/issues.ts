@@ -27,6 +27,7 @@ import {
 } from '@spartan-ng/helm/empty';
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
+import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
 import { Issue, IssuePage } from '../core/models';
 import { issueParams } from '../core/query-params';
@@ -34,7 +35,7 @@ import { Sparkline } from '../shared/sparkline';
 import { LevelBadge } from '../shared/level-badge';
 import { timeAgo } from '../shared/ui';
 
-const BASE = '/api/internal';
+const BASE = API_BASE;
 
 /** Issues list (§9 page 1): the home page. */
 @Component({

@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  # Swap for the team registry (e.g. registry.example.com/outpost/outpost) when available.
-  IMAGE: ghcr.io/${{ github.repository_owner }}/outpost
-
 jobs:
   ui:
     runs-on: ubuntu-latest
@@ -60,6 +56,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        component: [server, ui]
     steps:
       - uses: actions/checkout@v7
 
@@ -72,12 +71,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Swap ghcr.io/<owner> for the team registry when available.
       - uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ matrix.component }}
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ghcr.io/${{ github.repository_owner }}/outpost-${{ matrix.component }}:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/outpost-${{ matrix.component }}:latest
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
