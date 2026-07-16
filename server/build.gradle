@@ -40,11 +40,3 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 }
-
-// Package the Angular build output (if present) into the jar as static resources.
-// Build it first with: cd ../ui && pnpm build
-tasks.named('processResources') {
-	from('../ui/dist/outpost-ui/browser') {
-		into 'static'
-	}
-}

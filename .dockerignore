@@ -1,8 +1,0 @@
-.git
-**/node_modules
-ui/dist
-ui/.angular
-server/build
-server/.gradle
-docker-compose.yml
-*.md

@@ -2,6 +2,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
+import { API_BASE } from './api-base';
 import {
   ApiToken,
   AppUser,
@@ -31,7 +32,7 @@ function httpParams(params: QueryParams): HttpParams {
 @Injectable({ providedIn: 'root' })
 export class Api {
   private readonly http = inject(HttpClient);
-  private readonly base = '/api/internal';
+  private readonly base = API_BASE;
 
   login(email: string, password: string): Observable<SessionUser> {
     return this.http.post<SessionUser>(`${this.base}/auth/login`, { email, password });
