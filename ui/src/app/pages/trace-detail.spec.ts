@@ -5,10 +5,27 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
-import { TraceDetail } from '../core/models';
+import { Project, TraceDetail } from '../core/models';
 import { TraceDetailPage } from './trace-detail';
 
 const BASE = '*/api/internal';
+
+const PROJECTS: Project[] = [
+  {
+    id: 1,
+    slug: 'shop-frontend',
+    name: 'shop-frontend',
+    platform: 'javascript',
+    created_at: '2026-06-01T00:00:00Z',
+  },
+  {
+    id: 2,
+    slug: 'shop-backend',
+    name: 'shop-backend',
+    platform: 'java',
+    created_at: '2026-06-01T00:00:00Z',
+  },
+];
 
 // A cross-service trace: browser pageload (project 1) with a fetch span whose
 // child is the backend request transaction (project 2), which has a JDBC span.
@@ -116,6 +133,7 @@ async function renderTrace(trace: TraceDetail | 'notfound' = TRACE) {
     http.get(`${BASE}/traces/:id`, () =>
       trace === 'notfound' ? new HttpResponse(null, { status: 404 }) : HttpResponse.json(trace),
     ),
+    http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)),
   );
   return render(TraceDetailPage, {
     providers: [provideHttpClient(), provideRouter([])],
@@ -133,6 +151,13 @@ describe('TraceDetailPage', () => {
     expect(screen.getAllByText('GET /api/checkout')).toHaveLength(2);
     // The 'txn' badge marks transaction rows — two services.
     expect(screen.getAllByText('txn')).toHaveLength(2);
+  });
+
+  it('shows a legend with the project names', async () => {
+    await renderTrace();
+
+    expect(await screen.findByText('shop-frontend')).toBeInTheDocument();
+    expect(await screen.findByText('shop-backend')).toBeInTheDocument();
   });
 
   it('shows the error count for the trace', async () => {
@@ -157,6 +182,9 @@ describe('TraceDetailPage', () => {
     // The side panel surfaces the pinned error linking to its issue.
     const issueLink = await screen.findByRole('link', { name: /IllegalStateException/ });
     expect(issueLink).toHaveAttribute('href', expect.stringContaining('/issues/7'));
+    // The panel shows the project name, not the raw id.
+    const aside = screen.getByRole('complementary');
+    expect(within(aside).getByText('shop-backend')).toBeInTheDocument();
   });
 
   it('hides resource.* spans by default and reveals them via the toggle', async () => {

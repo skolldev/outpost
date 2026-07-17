@@ -14,7 +14,7 @@ import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-
 
 import { Api } from '../core/api';
 import { GlobalFilters } from '../core/filters';
-import { Project } from '../core/models';
+import { ProjectsStore } from '../core/projects';
 import { Session } from '../core/session';
 import { NgIconComponent, provideIcons } from '@ng-icons/core';
 import { lucideTowerControl } from '@ng-icons/lucide';
@@ -44,15 +44,14 @@ export class Shell {
   private readonly api = inject(Api);
   readonly session = inject(Session);
   readonly filters = inject(GlobalFilters);
+  readonly projectsStore = inject(ProjectsStore);
 
-  readonly projects = signal<Project[]>([]);
   readonly environments = signal<string[]>([]);
 
   /** Project id as a string for the native-select value binding ('' = all). */
   readonly projectValue = computed(() => this.filters.project()?.toString() ?? '');
 
   constructor() {
-    void firstValueFrom(this.api.projects()).then((projects) => this.projects.set(projects));
     effect(() => {
       const project = this.filters.project();
       if (project == null) {
