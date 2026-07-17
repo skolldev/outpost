@@ -17,6 +17,8 @@ import { HlmPopoverImports } from '@spartan-ng/helm/popover';
 
 import { Api } from '../core/api';
 import { TraceDetail, TraceError, TraceSpan, TraceTransaction } from '../core/models';
+import { ProjectsStore } from '../core/projects';
+import { ProjectLegend } from '../shared/project-legend';
 import { formatDuration, projectColor } from '../shared/ui';
 
 /** A node in the waterfall — a transaction (service root) or one of its spans. */
@@ -59,12 +61,22 @@ interface LogMarker {
  */
 @Component({
   selector: 'app-trace-detail',
-  imports: [RouterLink, HlmButton, HlmBadge, HlmSpinner, HlmSwitch, HlmPopoverImports],
+  imports: [
+    RouterLink,
+    HlmButton,
+    HlmBadge,
+    HlmSpinner,
+    HlmSwitch,
+    HlmPopoverImports,
+    ProjectLegend,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { class: 'flex min-h-0 flex-1 flex-col' },
   templateUrl: './trace-detail.html',
 })
 export class TraceDetailPage {
   private readonly api = inject(Api);
+  readonly projects = inject(ProjectsStore);
 
   readonly traceId = input.required<string>();
 
@@ -259,11 +271,11 @@ export class TraceDetailPage {
     return rows;
   });
 
-  /** Distinct projects in this trace, for the color legend. */
-  readonly projects = computed(() => {
+  /** Distinct project ids in this trace, for the color legend. */
+  readonly projectIds = computed(() => {
     const ids = new Set<number>();
     for (const row of this.rows()) ids.add(row.projectId);
-    return [...ids].map((id) => ({ id, color: projectColor(id) }));
+    return [...ids];
   });
 
   readonly logMarkers = computed<LogMarker[]>(() => {

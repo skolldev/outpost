@@ -18,6 +18,9 @@
     />
     With errors only
   </span>
+  @if (projectIds().length > 0) {
+    <app-project-legend class="ml-auto" [projectIds]="projectIds()" />
+  }
 </div>
 
 @if (traces().length === 0 && !loading()) {
@@ -60,7 +63,7 @@
                 <span
                   class="inline-block size-2.5 shrink-0 rounded-full"
                   [style.background-color]="projectColor(trace.project_id)"
-                  [title]="'project ' + trace.project_id"
+                  [title]="projects.name(trace.project_id)"
                 ></span>
                 <span class="truncate font-medium text-foreground">{{ trace.name }}</span>
                 <span hlmBadge variant="outline">{{ trace.environment }}</span>

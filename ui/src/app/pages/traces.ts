@@ -30,7 +30,9 @@ import { HlmSpinner } from '@spartan-ng/helm/spinner';
 import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
 import { TracePage, TraceSummary } from '../core/models';
+import { ProjectsStore } from '../core/projects';
 import { traceParams } from '../core/query-params';
+import { ProjectLegend } from '../shared/project-legend';
 import { formatDuration, projectColor } from '../shared/ui';
 
 const BASE = API_BASE;
@@ -52,6 +54,7 @@ const BASE = API_BASE;
     HlmEmptyTitle,
     HlmEmptyDescription,
     HlmSpinner,
+    ProjectLegend,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex min-h-0 flex-1 flex-col' },
@@ -61,6 +64,7 @@ export class TracesPage {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   readonly filters = inject(GlobalFilters);
+  readonly projects = inject(ProjectsStore);
 
   readonly formatDuration = formatDuration;
   readonly projectColor = projectColor;
@@ -110,6 +114,9 @@ export class TracesPage {
   readonly traces = signal<TraceSummary[]>([]);
   readonly loading = this.page.isLoading;
   readonly nextCursor = computed(() => this.page.value()?.next_cursor ?? null);
+
+  /** Distinct project ids in the loaded traces, for the color legend. */
+  readonly projectIds = computed(() => [...new Set(this.traces().map((t) => t.project_id))]);
 
   constructor() {
     effect(() => {

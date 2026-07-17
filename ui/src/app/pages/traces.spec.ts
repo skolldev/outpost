@@ -7,10 +7,20 @@ import { http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
 import { GlobalFilters } from '../core/filters';
-import { TracePage, TraceSummary } from '../core/models';
+import { Project, TracePage, TraceSummary } from '../core/models';
 import { TracesPage } from './traces';
 
 const BASE = '*/api/internal';
+
+const PROJECTS: Project[] = [
+  {
+    id: 1,
+    slug: 'shop-frontend',
+    name: 'shop-frontend',
+    platform: 'javascript',
+    created_at: '2026-06-01T00:00:00Z',
+  },
+];
 
 const TRACE: TraceSummary = {
   id: 'txn-1',
@@ -41,6 +51,7 @@ function fakeFilters(): GlobalFilters {
 }
 
 async function renderTraces() {
+  server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)));
   return render(TracesPage, {
     providers: [
       provideHttpClient(),
@@ -58,6 +69,14 @@ describe('TracesPage', () => {
     expect(await screen.findByText('/checkout')).toBeInTheDocument();
     // Error count badge is shown.
     expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('shows a legend with the project names', async () => {
+    server.use(http.get(`${BASE}/traces`, () => HttpResponse.json(page([TRACE]))));
+    await renderTraces();
+
+    await screen.findByText('/checkout');
+    expect(await screen.findByText('shop-frontend')).toBeInTheDocument();
   });
 
   it('shows the empty state when no traces match', async () => {
