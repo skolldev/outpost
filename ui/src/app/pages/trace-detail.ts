@@ -12,6 +12,7 @@ import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
+import { HlmSwitch } from '@spartan-ng/helm/switch';
 import { HlmPopoverImports } from '@spartan-ng/helm/popover';
 
 import { Api } from '../core/api';
@@ -58,7 +59,7 @@ interface LogMarker {
  */
 @Component({
   selector: 'app-trace-detail',
-  imports: [RouterLink, HlmButton, HlmBadge, HlmSpinner, HlmPopoverImports],
+  imports: [RouterLink, HlmButton, HlmBadge, HlmSpinner, HlmSwitch, HlmPopoverImports],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './trace-detail.html',
 })
@@ -75,6 +76,13 @@ export class TraceDetailPage {
   readonly notFound = signal(false);
   readonly selected = signal<WaterfallRow | null>(null);
   readonly showLogs = signal(true);
+  // Browser SDKs attach a span per resource load (op resource.script, …) to the
+  // pageload transaction; they drown the waterfall, so they're hidden by default.
+  readonly showResources = signal(false);
+
+  readonly resourceSpanCount = computed(
+    () => this.trace()?.spans.filter((span) => isResourceOp(span.op)).length ?? 0,
+  );
 
   constructor() {
     effect(() => {
@@ -179,6 +187,7 @@ export class TraceDetailPage {
       nodes.push(node);
     }
     for (const span of t.spans) {
+      if (!this.showResources() && isResourceOp(span.op)) continue;
       // A span_id collision with a transaction's root span shouldn't happen, but
       // if it does, keep the transaction as the canonical node.
       if (byId.has(span.span_id)) continue;
@@ -286,6 +295,15 @@ export class TraceDetailPage {
     this.showLogs.set(!this.showLogs());
   }
 
+  toggleResources(): void {
+    this.showResources.set(!this.showResources());
+    // Don't leave the side panel showing a row that just left the waterfall.
+    const selected = this.selected();
+    if (!this.showResources() && selected && isResourceOp(selected.op)) {
+      this.selected.set(null);
+    }
+  }
+
   levelColor(level: string): string {
     switch (level) {
       case 'fatal':
@@ -343,4 +361,8 @@ const HIDDEN_DATA_KEYS = new Set<string>([
 
 function ms(iso: string): number {
   return new Date(iso).getTime();
+}
+
+function isResourceOp(op: string | null): boolean {
+  return op?.startsWith('resource.') ?? false;
 }

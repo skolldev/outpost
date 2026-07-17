@@ -159,6 +159,37 @@ describe('TraceDetailPage', () => {
     expect(issueLink).toHaveAttribute('href', expect.stringContaining('/issues/7'));
   });
 
+  it('hides resource.* spans by default and reveals them via the toggle', async () => {
+    const trace: TraceDetail = {
+      ...TRACE,
+      spans: [
+        ...TRACE.spans,
+        {
+          ...TRACE.spans[0],
+          id: 'span-res',
+          span_id: 'fe-res',
+          parent_span_id: 'fe-root',
+          op: 'resource.script',
+          description: '/assets/main.js',
+          start_ts: '2026-07-01T00:00:00.010Z',
+          end_ts: '2026-07-01T00:00:00.040Z',
+          duration_ms: 30,
+        },
+      ],
+    };
+    await renderTrace(trace);
+    const user = userEvent.setup();
+
+    // Non-resource spans render; the resource span is filtered out by default.
+    await screen.findByText('SELECT * FROM orders');
+    expect(screen.queryByText('/assets/main.js')).not.toBeInTheDocument();
+    expect(screen.getByText('Hide resource spans (1)')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('switch', { name: /resource/i }));
+
+    expect(await screen.findByText('/assets/main.js')).toBeInTheDocument();
+  });
+
   it('shows a not-found state when the trace is unknown', async () => {
     await renderTrace('notfound');
 
