@@ -62,6 +62,16 @@
         project {{ project.id }}
       </span>
     }
+    @if (resourceSpanCount() > 0) {
+      <span class="ml-auto flex items-center gap-2">
+        <hlm-switch
+          [checked]="!showResources()"
+          (checkedChange)="toggleResources()"
+          aria-label="Hide resource spans"
+        />
+        Hide resource spans ({{ resourceSpanCount() }})
+      </span>
+    }
   </div>
 
   <div class="flex gap-4">
