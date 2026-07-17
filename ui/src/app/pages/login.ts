@@ -5,13 +5,16 @@ import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmInput } from '@spartan-ng/helm/input';
 import { HlmLabel } from '@spartan-ng/helm/label';
 import { HlmCard } from '@spartan-ng/helm/card';
+import { NgIconComponent, provideIcons } from '@ng-icons/core';
 
 import { Session } from '../core/session';
+import { lucideTowerControl } from '@ng-icons/lucide';
 
 @Component({
   selector: 'app-login',
-  imports: [FormsModule, HlmButton, HlmInput, HlmLabel, HlmCard],
+  imports: [FormsModule, HlmButton, HlmInput, HlmLabel, HlmCard, NgIconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  providers: [provideIcons({ lucideTowerControl })],
   templateUrl: './login.html',
 })
 export class LoginPage {
