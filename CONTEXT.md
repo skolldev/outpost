@@ -124,6 +124,16 @@ _Avoid_: Probe, incident
 A suspected service disruption associated with one Uptime Monitor, recognized after three consecutive failed Uptime Checks.
 _Avoid_: Issue, outage
 
+### Notifications
+
+**Notification Channel**:
+An Admin-configured destination that tells Outpost where and when to announce trigger occurrences, combining a delivery type, a destination URL, the triggers it fires on, and the Projects it covers.
+_Avoid_: Alert, alert rule, webhook
+
+**Notification**:
+One message sent to one Notification Channel about one trigger occurrence, such as a new Issue or an Incident starting or resolving.
+_Avoid_: Alert, webhook call
+
 ### Source Reconstruction
 
 **Artifact Bundle**:
