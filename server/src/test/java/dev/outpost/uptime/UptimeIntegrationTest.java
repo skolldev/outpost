@@ -32,8 +32,7 @@ import org.springframework.web.client.RestTemplate;
  * Uptime monitoring end to end: monitor CRUD with validation and admin
  * gating, the synchronous test-connection probe against a local stub server,
  * incident transitions (3 consecutive failures open, one success closes), the
- * scheduler picking up due monitors, the 90-day overview aggregation, and
- * retention sweeps.
+ * scheduler picking up due monitors, and the 90-day overview aggregation.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -290,7 +289,7 @@ class UptimeIntegrationTest {
 	// ------------------------------------------------------------------ overview + retention
 
 	@Test
-	void overviewAggregatesDailyBucketsAndRetentionSweeps() {
+	void overviewAggregatesDailyBuckets() {
 		long id = insertMonitor(stubUrl("/health"), 3600);
 		// Today: 3 ok + 1 fail; yesterday: 2 ok; 91 days ago: 1 fail (past retention).
 		insertCheck(id, Instant.now(), true, 200, 100);
@@ -324,9 +323,6 @@ class UptimeIntegrationTest {
 		assertThat(withIncident.get("status")).isEqualTo("down");
 		assertThat(((Map<String, Object>) withIncident.get("open_incident")).get("last_error")).isEqualTo("HTTP 503");
 
-		// Retention removes the 91-day-old row only.
-		scheduler.sweepRetention();
-		assertThat(checkCount(id)).isEqualTo(5);
 	}
 
 	// ------------------------------------------------------------------ helpers

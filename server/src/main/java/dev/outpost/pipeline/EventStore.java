@@ -47,13 +47,15 @@ public class EventStore {
 	private final TransactionTemplate transaction;
 	private final PartitionManager partitions;
 	private final ObjectMapper mapper;
+	private final EventIssueLock eventIssueLock;
 
 	public EventStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			ObjectMapper mapper) {
+			ObjectMapper mapper, EventIssueLock eventIssueLock) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
+		this.eventIssueLock = eventIssueLock;
 	}
 
 	/**
@@ -85,6 +87,7 @@ public class EventStore {
 	}
 
 	private void storeAll(List<ProcessedEvent> batch) {
+		eventIssueLock.acquire();
 		for (ProcessedEvent event : batch) {
 			jdbc.update("""
 					INSERT INTO environment (project_id, name) VALUES (?, ?)

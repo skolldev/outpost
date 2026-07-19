@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { render, screen, waitFor, within } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
 import { ApiToken, AppUser, Project, ProjectKey, SessionUser, UptimeMonitor } from '../core/models';
@@ -72,6 +72,9 @@ function seedHandlers() {
     http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
     http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([MONITOR])),
     http.get(`${BASE}/projects/:id/environments`, () => HttpResponse.json(['prod', 'dev'])),
+    http.get(`${BASE}/settings/data-retention`, () =>
+      HttpResponse.json({ enabled: false, retention_days: 90 }),
+    ),
   );
 }
 
@@ -94,17 +97,18 @@ async function renderSettings(role: 'admin' | 'member' = 'admin') {
 
 describe('SettingsPage', () => {
   describe('tabs & role gating', () => {
-    it('shows all four tabs for an admin', async () => {
+    it('shows all admin tabs for an admin', async () => {
       seedHandlers();
       await renderSettings('admin');
 
       expect(screen.getByRole('button', { name: 'projects' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'uptime' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Data retention' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'tokens' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
     });
 
-    it('hides the tokens and uptime tabs for a member', async () => {
+    it('hides the admin-only tabs for a member', async () => {
       seedHandlers();
       await renderSettings('member');
 
@@ -112,6 +116,7 @@ describe('SettingsPage', () => {
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'tokens' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'uptime' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Data retention' })).not.toBeInTheDocument();
     });
 
     it('hides the create-project form from members', async () => {
@@ -136,6 +141,9 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/users`, () => HttpResponse.json([])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/settings/data-retention`, () =>
+          HttpResponse.json({ enabled: false, retention_days: 90 }),
+        ),
       );
       await renderSettings('admin');
 
@@ -157,6 +165,9 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/settings/data-retention`, () =>
+          HttpResponse.json({ enabled: false, retention_days: 90 }),
+        ),
       );
       await renderSettings('admin');
       const user = userEvent.setup();
@@ -190,6 +201,125 @@ describe('SettingsPage', () => {
       expect(await screen.findByText('DSN keys')).toBeInTheDocument();
       expect(screen.getByText(KEY.dsn)).toBeInTheDocument();
       expect(screen.getByText('SDK setup')).toBeInTheDocument();
+    });
+  });
+
+  describe('data retention tab', () => {
+    it('loads and hydrates the saved setting for admins', async () => {
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/settings/data-retention`, () =>
+          HttpResponse.json({ enabled: true, retention_days: 60 }),
+        ),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'Data retention' }));
+
+      await waitFor(() =>
+        expect(screen.getByLabelText('Automatically delete old data')).toBeChecked(),
+      );
+      expect(nativeSelect('retentionDays')).toHaveValue('60');
+      expect(screen.getByText(/next daily cleanup run at 02:00 UTC/i)).toBeInTheDocument();
+      expect(screen.getByText('Permanent deletion')).toBeInTheDocument();
+    });
+
+    it('defaults to unchecked and enables the duration only when checked', async () => {
+      seedHandlers();
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'Data retention' }));
+      const checkbox = screen.getByLabelText('Automatically delete old data');
+      const duration = nativeSelect('retentionDays');
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Loading data retention settings')).toBeNull(),
+      );
+
+      expect(checkbox).not.toBeChecked();
+      expect(duration).toBeDisabled();
+      expect(duration).toHaveValue('90');
+      await user.click(checkbox);
+      expect(duration).toBeEnabled();
+    });
+
+    it('shows a loading state while the setting request is pending', async () => {
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/settings/data-retention`, async () => {
+          await delay(100);
+          return HttpResponse.json({ enabled: false, retention_days: 90 });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'Data retention' }));
+
+      expect(screen.getByLabelText('Loading data retention settings')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save data retention' })).toBeDisabled();
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Loading data retention settings')).not.toBeInTheDocument(),
+      );
+    });
+
+    it.each([30, 60, 90] as const)('saves an exact %i-day payload', async (days) => {
+      let saved: { enabled: boolean; retention_days: number } | null = null;
+      seedHandlers();
+      server.use(
+        http.put(`${BASE}/settings/data-retention`, async ({ request }) => {
+          saved = (await request.json()) as { enabled: boolean; retention_days: number };
+          return HttpResponse.json(saved);
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'Data retention' }));
+      await waitFor(() => expect(nativeSelect('retentionDays')).toHaveValue('90'));
+      await user.click(screen.getByLabelText('Automatically delete old data'));
+      await user.selectOptions(nativeSelect('retentionDays'), String(days));
+      await user.click(screen.getByRole('button', { name: 'Save data retention' }));
+
+      await waitFor(() => expect(saved).toEqual({ enabled: true, retention_days: days }));
+      expect(await screen.findByText('Settings saved')).toBeInTheDocument();
+      expect(screen.getByText(/next 02:00 UTC run/i)).toBeInTheDocument();
+    });
+
+    it('shows an error when saving fails', async () => {
+      seedHandlers();
+      server.use(
+        http.put(`${BASE}/settings/data-retention`, () => new HttpResponse(null, { status: 500 })),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'Data retention' }));
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Loading data retention settings')).toBeNull(),
+      );
+      await user.click(screen.getByRole('button', { name: 'Save data retention' }));
+
+      expect(
+        await screen.findByText('Could not save data retention settings.'),
+      ).toBeInTheDocument();
+    });
+
+    it('does not load the admin setting for members', async () => {
+      let requests = 0;
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/settings/data-retention`, () => {
+          requests += 1;
+          return HttpResponse.json({ enabled: false, retention_days: 90 });
+        }),
+      );
+
+      await renderSettings('member');
+      await delay(10);
+
+      expect(requests).toBe(0);
     });
   });
 
@@ -351,6 +481,9 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/settings/data-retention`, () =>
+          HttpResponse.json({ enabled: false, retention_days: 90 }),
+        ),
         http.get(`${BASE}/users`, () => HttpResponse.json(users)),
         http.post(`${BASE}/users`, async ({ request }) => {
           const body = (await request.json()) as { email: string; role: string };

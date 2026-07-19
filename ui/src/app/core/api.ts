@@ -6,6 +6,7 @@ import { API_BASE } from './api-base';
 import {
   ApiToken,
   AppUser,
+  DataRetentionSetting,
   EventDetail,
   EventPage,
   IssueDetail,
@@ -195,5 +196,13 @@ export class Api {
 
   createUser(email: string, password: string, role: string): Observable<AppUser> {
     return this.http.post<AppUser>(`${this.base}/users`, { email, password, role });
+  }
+
+  dataRetention(): Observable<DataRetentionSetting> {
+    return this.http.get<DataRetentionSetting>(`${this.base}/settings/data-retention`);
+  }
+
+  updateDataRetention(setting: DataRetentionSetting): Observable<DataRetentionSetting> {
+    return this.http.put<DataRetentionSetting>(`${this.base}/settings/data-retention`, setting);
   }
 }
