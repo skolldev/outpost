@@ -31,6 +31,9 @@ public class DataRetentionService {
 			int uptimeChecks, int uptimeIncidents, int deferredProjects) {
 	}
 
+	public record UptimeCleanup(int checks, int incidents) {
+	}
+
 	private record ProjectChunk(int events, int issues, boolean acquired) {
 	}
 
@@ -106,9 +109,17 @@ public class DataRetentionService {
 			}
 		}
 
+		// With no deferrals, every event below the cutoff was deleted and its issue
+		// aggregates rebuilt, so fully-expired event weeks are empty and can be
+		// dropped. A deferred project may still own rows in them; leave the
+		// partitions for the next run in that case.
+		int droppedEventPartitions = deferredProjects == 0
+				? dropExpiredPartitions(PartitionManager.EVENT, cutoff) : 0;
+
 		TelemetryCleanup telemetry = cleanupTelemetry(cutoff, timestamp);
 		return new CleanupResult(events, issues, telemetry.logs(), telemetry.transactions(), telemetry.spans(),
-				telemetry.droppedPartitions(), telemetry.uptimeChecks(), telemetry.uptimeIncidents(), deferredProjects);
+				droppedEventPartitions + telemetry.droppedPartitions(), telemetry.uptimeChecks(),
+				telemetry.uptimeIncidents(), deferredProjects);
 	}
 
 	private ProjectChunk cleanupProjectChunk(long projectId, Timestamp cutoff) {
@@ -205,13 +216,25 @@ public class DataRetentionService {
 		TxnSpanCleanup txnSpan = runStep("txn/span boundary delete", new TxnSpanCleanup(0, 0),
 				() -> Objects.requireNonNull(
 						telemetryTransaction.execute(status -> cleanupBoundaryTxnAndSpans(timestamp, boundaryWeekEnd))));
-		int uptimeChecks = runStep("uptime_check delete", 0,
-				() -> boundaryDelete("DELETE FROM uptime_check WHERE checked_at < ?", timestamp));
-		int uptimeIncidents = runStep("uptime_incident delete", 0, () -> boundaryDelete(
-				"DELETE FROM uptime_incident WHERE closed_at IS NOT NULL AND closed_at < ?", timestamp));
+		UptimeCleanup uptime = cleanupUptime(cutoff);
 
-		return new TelemetryCleanup(logs, txnSpan.transactions(), txnSpan.spans(), droppedPartitions, uptimeChecks,
-				uptimeIncidents);
+		return new TelemetryCleanup(logs, txnSpan.transactions(), txnSpan.spans(), droppedPartitions, uptime.checks(),
+				uptime.incidents());
+	}
+
+	/**
+	 * Prunes uptime checks and closed incidents older than {@code cutoff}. Also
+	 * runs standalone when retention is disabled: uptime history has always been
+	 * capped (formerly by an hourly sweep in {@code UptimeScheduler}), so it is
+	 * not subject to the opt-in policy.
+	 */
+	public UptimeCleanup cleanupUptime(Instant cutoff) {
+		Timestamp timestamp = Timestamp.from(cutoff);
+		int checks = runStep("uptime_check delete", 0,
+				() -> boundaryDelete("DELETE FROM uptime_check WHERE checked_at < ?", timestamp));
+		int incidents = runStep("uptime_incident delete", 0, () -> boundaryDelete(
+				"DELETE FROM uptime_incident WHERE closed_at IS NOT NULL AND closed_at < ?", timestamp));
+		return new UptimeCleanup(checks, incidents);
 	}
 
 	private int dropExpiredPartitions(String table, Instant cutoff) {

@@ -129,17 +129,35 @@ class DataRetentionIntegrationTest {
 	}
 
 	@Test
-	void disabledPolicyChangesNothing() {
+	void disabledPolicyKeepsTelemetryButStillCapsUptimeHistoryAtNinetyDays() {
 		Instant run = Instant.parse("2026-07-19T02:00:00Z");
-		Instant expired = run.minus(Duration.ofDays(91));
+		Instant beyondDefault = run.minus(Duration.ofDays(91));
+		Instant withinDefault = run.minus(Duration.ofDays(89));
 		long projectId = insertProject();
-		partitions.ensurePartition(PartitionManager.LOG_RECORD, expired);
-		insertLog(projectId, expired, "expired");
+		partitions.ensurePartition(PartitionManager.LOG_RECORD, beyondDefault);
+		insertLog(projectId, beyondDefault, "kept while disabled");
+		long monitorId = jdbc.sql("""
+				INSERT INTO uptime_monitor (project_id, environment, url, interval_seconds, next_check_at)
+				VALUES (?, 'prod', 'https://example.test/health', 3600, now() + interval '1 day') RETURNING id
+				""").param(projectId).query(Long.class).single();
+		insertCheck(monitorId, beyondDefault);
+		insertCheck(monitorId, withinDefault);
+		jdbc.sql("INSERT INTO uptime_incident (monitor_id, opened_at, closed_at) VALUES (?, ?, ?)")
+			.param(monitorId).param(timestamp(beyondDefault.minusSeconds(10))).param(timestamp(beyondDefault)).update();
+		jdbc.sql("INSERT INTO uptime_incident (monitor_id, opened_at, closed_at) VALUES (?, ?, ?)")
+			.param(monitorId).param(timestamp(withinDefault.minusSeconds(10))).param(timestamp(withinDefault)).update();
+		jdbc.sql("INSERT INTO uptime_incident (monitor_id, opened_at) VALUES (?, ?)")
+			.param(monitorId).param(timestamp(beyondDefault)).update();
+		// A 30-day policy that is switched off must not shrink the uptime window.
 		settings.save(false, 30);
 
 		scheduler.runOnce(run);
 
 		assertThat(count("log_record")).isEqualTo(1);
+		assertThat(count("uptime_check")).isEqualTo(1);
+		assertThat(count("uptime_incident")).isEqualTo(2);
+		assertThat(jdbc.sql("SELECT count(*) FROM uptime_incident WHERE closed_at IS NULL")
+			.query(Long.class).single()).isEqualTo(1);
 	}
 
 	@Test
@@ -339,13 +357,16 @@ class DataRetentionIntegrationTest {
 	void retentionDefersBusyProjectAndContinuesOtherCleanup() throws Exception {
 		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
 		Instant expired = cutoff.minusSeconds(1);
+		Instant expiredOldWeek = Instant.parse("2026-05-06T12:00:00Z"); // week 05-04, entirely expired
 		long busyProject = insertProject("busy");
 		long availableProject = insertProject("available");
 		for (String table : List.of(PartitionManager.EVENT, PartitionManager.LOG_RECORD)) {
 			partitions.ensurePartition(table, expired);
 		}
+		partitions.ensurePartition(PartitionManager.EVENT, expiredOldWeek);
 		long busyIssue = insertIssue(busyProject, "busy", "Busy", null, "unresolved", expired);
 		insertEvent(busyProject, busyIssue, expired, "prod", "error");
+		insertEvent(busyProject, busyIssue, expiredOldWeek, "prod", "error");
 		long availableIssue = insertIssue(availableProject, "available", "Available", null, "unresolved", expired);
 		insertEvent(availableProject, availableIssue, expired, "prod", "error");
 		insertLog(busyProject, expired, "expired despite busy event cleanup");
@@ -367,9 +388,12 @@ class DataRetentionIntegrationTest {
 			assertThat(result.logs()).isEqualTo(1);
 			assertThat(result.deferredProjects()).isEqualTo(1);
 		}
-		assertThat(eventCount(busyProject)).isEqualTo(1);
+		assertThat(eventCount(busyProject)).isEqualTo(2);
 		assertThat(eventCount(availableProject)).isZero();
 		assertThat(count("log_record")).isZero();
+		// A deferred project may still own rows in expired event weeks, so no
+		// event partition is dropped this run.
+		assertThat(partitionExists("event_p20260504")).isTrue();
 	}
 
 	@Test
@@ -424,7 +448,11 @@ class DataRetentionIntegrationTest {
 		for (Instant instant : List.of(old, after)) {
 			partitions.ensurePartition(PartitionManager.TXN, instant);
 			partitions.ensurePartition(PartitionManager.SPAN, instant);
+			partitions.ensurePartition(PartitionManager.EVENT, instant);
 		}
+		long issueId = insertIssue(projectId, "boundary", "Boundary", null, "unresolved", old);
+		insertEvent(projectId, issueId, old, "prod", "error");
+		insertEvent(projectId, issueId, after, "prod", "error");
 		insertLog(projectId, old, "old");
 		insertLog(projectId, before, "before");
 		insertLog(projectId, after, "after");
@@ -436,14 +464,18 @@ class DataRetentionIntegrationTest {
 
 		DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
 
-		// Whole expired weeks are dropped, not row-deleted.
+		// Whole expired weeks are dropped, not row-deleted. The event week is
+		// emptied by the per-project pass first, then dropped like the others.
 		assertThat(partitionExists("log_record_p20260504")).isFalse();
 		assertThat(partitionExists("txn_p20260504")).isFalse();
 		assertThat(partitionExists("span_p20260504")).isFalse();
+		assertThat(partitionExists("event_p20260504")).isFalse();
 		// The boundary and future weeks survive as partitions.
 		assertThat(partitionExists("log_record_p20260518")).isTrue();
 		assertThat(partitionExists("log_record_p20260601")).isTrue();
-		assertThat(result.droppedPartitions()).isGreaterThanOrEqualTo(3);
+		assertThat(partitionExists("event_p20260518")).isTrue();
+		assertThat(result.droppedPartitions()).isGreaterThanOrEqualTo(4);
+		assertThat(count("event")).isEqualTo(1); // the retained boundary-week event
 
 		// Boundary rows are pruned at the exact cutoff; retained/future rows stay.
 		assertThat(count("log_record")).isEqualTo(2); // after + future

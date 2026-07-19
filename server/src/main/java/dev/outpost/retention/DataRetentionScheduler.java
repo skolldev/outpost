@@ -13,7 +13,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
-/** Runs enabled retention cleanup every day at 02:00 UTC. */
+/**
+ * Runs retention cleanup every day at 02:00 UTC. With the policy enabled it
+ * purges all expired telemetry; disabled, it still caps uptime history at the
+ * 90-day default (previously an hourly sweep in {@code UptimeScheduler}), so
+ * check rows never accumulate unbounded on installations that keep the
+ * opt-in policy off.
+ */
 @Component
 public class DataRetentionScheduler implements SmartLifecycle {
 
@@ -22,11 +28,7 @@ public class DataRetentionScheduler implements SmartLifecycle {
 
 	private final DataRetentionSettings settings;
 	private final DataRetentionService cleanup;
-	private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-		Thread thread = new Thread(runnable, "data-retention");
-		thread.setDaemon(true);
-		return thread;
-	});
+	private ScheduledExecutorService executor;
 	private volatile boolean running;
 
 	public DataRetentionScheduler(DataRetentionSettings settings, DataRetentionService cleanup) {
@@ -35,11 +37,17 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	}
 
 	@Override
-	public void start() {
+	public synchronized void start() {
 		if (running) {
 			return;
 		}
 		running = true;
+		// Created per start so a lifecycle stop/start cycle gets a live executor.
+		executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+			Thread thread = new Thread(runnable, "data-retention");
+			thread.setDaemon(true);
+			return thread;
+		});
 		Instant now = Instant.now();
 		long initialDelay = Math.max(0, Duration.between(now, nextRunAfter(now)).toMillis());
 		executor.scheduleAtFixedRate(this::runSafely, initialDelay, Duration.ofDays(1).toMillis(),
@@ -47,9 +55,11 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	}
 
 	@Override
-	public void stop() {
+	public synchronized void stop() {
 		running = false;
-		executor.shutdownNow();
+		if (executor != null) {
+			executor.shutdownNow();
+		}
 	}
 
 	@Override
@@ -60,6 +70,7 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	void runOnce(Instant runInstant) {
 		DataRetentionSettings.Policy policy = settings.get();
 		if (!policy.enabled()) {
+			sweepUptime(runInstant);
 			return;
 		}
 		Instant cutoff = runInstant.minus(Duration.ofDays(policy.retentionDays()));
@@ -69,6 +80,15 @@ public class DataRetentionScheduler implements SmartLifecycle {
 				+ "{} projects deferred", policy.retentionDays(), result.events(), result.issues(),
 				result.droppedPartitions(), result.logs(), result.transactions(), result.spans(),
 				result.uptimeChecks(), result.uptimeIncidents(), result.deferredProjects());
+	}
+
+	private void sweepUptime(Instant runInstant) {
+		Instant cutoff = runInstant.minus(Duration.ofDays(DataRetentionSettings.DEFAULT.retentionDays()));
+		DataRetentionService.UptimeCleanup result = cleanup.cleanupUptime(cutoff);
+		if (result.checks() > 0 || result.incidents() > 0) {
+			log.info("uptime retention ({} days): deleted {} checks, {} closed incidents",
+					DataRetentionSettings.DEFAULT.retentionDays(), result.checks(), result.incidents());
+		}
 	}
 
 	static Instant nextRunAfter(Instant instant) {

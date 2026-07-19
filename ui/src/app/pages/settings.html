@@ -335,7 +335,9 @@
           <p hlmAlertTitle>Permanent deletion</p>
           <p hlmAlertDescription>
             Expired errors, logs, traces, uptime checks, and closed incidents cannot be recovered.
-            Projects, users, monitors, releases, and source-map artifacts are retained.
+            Projects, users, monitors, releases, and source-map artifacts are retained. Uptime
+            checks and closed incidents are always removed after 90 days, even when this setting
+            is off.
           </p>
         </div>
 
