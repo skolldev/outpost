@@ -40,12 +40,11 @@ public class UptimeScheduler implements SmartLifecycle {
 	private final UptimeCheckService checkService;
 	private final long tickMillis;
 
-	private final ScheduledExecutorService coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
-		Thread thread = new Thread(runnable, "uptime-coordinator");
-		thread.setDaemon(true);
-		return thread;
-	});
-	private final ExecutorService probes = Executors.newVirtualThreadPerTaskExecutor();
+	// Recreated on each start() so the bean survives a SmartLifecycle
+	// stop()/start() cycle (e.g. Spring's test-context pause/restart): stop()
+	// shuts these down for good, so a restart needs fresh executors.
+	private ScheduledExecutorService coordinator;
+	private ExecutorService probes;
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 	private volatile boolean running;
 
@@ -58,18 +57,38 @@ public class UptimeScheduler implements SmartLifecycle {
 	}
 
 	@Override
-	public void start() {
+	public synchronized void start() {
+		if (running) {
+			return;
+		}
 		running = true;
+		// Reset coordination state alongside the executors: stop() can drop a
+		// queued probe before check()'s finally clears its id, so on a restart
+		// inFlight may hold stale ids that would make tick() skip those monitors
+		// forever. A fresh start owns no in-flight probes.
+		inFlight.clear();
+		coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
+			Thread thread = new Thread(runnable, "uptime-coordinator");
+			thread.setDaemon(true);
+			return thread;
+		});
+		probes = Executors.newVirtualThreadPerTaskExecutor();
 		coordinator.scheduleWithFixedDelay(this::tick, tickMillis, tickMillis, TimeUnit.MILLISECONDS);
 	}
 
 	@Override
-	public void stop() {
+	public synchronized void stop() {
 		running = false;
-		coordinator.shutdownNow();
+		// Null-checked: Spring won't stop() before start(), but a manual/edge
+		// invocation could, and the executors only exist after a start().
+		if (coordinator != null) {
+			coordinator.shutdownNow();
+		}
 		// Don't await in-flight probes: virtual threads, longest lingers one
 		// timeout (≤30 s) past shutdown — same fire-and-forget as LogTail.
-		probes.shutdownNow();
+		if (probes != null) {
+			probes.shutdownNow();
+		}
 	}
 
 	@Override

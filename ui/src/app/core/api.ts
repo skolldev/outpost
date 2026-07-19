@@ -14,6 +14,8 @@ import {
   IssuePage,
   LogFilters,
   LogPage,
+  NotificationChannel,
+  NotificationChannelInput,
   Project,
   ProjectKey,
   Release,
@@ -188,6 +190,26 @@ export class Api {
 
   uptimeOverview(): Observable<UptimeOverview> {
     return this.http.get<UptimeOverview>(`${this.base}/uptime/overview`);
+  }
+
+  // Notification channels (admin-only)
+  notificationChannels(): Observable<NotificationChannel[]> {
+    return this.http.get<NotificationChannel[]>(`${this.base}/notifications/channels`);
+  }
+
+  createNotificationChannel(body: NotificationChannelInput): Observable<NotificationChannel> {
+    return this.http.post<NotificationChannel>(`${this.base}/notifications/channels`, body);
+  }
+
+  updateNotificationChannel(
+    id: number,
+    body: NotificationChannelInput,
+  ): Observable<NotificationChannel> {
+    return this.http.patch<NotificationChannel>(`${this.base}/notifications/channels/${id}`, body);
+  }
+
+  deleteNotificationChannel(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/notifications/channels/${id}`);
   }
 
   users(): Observable<AppUser[]> {
