@@ -339,9 +339,13 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
       triggers: this.channelTriggerOptions
         .map((option) => option.value)
         .filter((value) => this.channelTriggers[value]),
-      project_filter: this.projects()
-        .map((project) => project.id)
-        .filter((id) => this.channelProjectSelected[id]),
+      // Derive from the selection map, not the loaded project list, so ids
+      // scoped to a since-deleted project (still selected by editChannel, but
+      // with no checkbox to render) survive a save instead of being silently
+      // dropped — which would collapse the scope to "all projects".
+      project_filter: Object.entries(this.channelProjectSelected)
+        .filter(([, selected]) => selected)
+        .map(([id]) => Number(id)),
       environment_filter: this.newChannelEnvironments
         .split(',')
         .map((name) => name.trim())
@@ -395,6 +399,11 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
           environment_filter: channel.environment_filter,
         }),
       );
+      // If this channel is open in the edit form, keep the form's (invisible)
+      // enabled flag in sync so a later save doesn't revert the toggle.
+      if (this.editingChannelId() === channel.id) {
+        this.newChannelEnabled = !channel.enabled;
+      }
       await this.reloadChannels();
     } catch {
       this.error.set('Could not update notification channel.');

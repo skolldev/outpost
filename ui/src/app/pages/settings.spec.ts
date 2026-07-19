@@ -616,6 +616,64 @@ describe('SettingsPage', () => {
       expect(await screen.findByText(/No notification channels yet/)).toBeInTheDocument();
       expect(deleteCalls).toBe(1);
     });
+
+    it('keeps the edit form in sync when toggling the channel being edited', async () => {
+      const patches: Record<string, unknown>[] = [];
+      let channel: NotificationChannel = { ...CHANNEL };
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([channel])),
+        http.patch(`${BASE}/notifications/channels/:id`, async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          patches.push(body);
+          channel = { ...channel, ...body } as NotificationChannel;
+          return HttpResponse.json(channel);
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      // Open the channel in the edit form, then disable it from its row.
+      await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+      await user.click(screen.getByRole('button', { name: /disable/i }));
+      await waitFor(() => expect(patches).toHaveLength(1));
+      expect(patches[0]['enabled']).toBe(false);
+
+      // Saving the form must not revert the toggle back to enabled.
+      await user.click(screen.getByRole('button', { name: /save channel/i }));
+      await waitFor(() => expect(patches).toHaveLength(2));
+      expect(patches[1]['enabled']).toBe(false);
+    });
+
+    it('preserves project ids scoped to a project missing from the loaded list', async () => {
+      let patched: Record<string, unknown> | null = null;
+      // 999 is not among the loaded projects (only PROJECT id 1) — e.g. deleted.
+      const scoped: NotificationChannel = {
+        ...CHANNEL,
+        id: 5,
+        project_filter: [1, 999],
+        environment_filter: ['prod'],
+      };
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([scoped])),
+        http.patch(`${BASE}/notifications/channels/:id`, async ({ request }) => {
+          patched = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(scoped);
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+      await user.click(screen.getByRole('button', { name: /save channel/i }));
+
+      await waitFor(() => expect(patched).not.toBeNull());
+      // The stale id survives instead of collapsing the scope to "all projects".
+      expect(patched!['project_filter']).toEqual([1, 999]);
+    });
   });
 
   describe('tokens tab', () => {
