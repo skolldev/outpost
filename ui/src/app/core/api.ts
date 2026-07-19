@@ -21,6 +21,9 @@ import {
   TraceDetail,
   TraceFilters,
   TracePage,
+  UptimeMonitor,
+  UptimeOverview,
+  UptimeTestResult,
 } from './models';
 import { issueParams, logParams, QueryParams, traceParams } from './query-params';
 
@@ -141,6 +144,49 @@ export class Api {
 
   deleteToken(id: number): Observable<void> {
     return this.http.delete<void>(`${this.base}/tokens/${id}`);
+  }
+
+  // Uptime monitoring
+  uptimeMonitors(): Observable<UptimeMonitor[]> {
+    return this.http.get<UptimeMonitor[]>(`${this.base}/uptime/monitors`);
+  }
+
+  createUptimeMonitor(body: {
+    project_id: number;
+    environment: string;
+    url: string;
+    interval_seconds: number;
+    timeout_seconds: number;
+  }): Observable<UptimeMonitor> {
+    return this.http.post<UptimeMonitor>(`${this.base}/uptime/monitors`, body);
+  }
+
+  updateUptimeMonitor(
+    id: number,
+    body: {
+      project_id: number;
+      environment: string;
+      url: string;
+      interval_seconds: number;
+      timeout_seconds: number;
+    },
+  ): Observable<UptimeMonitor> {
+    return this.http.patch<UptimeMonitor>(`${this.base}/uptime/monitors/${id}`, body);
+  }
+
+  deleteUptimeMonitor(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/uptime/monitors/${id}`);
+  }
+
+  testUptimeMonitor(url: string, timeoutSeconds: number): Observable<UptimeTestResult> {
+    return this.http.post<UptimeTestResult>(`${this.base}/uptime/monitors/test`, {
+      url,
+      timeout_seconds: timeoutSeconds,
+    });
+  }
+
+  uptimeOverview(): Observable<UptimeOverview> {
+    return this.http.get<UptimeOverview>(`${this.base}/uptime/overview`);
   }
 
   users(): Observable<AppUser[]> {

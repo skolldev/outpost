@@ -111,6 +111,183 @@
   }
 }
 
+@if (activeTab() === 'uptime') {
+  <p class="mb-4 text-sm text-muted-foreground">
+    Uptime monitors request the URL at the configured interval. Three consecutive failures open an
+    incident on the Uptime page; the first success closes it.
+  </p>
+  <form (ngSubmit)="saveMonitor()" class="mb-4 flex flex-wrap items-end gap-3">
+    <div>
+      <label hlmLabel class="mb-1" for="monitorProject">Project</label>
+      <hlm-native-select
+        id="monitorProject"
+        name="monitorProject"
+        size="sm"
+        [(ngModel)]="newMonitorProjectId"
+        (ngModelChange)="onMonitorProjectChange()"
+        required
+      >
+        <option hlmNativeSelectOption value="">Select…</option>
+        @for (project of projects(); track project.id) {
+          <option hlmNativeSelectOption [value]="project.id">{{ project.name }}</option>
+        }
+      </hlm-native-select>
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="monitorEnv">Environment</label>
+      @if (monitorEnvs().length > 0) {
+        <hlm-native-select id="monitorEnv" name="monitorEnv" size="sm" [(ngModel)]="newMonitorEnv">
+          <option hlmNativeSelectOption value="">Select…</option>
+          @for (env of monitorEnvs(); track env) {
+            <option hlmNativeSelectOption [value]="env">{{ env }}</option>
+          }
+        </hlm-native-select>
+      } @else {
+        <input
+          hlmInput
+          id="monitorEnv"
+          name="monitorEnv"
+          [(ngModel)]="newMonitorEnv"
+          placeholder="prod"
+          required
+          class="h-8 w-28"
+        />
+      }
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="monitorUrl">URL</label>
+      <input
+        hlmInput
+        id="monitorUrl"
+        name="monitorUrl"
+        type="url"
+        [(ngModel)]="newMonitorUrl"
+        placeholder="https://shop.example.com/health"
+        required
+        class="h-8 w-80"
+      />
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="monitorInterval">Interval</label>
+      <hlm-native-select
+        id="monitorInterval"
+        name="monitorInterval"
+        size="sm"
+        [(ngModel)]="newMonitorInterval"
+      >
+        <option hlmNativeSelectOption value="30">30s</option>
+        <option hlmNativeSelectOption value="60">1m</option>
+        <option hlmNativeSelectOption value="300">5m</option>
+        <option hlmNativeSelectOption value="900">15m</option>
+        <option hlmNativeSelectOption value="3600">60m</option>
+      </hlm-native-select>
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="monitorTimeout">Timeout (s)</label>
+      <input
+        hlmInput
+        id="monitorTimeout"
+        name="monitorTimeout"
+        type="number"
+        min="1"
+        max="30"
+        required
+        [(ngModel)]="newMonitorTimeout"
+        class="h-8 w-20"
+      />
+    </div>
+    <button hlmBtn size="sm" type="submit">
+      {{ editingMonitorId() === null ? 'Create monitor' : 'Save monitor' }}
+    </button>
+    @if (editingMonitorId() !== null) {
+      <button hlmBtn variant="outline" size="sm" type="button" (click)="cancelMonitorEdit()">
+        Cancel
+      </button>
+    }
+    <button
+      hlmBtn
+      variant="outline"
+      size="sm"
+      type="button"
+      [disabled]="!newMonitorUrl || testResult() === 'pending'"
+      (click)="testMonitor()"
+    >
+      {{ testResult() === 'pending' ? 'Testing…' : 'Test connection' }}
+    </button>
+    @if (error()) {
+      <span class="text-sm text-destructive">{{ error() }}</span>
+    }
+  </form>
+
+  @if (testResult(); as result) {
+    @if (result !== 'pending') {
+      <p class="mb-4 text-sm">
+        @if (result.success) {
+          <span [style.color]="'var(--level-success)'">
+            Success — HTTP {{ result.status_code }} · {{ result.latency_ms }} ms
+          </span>
+        } @else {
+          <span class="text-destructive">
+            Failed{{ result.status_code !== null ? ' — HTTP ' + result.status_code : '' }} ·
+            {{ result.latency_ms }} ms
+            @if (result.error) {
+              <span class="font-mono text-xs">({{ result.error }})</span>
+            }
+          </span>
+        }
+      </p>
+    }
+  }
+
+  <div class="overflow-hidden rounded-lg border border-border">
+    <table class="w-full text-sm">
+      <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
+        <tr>
+          <th class="px-4 py-2 font-medium">Project</th>
+          <th class="px-4 py-2 font-medium">Environment</th>
+          <th class="px-4 py-2 font-medium">URL</th>
+          <th class="px-4 py-2 font-medium">Interval</th>
+          <th class="px-4 py-2 font-medium">Timeout</th>
+          <th class="px-4 py-2"></th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (monitor of monitors(); track monitor.id) {
+          <tr class="border-b border-border/60 last:border-0">
+            <td class="px-4 py-2">{{ monitor.project_slug }}</td>
+            <td class="px-4 py-2 text-muted-foreground">{{ monitor.environment }}</td>
+            <td class="px-4 py-2 font-mono text-xs">{{ monitor.url }}</td>
+            <td class="px-4 py-2 text-muted-foreground">
+              {{ intervalLabel(monitor.interval_seconds) }}
+            </td>
+            <td class="px-4 py-2 text-muted-foreground">{{ monitor.timeout_seconds }}s</td>
+            <td class="px-4 py-2 text-right">
+              <button hlmBtn variant="outline" size="xs" (click)="editMonitor(monitor)">
+                Edit
+              </button>
+              <button
+                hlmBtn
+                variant="destructive"
+                size="xs"
+                class="ml-2"
+                (click)="deleteMonitor(monitor)"
+              >
+                Delete
+              </button>
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="6" class="px-4 py-6 text-center text-sm text-muted-foreground">
+              No uptime monitors yet.
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+}
+
 @if (activeTab() === 'tokens') {
   <p class="mb-4 text-sm text-muted-foreground">
     API tokens authenticate <code class="rounded bg-muted px-1">sentry-cli</code> source-map uploads

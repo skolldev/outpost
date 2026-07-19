@@ -1,11 +1,11 @@
 import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
-import { render, screen, waitFor } from '@testing-library/angular';
+import { render, screen, waitFor, within } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
-import { ApiToken, AppUser, Project, ProjectKey, SessionUser } from '../core/models';
+import { ApiToken, AppUser, Project, ProjectKey, SessionUser, UptimeMonitor } from '../core/models';
 import { Session } from '../core/session';
 import { SettingsPage } from './settings';
 
@@ -42,6 +42,18 @@ const TOKEN: ApiToken = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
+const MONITOR: UptimeMonitor = {
+  id: 3,
+  project_id: 1,
+  project_slug: 'shop-frontend',
+  environment: 'prod',
+  url: 'https://shop.example.com/health',
+  interval_seconds: 60,
+  timeout_seconds: 10,
+  consecutive_failures: 0,
+  created_at: '2026-01-01T00:00:00Z',
+};
+
 /**
  * Minimal Session stand-in: the component only ever reads `isAdmin()` (and the
  * template reads it too), so we skip the real cookie/HTTP-backed Session.
@@ -58,7 +70,20 @@ function seedHandlers() {
     http.get(`${BASE}/projects/:id/keys`, () => HttpResponse.json([KEY])),
     http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
     http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
+    http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([MONITOR])),
+    http.get(`${BASE}/projects/:id/environments`, () => HttpResponse.json(['prod', 'dev'])),
   );
+}
+
+/**
+ * hlm-native-select renders the real <select> inside a non-labellable wrapper
+ * (the label's `for` points at the wrapper), so label-based queries can't
+ * reach it — grab it via the wrapper id instead.
+ */
+function nativeSelect(wrapperId: string): HTMLSelectElement {
+  const select = document.querySelector<HTMLSelectElement>(`#${wrapperId} select`);
+  if (!select) throw new Error(`no native select rendered in #${wrapperId}`);
+  return select;
 }
 
 async function renderSettings(role: 'admin' | 'member' = 'admin') {
@@ -69,22 +94,24 @@ async function renderSettings(role: 'admin' | 'member' = 'admin') {
 
 describe('SettingsPage', () => {
   describe('tabs & role gating', () => {
-    it('shows all three tabs for an admin', async () => {
+    it('shows all four tabs for an admin', async () => {
       seedHandlers();
       await renderSettings('admin');
 
       expect(screen.getByRole('button', { name: 'projects' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'uptime' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'tokens' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
     });
 
-    it('hides the tokens tab for a member', async () => {
+    it('hides the tokens and uptime tabs for a member', async () => {
       seedHandlers();
       await renderSettings('member');
 
       expect(screen.getByRole('button', { name: 'projects' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'tokens' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'uptime' })).not.toBeInTheDocument();
     });
 
     it('hides the create-project form from members', async () => {
@@ -108,6 +135,7 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/projects`, () => HttpResponse.json([])),
         http.get(`${BASE}/users`, () => HttpResponse.json([])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([])),
+        http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
       );
       await renderSettings('admin');
 
@@ -128,6 +156,7 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/projects/:id/keys`, () => HttpResponse.json([KEY])),
         http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
+        http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
       );
       await renderSettings('admin');
       const user = userEvent.setup();
@@ -161,6 +190,117 @@ describe('SettingsPage', () => {
       expect(await screen.findByText('DSN keys')).toBeInTheDocument();
       expect(screen.getByText(KEY.dsn)).toBeInTheDocument();
       expect(screen.getByText('SDK setup')).toBeInTheDocument();
+    });
+  });
+
+  describe('uptime tab', () => {
+    it('lists existing monitors', async () => {
+      seedHandlers();
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'uptime' }));
+
+      expect(await screen.findByText('https://shop.example.com/health')).toBeInTheDocument();
+      const table = within(screen.getByRole('table'));
+      expect(table.getByText('1m')).toBeInTheDocument();
+      expect(table.getByText('10s')).toBeInTheDocument();
+    });
+
+    it('creates a monitor with the expected payload', async () => {
+      let created: Record<string, unknown> | null = null;
+      const monitors: UptimeMonitor[] = [];
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json(monitors)),
+        http.post(`${BASE}/uptime/monitors`, async ({ request }) => {
+          created = (await request.json()) as Record<string, unknown>;
+          monitors.push(MONITOR);
+          return HttpResponse.json(MONITOR);
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'uptime' }));
+      await user.selectOptions(nativeSelect('monitorProject'), '1');
+      // The environment field switches from free-text input to a select once
+      // the project's environments have loaded.
+      await waitFor(() => nativeSelect('monitorEnv'));
+      await user.selectOptions(nativeSelect('monitorEnv'), 'prod');
+      await user.type(screen.getByLabelText('URL'), 'https://shop.example.com/health');
+      await user.selectOptions(nativeSelect('monitorInterval'), '300');
+      await user.click(screen.getByRole('button', { name: /create monitor/i }));
+
+      await waitFor(() =>
+        expect(screen.getByText('https://shop.example.com/health')).toBeInTheDocument(),
+      );
+      expect(created).toEqual({
+        project_id: 1,
+        environment: 'prod',
+        url: 'https://shop.example.com/health',
+        interval_seconds: 300,
+        timeout_seconds: 10,
+      });
+    });
+
+    it('shows a successful test-connection result', async () => {
+      seedHandlers();
+      server.use(
+        http.post(`${BASE}/uptime/monitors/test`, () =>
+          HttpResponse.json({ success: true, status_code: 200, latency_ms: 42, error: null }),
+        ),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'uptime' }));
+      await user.type(await screen.findByLabelText('URL'), 'https://shop.example.com/health');
+      await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+      expect(await screen.findByText(/Success — HTTP 200 · 42 ms/)).toBeInTheDocument();
+    });
+
+    it('shows a failed test-connection result', async () => {
+      seedHandlers();
+      server.use(
+        http.post(`${BASE}/uptime/monitors/test`, () =>
+          HttpResponse.json({
+            success: false,
+            status_code: null,
+            latency_ms: 5000,
+            error: 'java.net.http.HttpTimeoutException: request timed out',
+          }),
+        ),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'uptime' }));
+      await user.type(await screen.findByLabelText('URL'), 'https://slow.example.com');
+      await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+      expect(await screen.findByText(/Failed/)).toBeInTheDocument();
+      expect(screen.getByText(/HttpTimeoutException/)).toBeInTheDocument();
+    });
+
+    it('deletes a monitor and reloads the list', async () => {
+      const monitors = [MONITOR];
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json(monitors)),
+        http.delete(`${BASE}/uptime/monitors/:id`, () => {
+          monitors.length = 0;
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'uptime' }));
+      await user.click(await screen.findByRole('button', { name: /delete/i }));
+
+      expect(await screen.findByText(/No uptime monitors yet/)).toBeInTheDocument();
     });
   });
 
@@ -210,6 +350,7 @@ describe('SettingsPage', () => {
       server.use(
         http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
+        http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
         http.get(`${BASE}/users`, () => HttpResponse.json(users)),
         http.post(`${BASE}/users`, async ({ request }) => {
           const body = (await request.json()) as { email: string; role: string };
