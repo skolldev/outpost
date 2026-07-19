@@ -65,8 +65,9 @@ public class DataRetentionScheduler implements SmartLifecycle {
 		Instant cutoff = runInstant.minus(Duration.ofDays(policy.retentionDays()));
 		DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
 		log.info("data retention ({} days): deleted {} events, {} issues, {} logs, {} transactions, {} spans, "
-				+ "{} uptime checks, {} closed incidents", policy.retentionDays(), result.events(), result.issues(),
-				result.logs(), result.transactions(), result.spans(), result.uptimeChecks(), result.uptimeIncidents());
+				+ "{} uptime checks, {} closed incidents; {} projects deferred", policy.retentionDays(), result.events(),
+				result.issues(), result.logs(), result.transactions(), result.spans(), result.uptimeChecks(),
+				result.uptimeIncidents(), result.deferredProjects());
 	}
 
 	static Instant nextRunAfter(Instant instant) {

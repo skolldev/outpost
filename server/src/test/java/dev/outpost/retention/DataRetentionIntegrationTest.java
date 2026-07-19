@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
 import dev.outpost.pipeline.EventIssueLock;
+import dev.outpost.pipeline.EventStore;
+import dev.outpost.pipeline.ProcessedEvent;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -12,9 +14,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,9 +35,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
+		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
+		"outpost.retention.event-chunk-size=2", "outpost.retention.chunk-timeout-seconds=1" })
 @Import(TestcontainersConfiguration.class)
 class DataRetentionIntegrationTest {
 
@@ -53,7 +59,16 @@ class DataRetentionIntegrationTest {
 	DataRetentionScheduler scheduler;
 
 	@Autowired
+	DataRetentionService cleanup;
+
+	@Autowired
 	EventIssueLock eventIssueLock;
+
+	@Autowired
+	EventStore eventStore;
+
+	@Autowired
+	ObjectMapper mapper;
 
 	@Autowired
 	PlatformTransactionManager transactionManager;
@@ -244,7 +259,7 @@ class DataRetentionIntegrationTest {
 		try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
 			CompletableFuture<ResponseEntity<Void>> deletion = new TransactionTemplate(transactionManager)
 				.execute(status -> {
-					eventIssueLock.acquire();
+					eventIssueLock.acquire(projectId);
 					CompletableFuture<ResponseEntity<Void>> request = CompletableFuture.supplyAsync(
 							() -> rest.exchange(url("/api/internal/projects/" + projectId), HttpMethod.DELETE,
 									new HttpEntity<>(headers(adminCookie)), Void.class),
@@ -262,8 +277,147 @@ class DataRetentionIntegrationTest {
 		assertThat(count("project")).isZero();
 	}
 
+	@Test
+	void mixedIngestBatchCommitsUnlockedProjectBeforeBusyProject() throws Exception {
+		Instant seen = Instant.parse("2026-07-19T01:00:00Z");
+		long availableProject = insertProject("available");
+		long busyProject = insertProject("busy");
+		CountDownLatch acquired = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+
+		try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			CompletableFuture<Void> holder = holdProjectLock(busyProject, acquired, release, executor);
+			assertThat(acquired.await(5, TimeUnit.SECONDS)).isTrue();
+			CompletableFuture<Void> storage = CompletableFuture.runAsync(() -> eventStore.store(List.of(
+					processedEvent(availableProject, seen, "available"),
+					processedEvent(busyProject, seen, "busy"))), executor);
+			try {
+				await(() -> eventCount(availableProject) == 1);
+				assertThat(eventCount(busyProject)).isZero();
+				assertThat(storage).isNotDone();
+			}
+			finally {
+				release.countDown();
+			}
+			holder.get(5, TimeUnit.SECONDS);
+			storage.get(5, TimeUnit.SECONDS);
+		}
+		assertThat(eventCount(availableProject)).isEqualTo(1);
+		assertThat(eventCount(busyProject)).isEqualTo(1);
+	}
+
+	@Test
+	void retentionUsesMultipleChunksAndRebuildsAggregates() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
+		Instant retained = cutoff.plusSeconds(1);
+		long projectId = insertProject();
+		for (Instant instant : List.of(cutoff.minusSeconds(3), cutoff.minusSeconds(2), cutoff.minusSeconds(1),
+				retained)) {
+			partitions.ensurePartition(PartitionManager.EVENT, instant);
+		}
+		long issueId = insertIssue(projectId, "chunked", "Chunked", null, "unresolved", cutoff.minusSeconds(3));
+		insertEvent(projectId, issueId, cutoff.minusSeconds(3), "prod", "error");
+		insertEvent(projectId, issueId, cutoff.minusSeconds(2), "prod", "error");
+		insertEvent(projectId, issueId, cutoff.minusSeconds(1), "staging", "warning");
+		insertEvent(projectId, issueId, retained, "staging", "info");
+
+		DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
+
+		assertThat(result.events()).isEqualTo(3);
+		assertThat(result.deferredProjects()).isZero();
+		assertThat(jdbc.sql("SELECT event_count FROM issue WHERE id = ?")
+			.param(issueId).query(Long.class).single()).isEqualTo(1);
+		assertThat(jdbc.sql("SELECT first_seen FROM issue WHERE id = ?")
+			.param(issueId).query(Timestamp.class).single().toInstant()).isEqualTo(retained);
+		assertThat(jdbc.sql("SELECT environment, event_count FROM issue_env_stats WHERE issue_id = ?")
+			.param(issueId)
+			.query((rs, rowNum) -> Map.of("environment", rs.getString(1), "event_count", rs.getLong(2)))
+			.list()).containsExactly(Map.of("environment", "staging", "event_count", 1L));
+	}
+
+	@Test
+	void retentionDefersBusyProjectAndContinuesOtherCleanup() throws Exception {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
+		Instant expired = cutoff.minusSeconds(1);
+		long busyProject = insertProject("busy");
+		long availableProject = insertProject("available");
+		for (String table : List.of(PartitionManager.EVENT, PartitionManager.LOG_RECORD)) {
+			partitions.ensurePartition(table, expired);
+		}
+		long busyIssue = insertIssue(busyProject, "busy", "Busy", null, "unresolved", expired);
+		insertEvent(busyProject, busyIssue, expired, "prod", "error");
+		long availableIssue = insertIssue(availableProject, "available", "Available", null, "unresolved", expired);
+		insertEvent(availableProject, availableIssue, expired, "prod", "error");
+		insertLog(busyProject, expired, "expired despite busy event cleanup");
+		CountDownLatch acquired = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+
+		try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			CompletableFuture<Void> holder = holdProjectLock(busyProject, acquired, release, executor);
+			assertThat(acquired.await(5, TimeUnit.SECONDS)).isTrue();
+			DataRetentionService.CleanupResult result;
+			try {
+				result = cleanup.cleanup(cutoff);
+			}
+			finally {
+				release.countDown();
+			}
+			holder.get(5, TimeUnit.SECONDS);
+			assertThat(result.events()).isEqualTo(1);
+			assertThat(result.logs()).isEqualTo(1);
+			assertThat(result.deferredProjects()).isEqualTo(1);
+		}
+		assertThat(eventCount(busyProject)).isEqualTo(1);
+		assertThat(eventCount(availableProject)).isZero();
+		assertThat(count("log_record")).isZero();
+	}
+
+	@Test
+	void timedOutProjectChunkRollsBackAndOtherProjectsContinue() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
+		Instant expired = cutoff.minusSeconds(1);
+		long slowProject = insertProject("slow");
+		long availableProject = insertProject("available");
+		partitions.ensurePartition(PartitionManager.EVENT, expired);
+		long slowIssue = insertIssue(slowProject, "slow", "Slow", null, "unresolved", expired);
+		insertEvent(slowProject, slowIssue, expired, "prod", "error");
+		long availableIssue = insertIssue(availableProject, "available", "Available", null, "unresolved", expired);
+		insertEvent(availableProject, availableIssue, expired, "prod", "error");
+		jdbc.sql("""
+				CREATE FUNCTION retention_test_delay() RETURNS trigger LANGUAGE plpgsql AS $function$
+				BEGIN
+				    IF OLD.project_id = %d THEN
+				        PERFORM pg_sleep(2);
+				    END IF;
+				    RETURN OLD;
+				END
+				$function$
+				""".formatted(slowProject)).update();
+		jdbc.sql("""
+				CREATE TRIGGER retention_test_delay_before_delete BEFORE DELETE ON event
+				FOR EACH ROW EXECUTE FUNCTION retention_test_delay()
+				""").update();
+		try {
+			DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
+			assertThat(result.events()).isEqualTo(1);
+			assertThat(result.deferredProjects()).isEqualTo(1);
+			assertThat(eventCount(slowProject)).isEqualTo(1);
+			assertThat(eventCount(availableProject)).isZero();
+		}
+		finally {
+			jdbc.sql("DROP TRIGGER retention_test_delay_before_delete ON event").update();
+			jdbc.sql("DROP FUNCTION retention_test_delay()").update();
+		}
+	}
+
 	private long insertProject() {
-		return jdbc.sql("INSERT INTO project (slug, name) VALUES ('shop', 'Shop') RETURNING id")
+		return insertProject("shop");
+	}
+
+	private long insertProject(String slug) {
+		return jdbc.sql("INSERT INTO project (slug, name) VALUES (?, ?) RETURNING id")
+			.param(slug)
+			.param(slug)
 			.query(Long.class)
 			.single();
 	}
@@ -341,6 +495,47 @@ class DataRetentionIntegrationTest {
 		return Timestamp.from(instant);
 	}
 
+	private ProcessedEvent processedEvent(long projectId, Instant timestamp, String fingerprint) {
+		return new ProcessedEvent(UUID.randomUUID(), projectId, "prod", null, timestamp, null, "error",
+				fingerprint, null, fingerprint, null, fingerprint, null, mapper.createObjectNode(), null, null);
+	}
+
+	private CompletableFuture<Void> holdProjectLock(long projectId, CountDownLatch acquired, CountDownLatch release,
+			ExecutorService executor) {
+		return CompletableFuture.runAsync(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			eventIssueLock.acquire(projectId);
+			acquired.countDown();
+			await(release);
+		}), executor);
+	}
+
+	private void await(CountDownLatch latch) {
+		try {
+			latch.await();
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new AssertionError("interrupted while holding project lock", e);
+		}
+	}
+
+	private void await(BooleanSupplier condition) {
+		Instant deadline = Instant.now().plusSeconds(5);
+		while (Instant.now().isBefore(deadline)) {
+			if (condition.getAsBoolean()) {
+				return;
+			}
+			try {
+				Thread.sleep(10);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("interrupted while waiting for condition", e);
+			}
+		}
+		throw new AssertionError("condition was not met before timeout");
+	}
+
 	private void postUser(String email, String password) {
 		HttpHeaders headers = headers(adminCookie);
 		ResponseEntity<Map> response = rest.exchange(url("/api/internal/users"), HttpMethod.POST,
@@ -369,6 +564,13 @@ class DataRetentionIntegrationTest {
 
 	private long count(String table) {
 		return jdbc.sql("SELECT count(*) FROM " + table).query(Long.class).single();
+	}
+
+	private long eventCount(long projectId) {
+		return jdbc.sql("SELECT count(*) FROM event WHERE project_id = ?")
+			.param(projectId)
+			.query(Long.class)
+			.single();
 	}
 
 	private void awaitEventIssueLockWaiter() {

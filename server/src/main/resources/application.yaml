@@ -16,6 +16,9 @@ spring:
 outpost:
   # Public base URL of this instance; used to render DSNs in the UI.
   public-url: ${OUTPOST_PUBLIC_URL:http://localhost:8080}
+  retention:
+    event-chunk-size: ${OUTPOST_RETENTION_EVENT_CHUNK_SIZE:10000}
+    chunk-timeout-seconds: ${OUTPOST_RETENTION_CHUNK_TIMEOUT_SECONDS:30}
   admin:
     email: ${OUTPOST_ADMIN_EMAIL:}
     password: ${OUTPOST_ADMIN_PASSWORD:}

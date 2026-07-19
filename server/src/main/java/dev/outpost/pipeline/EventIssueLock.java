@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class EventIssueLock {
 
-	private static final long ADVISORY_LOCK_KEY = 727_572_058L;
+	private static final int LOCK_NAMESPACE = 727_572_058;
 
 	private final JdbcClient jdbc;
 
@@ -20,8 +20,20 @@ public class EventIssueLock {
 		this.jdbc = jdbc;
 	}
 
-	public void acquire() {
-		jdbc.sql("SELECT pg_advisory_xact_lock(?)").param(ADVISORY_LOCK_KEY).query(rs -> {
+	public void acquire(long projectId) {
+		jdbc.sql("SELECT pg_advisory_xact_lock(?, ?)")
+			.param(LOCK_NAMESPACE)
+			.param(Long.hashCode(projectId))
+			.query(rs -> {
 		});
+	}
+
+	/** Attempts acquisition without waiting, giving ingestion priority over retention. */
+	public boolean tryAcquire(long projectId) {
+		return jdbc.sql("SELECT pg_try_advisory_xact_lock(?, ?)")
+			.param(LOCK_NAMESPACE)
+			.param(Long.hashCode(projectId))
+			.query(Boolean.class)
+			.single();
 	}
 }

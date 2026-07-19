@@ -104,7 +104,7 @@ public class ProjectController {
 	}
 
 	private int deleteProject(long id) {
-		eventIssueLock.acquire();
+		eventIssueLock.acquire(id);
 		// Events are partitioned and not FK-cascaded; delete them explicitly first.
 		jdbc.sql("DELETE FROM event WHERE project_id = ?").param(id).update();
 		return jdbc.sql("DELETE FROM project WHERE id = ?").param(id).update();
