@@ -6,19 +6,27 @@ import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmInput } from '@spartan-ng/helm/input';
 import { HlmLabel } from '@spartan-ng/helm/label';
 import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-select';
-import { HlmCard } from '@spartan-ng/helm/card';
+import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmAlert, HlmAlertTitle, HlmAlertDescription } from '@spartan-ng/helm/alert';
+import { HlmCheckbox } from '@spartan-ng/helm/checkbox';
+import { HlmFieldImports } from '@spartan-ng/helm/field';
+import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
 import { Api } from '../core/api';
 import {
   ApiToken,
   AppUser,
+  DataRetentionSetting,
   Project,
   ProjectKey,
+  RetentionDays,
   UptimeMonitor,
   UptimeTestResult,
 } from '../core/models';
 import { Session } from '../core/session';
+
+type SettingsTab = 'projects' | 'uptime' | 'data-retention' | 'tokens' | 'users';
+type RetentionDaysValue = '30' | '60' | '90';
 
 /** Settings (§9 page 6): projects & DSNs, sentry-cli API tokens, users. Admin-only mutations. */
 @Component({
@@ -31,10 +39,13 @@ import { Session } from '../core/session';
     HlmLabel,
     HlmNativeSelect,
     HlmNativeSelectOption,
-    HlmCard,
+    ...HlmCardImports,
     HlmAlert,
     HlmAlertTitle,
     HlmAlertDescription,
+    HlmCheckbox,
+    ...HlmFieldImports,
+    HlmSpinner,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './settings.html',
@@ -43,11 +54,13 @@ export class SettingsPage {
   private readonly api = inject(Api);
   readonly session = inject(Session);
 
-  // API tokens and uptime monitors are admin-managed, so members don't get those tabs.
-  readonly tabs = computed<('projects' | 'uptime' | 'tokens' | 'users')[]>(() =>
-    this.session.isAdmin() ? ['projects', 'uptime', 'tokens', 'users'] : ['projects', 'users'],
+  // Installation settings and operational resources are admin-managed.
+  readonly tabs = computed<SettingsTab[]>(() =>
+    this.session.isAdmin()
+      ? ['projects', 'uptime', 'data-retention', 'tokens', 'users']
+      : ['projects', 'users'],
   );
-  readonly activeTab = signal<'projects' | 'uptime' | 'tokens' | 'users'>('projects');
+  readonly activeTab = signal<SettingsTab>('projects');
 
   readonly projects = signal<Project[]>([]);
   readonly keys = signal<ProjectKey[]>([]);
@@ -62,6 +75,14 @@ export class SettingsPage {
   readonly monitorEnvs = signal<string[]>([]);
   readonly testResult = signal<UptimeTestResult | 'pending' | null>(null);
   readonly editingMonitorId = signal<number | null>(null);
+
+  readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90'];
+  readonly retentionLoading = signal(false);
+  readonly retentionSaving = signal(false);
+  readonly retentionError = signal<string | null>(null);
+  readonly retentionSuccess = signal<string | null>(null);
+  retentionEnabled = false;
+  retentionDays: RetentionDaysValue = '90';
 
   newSlug = '';
   newPlatform = 'javascript-angular';
@@ -81,7 +102,12 @@ export class SettingsPage {
       void firstValueFrom(this.api.users()).then((users) => this.users.set(users));
       void firstValueFrom(this.api.tokens()).then((tokens) => this.tokens.set(tokens));
       void this.reloadMonitors();
+      void this.loadDataRetention();
     }
+  }
+
+  tabLabel(tab: SettingsTab): string {
+    return tab === 'data-retention' ? 'Data retention' : tab;
   }
 
   activeDsn(): string | null {
@@ -255,6 +281,26 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
     return seconds < 60 ? `${seconds}s` : `${seconds / 60}m`;
   }
 
+  async saveDataRetention(): Promise<void> {
+    this.retentionError.set(null);
+    this.retentionSuccess.set(null);
+    this.retentionSaving.set(true);
+    const body: DataRetentionSetting = {
+      enabled: this.retentionEnabled,
+      retention_days: Number(this.retentionDays) as RetentionDays,
+    };
+    try {
+      const saved = await firstValueFrom(this.api.updateDataRetention(body));
+      this.retentionEnabled = saved.enabled;
+      this.retentionDays = String(saved.retention_days) as RetentionDaysValue;
+      this.retentionSuccess.set('Data retention settings saved.');
+    } catch {
+      this.retentionError.set('Could not save data retention settings.');
+    } finally {
+      this.retentionSaving.set(false);
+    }
+  }
+
   private resetMonitorForm(): void {
     this.editingMonitorId.set(null);
     this.newMonitorProjectId = '';
@@ -268,6 +314,20 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
 
   private async reloadMonitors(): Promise<void> {
     this.monitors.set(await firstValueFrom(this.api.uptimeMonitors()));
+  }
+
+  private async loadDataRetention(): Promise<void> {
+    this.retentionLoading.set(true);
+    this.retentionError.set(null);
+    try {
+      const setting = await firstValueFrom(this.api.dataRetention());
+      this.retentionEnabled = setting.enabled;
+      this.retentionDays = String(setting.retention_days) as RetentionDaysValue;
+    } catch {
+      this.retentionError.set('Could not load data retention settings.');
+    } finally {
+      this.retentionLoading.set(false);
+    }
   }
 
   copy(text: string): void {

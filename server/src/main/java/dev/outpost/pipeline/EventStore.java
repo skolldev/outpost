@@ -4,7 +4,10 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
 import java.sql.Timestamp;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -47,18 +50,21 @@ public class EventStore {
 	private final TransactionTemplate transaction;
 	private final PartitionManager partitions;
 	private final ObjectMapper mapper;
+	private final EventIssueLock eventIssueLock;
 
 	public EventStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			ObjectMapper mapper) {
+			ObjectMapper mapper, EventIssueLock eventIssueLock) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
+		this.eventIssueLock = eventIssueLock;
 	}
 
 	/**
-	 * Stores a batch in one transaction. On failure, falls back to storing
-	 * events one by one so a poison event cannot sink its whole batch.
+	 * Stores each project's events in a separate transaction so unrelated projects
+	 * can ingest concurrently. On failure, falls back to storing events one by one
+	 * so a poison event cannot sink its project batch.
 	 */
 	public void store(List<ProcessedEvent> batch) {
 		if (batch.isEmpty()) {
@@ -69,6 +75,12 @@ public class EventStore {
 			.map(ProcessedEvent::timestamp)
 			.distinct()
 			.forEach(timestamp -> partitions.ensurePartition(PartitionManager.EVENT, timestamp));
+		Map<Long, List<ProcessedEvent>> byProject = batch.stream()
+			.collect(Collectors.groupingBy(ProcessedEvent::projectId, LinkedHashMap::new, Collectors.toList()));
+		byProject.values().forEach(this::storeProject);
+	}
+
+	private void storeProject(List<ProcessedEvent> batch) {
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 		}
@@ -79,12 +91,13 @@ public class EventStore {
 			}
 			log.warn("batch insert of {} events failed ({}), retrying individually", batch.size(), e.toString());
 			for (ProcessedEvent event : batch) {
-				store(List.of(event));
+				storeProject(List.of(event));
 			}
 		}
 	}
 
 	private void storeAll(List<ProcessedEvent> batch) {
+		eventIssueLock.acquire(batch.getFirst().projectId());
 		for (ProcessedEvent event : batch) {
 			jdbc.update("""
 					INSERT INTO environment (project_id, name) VALUES (?, ?)

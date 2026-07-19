@@ -186,6 +186,13 @@ export interface AppUser {
   created_at: string;
 }
 
+export type RetentionDays = 30 | 60 | 90;
+
+export interface DataRetentionSetting {
+  enabled: boolean;
+  retention_days: RetentionDays;
+}
+
 export interface IssueFilters {
   project?: number;
   environment?: string[];

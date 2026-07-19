@@ -25,9 +25,6 @@ import org.springframework.stereotype.Component;
  * still-due monitor again, while the in-flight set prevents slow probes from
  * overlapping.
  *
- * <p>Also sweeps retention hourly: raw check rows and closed incidents older
- * than 90 days.
- *
  * <p>Assumes a single Outpost instance (like the rest of the app). If
  * replicas ever matter, add {@code FOR UPDATE SKIP LOCKED} to the due query.
  */
@@ -38,8 +35,6 @@ public class UptimeScheduler implements SmartLifecycle {
 	}
 
 	private static final Logger log = LoggerFactory.getLogger(UptimeScheduler.class);
-	private static final int RETENTION_DAYS = 90;
-
 	private final JdbcClient jdbc;
 	private final UptimeProber prober;
 	private final UptimeCheckService checkService;
@@ -66,7 +61,6 @@ public class UptimeScheduler implements SmartLifecycle {
 	public void start() {
 		running = true;
 		coordinator.scheduleWithFixedDelay(this::tick, tickMillis, tickMillis, TimeUnit.MILLISECONDS);
-		coordinator.scheduleWithFixedDelay(this::sweepRetention, 1, 60, TimeUnit.MINUTES);
 	}
 
 	@Override
@@ -142,21 +136,4 @@ public class UptimeScheduler implements SmartLifecycle {
 		}
 	}
 
-	void sweepRetention() {
-		try {
-			int checks = jdbc.sql("DELETE FROM uptime_check WHERE checked_at < now() - make_interval(days => ?)")
-				.param(RETENTION_DAYS)
-				.update();
-			int incidents = jdbc
-				.sql("DELETE FROM uptime_incident WHERE closed_at IS NOT NULL AND closed_at < now() - make_interval(days => ?)")
-				.param(RETENTION_DAYS)
-				.update();
-			if (checks > 0 || incidents > 0) {
-				log.info("uptime retention: deleted {} checks, {} closed incidents", checks, incidents);
-			}
-		}
-		catch (RuntimeException e) {
-			log.warn("uptime retention sweep failed: {}", e.toString());
-		}
-	}
 }
