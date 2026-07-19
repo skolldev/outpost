@@ -4,9 +4,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * Serializes event ingestion with retention's event/issue aggregate rebuild.
- * The lock is transaction-scoped, so callers must acquire it inside the
- * transaction that changes events or issue aggregates.
+ * Serializes changes to event membership and issue aggregates, including
+ * ingestion, retention rebuilds, and project deletion. The lock is
+ * transaction-scoped, so callers must acquire it inside the transaction that
+ * changes events or issue aggregates.
  */
 @Component
 public class EventIssueLock {

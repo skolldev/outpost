@@ -1,16 +1,20 @@
 package dev.outpost.query;
 
 import dev.outpost.config.OutpostProperties;
+import dev.outpost.pipeline.EventIssueLock;
 import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -38,10 +42,15 @@ public class ProjectController {
 
 	private final JdbcClient jdbc;
 	private final OutpostProperties properties;
+	private final TransactionTemplate transaction;
+	private final EventIssueLock eventIssueLock;
 
-	public ProjectController(JdbcClient jdbc, OutpostProperties properties) {
+	public ProjectController(JdbcClient jdbc, OutpostProperties properties,
+			PlatformTransactionManager transactionManager, EventIssueLock eventIssueLock) {
 		this.jdbc = jdbc;
 		this.properties = properties;
+		this.transaction = new TransactionTemplate(transactionManager);
+		this.eventIssueLock = eventIssueLock;
 	}
 
 	@GetMapping
@@ -90,10 +99,15 @@ public class ProjectController {
 	@DeleteMapping("/{id}")
 	@PreAuthorize("hasRole('ADMIN')")
 	public ResponseEntity<Void> delete(@PathVariable long id) {
+		int deleted = Objects.requireNonNull(transaction.execute(status -> deleteProject(id)));
+		return deleted > 0 ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+	}
+
+	private int deleteProject(long id) {
+		eventIssueLock.acquire();
 		// Events are partitioned and not FK-cascaded; delete them explicitly first.
 		jdbc.sql("DELETE FROM event WHERE project_id = ?").param(id).update();
-		int deleted = jdbc.sql("DELETE FROM project WHERE id = ?").param(id).update();
-		return deleted > 0 ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+		return jdbc.sql("DELETE FROM project WHERE id = ?").param(id).update();
 	}
 
 	@GetMapping("/{id}/environments")

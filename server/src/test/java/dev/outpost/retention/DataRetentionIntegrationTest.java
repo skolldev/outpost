@@ -4,12 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
+import dev.outpost.pipeline.EventIssueLock;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +28,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestTemplate;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
@@ -44,6 +51,12 @@ class DataRetentionIntegrationTest {
 
 	@Autowired
 	DataRetentionScheduler scheduler;
+
+	@Autowired
+	EventIssueLock eventIssueLock;
+
+	@Autowired
+	PlatformTransactionManager transactionManager;
 
 	final RestTemplate rest = new RestTemplate();
 	String adminCookie;
@@ -220,6 +233,35 @@ class DataRetentionIntegrationTest {
 		}
 	}
 
+	@Test
+	void projectDeleteWaitsForEventIssueAggregateRebuild() throws Exception {
+		Instant seen = Instant.parse("2026-07-19T01:00:00Z");
+		long projectId = insertProject();
+		partitions.ensurePartition(PartitionManager.EVENT, seen);
+		long issueId = insertIssue(projectId, "deleted-project", "Deleted project", null, "unresolved", seen);
+		insertEvent(projectId, issueId, seen, "prod", "error");
+
+		try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			CompletableFuture<ResponseEntity<Void>> deletion = new TransactionTemplate(transactionManager)
+				.execute(status -> {
+					eventIssueLock.acquire();
+					CompletableFuture<ResponseEntity<Void>> request = CompletableFuture.supplyAsync(
+							() -> rest.exchange(url("/api/internal/projects/" + projectId), HttpMethod.DELETE,
+									new HttpEntity<>(headers(adminCookie)), Void.class),
+							executor);
+					awaitEventIssueLockWaiter();
+					assertThat(count("event")).isEqualTo(1);
+					assertThat(count("project")).isEqualTo(1);
+					return request;
+				});
+
+			assertThat(deletion).isNotNull();
+			assertThat(deletion.get(5, TimeUnit.SECONDS).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+		}
+		assertThat(count("event")).isZero();
+		assertThat(count("project")).isZero();
+	}
+
 	private long insertProject() {
 		return jdbc.sql("INSERT INTO project (slug, name) VALUES ('shop', 'Shop') RETURNING id")
 			.query(Long.class)
@@ -327,6 +369,31 @@ class DataRetentionIntegrationTest {
 
 	private long count(String table) {
 		return jdbc.sql("SELECT count(*) FROM " + table).query(Long.class).single();
+	}
+
+	private void awaitEventIssueLockWaiter() {
+		Instant deadline = Instant.now().plusSeconds(5);
+		while (Instant.now().isBefore(deadline)) {
+			long waiters = jdbc.sql("""
+					SELECT count(*) FROM pg_locks waiting
+					WHERE waiting.locktype = 'advisory' AND NOT waiting.granted
+					  AND (waiting.classid, waiting.objid, waiting.objsubid) IN (
+					      SELECT held.classid, held.objid, held.objsubid FROM pg_locks held
+					      WHERE held.locktype = 'advisory' AND held.granted AND held.pid = pg_backend_pid()
+					  )
+					""").query(Long.class).single();
+			if (waiters > 0) {
+				return;
+			}
+			try {
+				Thread.sleep(10);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new AssertionError("interrupted while waiting for project deletion", e);
+			}
+		}
+		throw new AssertionError("project deletion did not wait for the event/issue lock");
 	}
 
 	private String url(String path) {
