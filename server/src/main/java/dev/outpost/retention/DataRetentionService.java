@@ -4,7 +4,10 @@ import dev.outpost.db.PartitionManager;
 import dev.outpost.pipeline.EventIssueLock;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.DayOfWeek;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -196,9 +199,10 @@ public class DataRetentionService {
 
 		int logs = runStep("log_record boundary delete", 0,
 				() -> boundaryDelete("DELETE FROM log_record WHERE \"timestamp\" < ?", timestamp));
+		Timestamp boundaryWeekEnd = weekAfter(cutoff);
 		TxnSpanCleanup txnSpan = runStep("txn/span boundary delete", new TxnSpanCleanup(0, 0),
 				() -> Objects.requireNonNull(
-						telemetryTransaction.execute(status -> cleanupBoundaryTxnAndSpans(timestamp))));
+						telemetryTransaction.execute(status -> cleanupBoundaryTxnAndSpans(timestamp, boundaryWeekEnd))));
 		int uptimeChecks = runStep("uptime_check delete", 0,
 				() -> boundaryDelete("DELETE FROM uptime_check WHERE checked_at < ?", timestamp));
 		int uptimeIncidents = runStep("uptime_incident delete", 0, () -> boundaryDelete(
@@ -213,30 +217,30 @@ public class DataRetentionService {
 	}
 
 	/**
-	 * Deletes the boundary partition's expired txns and spans. Spans whose owning
-	 * txn just expired but that are themselves newer than the cutoff (a span that
-	 * outlived its transaction across the cutoff) are removed via the txn index,
-	 * not the whole-table scan the old {@code NOT EXISTS} predicate forced.
+	 * Prunes the boundary partition's expired txns and spans. A span can outlive
+	 * its transaction across the cutoff — whether the txn was removed by the
+	 * boundary delete below or vanished with a dropped partition — so retained
+	 * spans in the boundary week whose txn no longer exists are deleted via the
+	 * txn index. Scoping to the boundary week keeps this a single-partition
+	 * indexed anti-join rather than the whole-table scan the old {@code NOT
+	 * EXISTS} predicate forced: a span starts within its transaction's window, so
+	 * an orphan is at most one week boundary away from its now-gone txn.
 	 */
-	private TxnSpanCleanup cleanupBoundaryTxnAndSpans(Timestamp cutoff) {
-		jdbc.sql("""
-				CREATE TEMPORARY TABLE retention_deleted_txn (
-				    id uuid PRIMARY KEY
-				) ON COMMIT DROP
-				""").update();
-		int transactions = jdbc.sql("""
-				WITH deleted AS (
-				    DELETE FROM txn WHERE start_ts < ? RETURNING id
-				)
-				INSERT INTO retention_deleted_txn (id) SELECT id FROM deleted
-				""").param(cutoff).update();
+	private TxnSpanCleanup cleanupBoundaryTxnAndSpans(Timestamp cutoff, Timestamp boundaryWeekEnd) {
+		int transactions = jdbc.sql("DELETE FROM txn WHERE start_ts < ?").param(cutoff).update();
 		int expiredSpans = jdbc.sql("DELETE FROM span WHERE start_ts < ?").param(cutoff).update();
 		int orphanSpans = jdbc.sql("""
 				DELETE FROM span s
-				USING retention_deleted_txn d
-				WHERE s.txn_id = d.id
-				""").update();
+				WHERE s.start_ts >= ? AND s.start_ts < ?
+				  AND NOT EXISTS (SELECT 1 FROM txn t WHERE t.id = s.txn_id)
+				""").param(cutoff).param(boundaryWeekEnd).update();
 		return new TxnSpanCleanup(transactions, expiredSpans + orphanSpans);
+	}
+
+	/** First instant of the week after the one holding {@code cutoff}, on the same Monday-UTC boundaries as PartitionManager. */
+	private static Timestamp weekAfter(Instant cutoff) {
+		LocalDate weekStart = cutoff.atZone(ZoneOffset.UTC).toLocalDate().with(DayOfWeek.MONDAY);
+		return Timestamp.from(weekStart.plusWeeks(1).atStartOfDay(ZoneOffset.UTC).toInstant());
 	}
 
 	private <T> T runStep(String description, T timeoutFallback, Supplier<T> step) {

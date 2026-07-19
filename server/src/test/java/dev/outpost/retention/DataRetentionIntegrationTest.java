@@ -454,6 +454,31 @@ class DataRetentionIntegrationTest {
 	}
 
 	@Test
+	void retentionDeletesRetainedSpanOrphanedByDroppedTxnPartition() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z"); // boundary week Mon 2026-05-18..05-25
+		Instant old = Instant.parse("2026-05-06T12:00:00Z"); // week 05-04..05-11, txn partition is dropped
+		Instant after = cutoff.plusSeconds(1); // boundary week, span is retained
+		long projectId = insertProject();
+		partitions.ensurePartition(PartitionManager.TXN, old);
+		partitions.ensurePartition(PartitionManager.TXN, after);
+		partitions.ensurePartition(PartitionManager.SPAN, after);
+		// The owning txn lives in a fully-expired week (dropped wholesale); its span
+		// starts after the cutoff, so its own partition survives -> a cross-week orphan.
+		UUID droppedTxn = insertTransaction(projectId, old, "dropped");
+		UUID keptTxn = insertTransaction(projectId, after, "kept");
+		insertSpan(projectId, droppedTxn, after, "cross-week-orphan");
+		insertSpan(projectId, keptTxn, after, "kept-span");
+
+		cleanup.cleanup(cutoff);
+
+		assertThat(partitionExists("txn_p20260504")).isFalse(); // droppedTxn gone with the partition
+		assertThat(count("span")).isEqualTo(1); // orphan removed, kept-span survives
+		assertThat(jdbc.sql("SELECT description FROM span").query(String.class).single()).isEqualTo("kept-span");
+		assertThat(jdbc.sql("SELECT count(*) FROM span s WHERE NOT EXISTS (SELECT 1 FROM txn t WHERE t.id = s.txn_id)")
+			.query(Long.class).single()).isZero();
+	}
+
+	@Test
 	void retentionDropsPartitionWhoseUpperBoundEqualsCutoffButKeepsTheNext() {
 		Instant cutoff = Instant.parse("2026-05-18T00:00:00Z"); // Monday midnight = a week boundary
 		Instant priorWeek = Instant.parse("2026-05-14T12:00:00Z"); // week 05-11..05-18, upper bound == cutoff
