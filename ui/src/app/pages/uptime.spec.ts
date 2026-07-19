@@ -50,6 +50,28 @@ describe('UptimePage', () => {
     expect(await screen.findByText(/No uptime monitors configured yet/)).toBeInTheDocument();
   });
 
+  it('shows a load error and retries the request', async () => {
+    let requests = 0;
+    server.use(
+      http.get(`${BASE}/uptime/overview`, () => {
+        requests++;
+        return requests === 1
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({ monitors: [monitor()] });
+      }),
+    );
+    await renderUptime();
+    const user = userEvent.setup();
+
+    expect(await screen.findByText('Could not load uptime data.')).toBeInTheDocument();
+    expect(screen.queryByText(/No uptime monitors configured yet/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('https://shop.example.com/health')).toBeInTheDocument();
+    expect(requests).toBe(2);
+  });
+
   it('renders one row per monitor with 90 stripes', async () => {
     seedOverview([monitor(), monitor({ id: 2, url: 'https://api.example.com/health' })]);
     await renderUptime();

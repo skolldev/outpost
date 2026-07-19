@@ -1,6 +1,14 @@
 <div class="mx-auto max-w-[96rem]">
   @if (loading()) {
     <div class="flex justify-center py-12"><hlm-spinner /></div>
+  } @else if (error()) {
+    <div hlmAlert variant="destructive" class="mx-auto max-w-xl">
+      <p hlmAlertTitle>{{ error() }}</p>
+      <div hlmAlertDescription class="flex flex-wrap items-center justify-between gap-3">
+        <p>The latest monitor status is unavailable. Try loading it again.</p>
+        <button hlmBtn variant="outline" size="sm" type="button" (click)="load()">Try again</button>
+      </div>
+    </div>
   } @else if (monitors().length === 0) {
     <p class="py-12 text-center text-sm text-muted-foreground">
       No uptime monitors configured yet. Admins can add monitors under Settings → Uptime.

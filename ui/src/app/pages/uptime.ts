@@ -4,6 +4,8 @@ import { firstValueFrom } from 'rxjs';
 import { HlmCard } from '@spartan-ng/helm/card';
 import { HlmSpinner } from '@spartan-ng/helm/spinner';
 import { HlmPopoverImports } from '@spartan-ng/helm/popover';
+import { HlmButton } from '@spartan-ng/helm/button';
+import { HlmAlert, HlmAlertDescription, HlmAlertTitle } from '@spartan-ng/helm/alert';
 
 import { Api } from '../core/api';
 import { UptimeDay, UptimeMonitorOverview } from '../core/models';
@@ -28,7 +30,16 @@ interface MonitorRow {
  */
 @Component({
   selector: 'app-uptime',
-  imports: [DatePipe, HlmCard, HlmSpinner, HlmPopoverImports],
+  imports: [
+    DatePipe,
+    HlmCard,
+    HlmSpinner,
+    HlmPopoverImports,
+    HlmButton,
+    HlmAlert,
+    HlmAlertTitle,
+    HlmAlertDescription,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './uptime.html',
 })
@@ -36,6 +47,7 @@ export class UptimePage {
   private readonly api = inject(Api);
 
   readonly loading = signal(true);
+  readonly error = signal<string | null>(null);
   readonly monitors = signal<UptimeMonitorOverview[]>([]);
 
   readonly rows = computed<MonitorRow[]>(() =>
@@ -47,9 +59,20 @@ export class UptimePage {
   );
 
   constructor() {
-    void firstValueFrom(this.api.uptimeOverview())
-      .then((overview) => this.monitors.set(overview.monitors))
-      .finally(() => this.loading.set(false));
+    void this.load();
+  }
+
+  async load(): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const overview = await firstValueFrom(this.api.uptimeOverview());
+      this.monitors.set(overview.monitors);
+    } catch {
+      this.error.set('Could not load uptime data.');
+    } finally {
+      this.loading.set(false);
+    }
   }
 
   statusColor(status: UptimeMonitorOverview['status']): string {

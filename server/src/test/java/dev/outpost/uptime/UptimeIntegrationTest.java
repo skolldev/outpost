@@ -124,11 +124,19 @@ class UptimeIntegrationTest {
 		assertThat(body.get("interval_seconds")).isEqualTo(3600);
 		long id = ((Number) body.get("id")).longValue();
 
-		// Seed a failure streak, then PATCH — streak and schedule reset.
+		// Seed a failure streak, then PATCH — project, streak, and schedule update.
 		jdbc.sql("UPDATE uptime_monitor SET consecutive_failures = 2 WHERE id = ?").param(id).update();
+		long otherProjectId = jdbc.sql("INSERT INTO project (slug, name) VALUES ('payments', 'Payments') RETURNING id")
+			.query(Long.class)
+			.single();
+		assertThat(exchange(HttpMethod.PATCH, "/api/internal/uptime/monitors/" + id,
+				monitorBody(999_999, stubUrl("/health"), 900, 5), adminCookie).getStatusCode())
+			.isEqualTo(HttpStatus.BAD_REQUEST);
 		ResponseEntity<Map> updated = exchange(HttpMethod.PATCH, "/api/internal/uptime/monitors/" + id,
-				monitorBody(stubUrl("/health"), 900, 5), adminCookie);
+				monitorBody(otherProjectId, stubUrl("/health"), 900, 5), adminCookie);
 		assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(((Number) updated.getBody().get("project_id")).longValue()).isEqualTo(otherProjectId);
+		assertThat(updated.getBody().get("project_slug")).isEqualTo("payments");
 		assertThat(updated.getBody().get("interval_seconds")).isEqualTo(900);
 		assertThat(updated.getBody().get("timeout_seconds")).isEqualTo(5);
 		assertThat(updated.getBody().get("consecutive_failures")).isEqualTo(0);
@@ -377,7 +385,11 @@ class UptimeIntegrationTest {
 	}
 
 	private Map<String, Object> monitorBody(String url, int intervalSeconds, int timeoutSeconds) {
-		return Map.of("project_id", projectId, "environment", "prod", "url", url, "interval_seconds", intervalSeconds,
+		return monitorBody(projectId, url, intervalSeconds, timeoutSeconds);
+	}
+
+	private Map<String, Object> monitorBody(long targetProjectId, String url, int intervalSeconds, int timeoutSeconds) {
+		return Map.of("project_id", targetProjectId, "environment", "prod", "url", url, "interval_seconds", intervalSeconds,
 				"timeout_seconds", timeoutSeconds);
 	}
 

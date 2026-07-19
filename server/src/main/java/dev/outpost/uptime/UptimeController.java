@@ -112,13 +112,21 @@ public class UptimeController {
 		if (problem != null) {
 			return ResponseEntity.badRequest().body(Map.of("detail", problem));
 		}
+		boolean projectExists = jdbc.sql("SELECT count(*) FROM project WHERE id = ?")
+			.param(request.projectId())
+			.query(Long.class)
+			.single() > 0;
+		if (!projectExists) {
+			return ResponseEntity.badRequest().body(Map.of("detail", "project does not exist"));
+		}
 		// Any edit restarts an in-progress failure streak and re-checks
 		// immediately — the simplest coherent behavior after a config change.
 		int updated = jdbc.sql("""
-				UPDATE uptime_monitor SET environment = ?, url = ?, interval_seconds = ?, timeout_seconds = ?,
+				UPDATE uptime_monitor SET project_id = ?, environment = ?, url = ?, interval_seconds = ?, timeout_seconds = ?,
 					consecutive_failures = 0, next_check_at = now()
 				WHERE id = ?
 				""")
+			.param(request.projectId())
 			.param(request.environment().trim())
 			.param(request.url().trim())
 			.param(request.intervalSeconds())
