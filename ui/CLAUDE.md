@@ -49,8 +49,9 @@ Drive tests through Wallaby, not the CLI (`npx vitest` / `ng test` fail here
 with "JIT compilation failed for BrowserXhr").
 
 Specs are `*.spec.ts` colocated in `pages/`, using `@testing-library/angular`
-+ `user-event` + MSW (`src/mocks/node.ts`); provide `provideHttpClient()` and
-a fake `Session` via DI (template: `pages/settings.spec.ts`).
+
+- `user-event` + MSW (`src/mocks/node.ts`); provide `provideHttpClient()` and
+  a fake `Session` via DI (template: `pages/settings.spec.ts`).
 
 Gotchas:
 
