@@ -1,6 +1,4 @@
-<div class="mx-auto max-w-[96rem] p-4">
-  <h1 class="mb-4 text-lg font-semibold text-foreground">Uptime</h1>
-
+<div class="mx-auto max-w-[96rem]">
   @if (loading()) {
     <div class="flex justify-center py-12"><hlm-spinner /></div>
   } @else if (monitors().length === 0) {
@@ -61,11 +59,11 @@
 
           <div class="flex gap-px">
             @for (stripe of row.stripes; track stripe.date) {
-              <hlm-popover sideOffset="6" align="center">
+              <hlm-popover sideOffset="6" align="center" class="min-w-0 flex-1">
                 <button
                   hlmPopoverTrigger
                   type="button"
-                  class="h-8 min-w-0 flex-1 cursor-pointer rounded-[1px] outline-none transition-opacity hover:opacity-70 focus-visible:ring-2 focus-visible:ring-ring"
+                  class="h-8 w-full cursor-pointer rounded-[1px] outline-none transition-opacity hover:opacity-70 focus-visible:ring-2 focus-visible:ring-ring"
                   [style.background-color]="stripe.color"
                   [attr.aria-label]="'Uptime ' + stripe.date"
                 ></button>
