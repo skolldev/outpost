@@ -38,6 +38,10 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/releases').then((m) => m.ReleasesPage),
       },
       {
+        path: 'uptime',
+        loadComponent: () => import('./pages/uptime').then((m) => m.UptimePage),
+      },
+      {
         path: 'settings',
         loadComponent: () => import('./pages/settings').then((m) => m.SettingsPage),
       },

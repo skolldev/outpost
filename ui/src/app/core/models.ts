@@ -289,3 +289,55 @@ export interface TraceDetail {
   errors: TraceError[];
   logs: LogRecord[];
 }
+
+// Uptime monitoring
+
+export interface UptimeMonitor {
+  id: number;
+  project_id: number;
+  project_slug: string;
+  environment: string;
+  url: string;
+  interval_seconds: number;
+  timeout_seconds: number;
+  consecutive_failures: number;
+  created_at: string;
+}
+
+export interface UptimeTestResult {
+  success: boolean;
+  status_code: number | null;
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface UptimeDay {
+  date: string;
+  total: number;
+  failures: number;
+  uptime_pct: number;
+  avg_latency_ms: number | null;
+}
+
+export interface UptimeOpenIncident {
+  id: number;
+  monitor_id: number;
+  opened_at: string;
+  last_error: string | null;
+}
+
+export interface UptimeMonitorOverview {
+  id: number;
+  project_id: number;
+  project_slug: string;
+  environment: string;
+  url: string;
+  interval_seconds: number;
+  status: 'up' | 'down' | 'unknown';
+  open_incident: UptimeOpenIncident | null;
+  days: UptimeDay[];
+}
+
+export interface UptimeOverview {
+  monitors: UptimeMonitorOverview[];
+}
