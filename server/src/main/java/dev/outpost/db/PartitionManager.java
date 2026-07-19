@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,6 +56,59 @@ public class PartitionManager {
 	/** Cheap when the partition is already known; creates it otherwise. */
 	public void ensurePartition(String table, Instant timestamp) {
 		ensureWeek(table, weekStart(timestamp));
+	}
+
+	/**
+	 * Drops every weekly partition of {@code table} whose range lies entirely
+	 * before {@code cutoff}, reclaiming disk immediately instead of row-deleting.
+	 * Runs under the same advisory lock as creation, so it never races
+	 * {@link #ensureWeek}. The boundary partition straddling the cutoff still
+	 * holds live rows and is left for the caller to prune.
+	 *
+	 * @return the number of partitions dropped
+	 */
+	public int dropExpiredPartitions(String table, Instant cutoff) {
+		String prefix = table + "_p";
+		List<String> partitions = jdbc.sql("""
+				SELECT c.relname
+				FROM pg_inherits i
+				JOIN pg_class c ON c.oid = i.inhrelid
+				JOIN pg_class p ON p.oid = i.inhparent
+				WHERE p.relname = ?
+				""").param(table).query(String.class).list();
+		int dropped = 0;
+		for (String partition : partitions) {
+			LocalDate weekStart = weekStartOf(partition, prefix);
+			if (weekStart == null) {
+				continue;
+			}
+			// The partition covers [weekStart, weekStart + 1 week); it is fully
+			// expired only when that upper bound is at or before the cutoff, so
+			// the current and future partitions are never eligible.
+			Instant upperBound = weekStart.plusWeeks(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+			if (upperBound.isAfter(cutoff)) {
+				continue;
+			}
+			transaction.executeWithoutResult(status -> {
+				jdbc.sql("SELECT pg_advisory_xact_lock(" + ADVISORY_LOCK_KEY + ")").query(rs -> {});
+				jdbc.sql("DROP TABLE IF EXISTS " + partition).update();
+			});
+			knownPartitions.remove(partition);
+			dropped++;
+		}
+		return dropped;
+	}
+
+	private static LocalDate weekStartOf(String partition, String prefix) {
+		if (!partition.startsWith(prefix)) {
+			return null;
+		}
+		try {
+			return LocalDate.parse(partition.substring(prefix.length()), NAME_FORMAT);
+		}
+		catch (DateTimeParseException e) {
+			return null;
+		}
 	}
 
 	private void ensureWeek(String table, LocalDate weekStart) {

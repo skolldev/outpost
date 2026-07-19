@@ -1,11 +1,13 @@
 package dev.outpost.retention;
 
+import dev.outpost.db.PartitionManager;
 import dev.outpost.pipeline.EventIssueLock;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,24 +24,29 @@ public class DataRetentionService {
 
 	private static final Logger log = LoggerFactory.getLogger(DataRetentionService.class);
 
-	public record CleanupResult(int events, int issues, int logs, int transactions, int spans, int uptimeChecks,
-			int uptimeIncidents, int deferredProjects) {
+	public record CleanupResult(int events, int issues, int logs, int transactions, int spans, int droppedPartitions,
+			int uptimeChecks, int uptimeIncidents, int deferredProjects) {
 	}
 
 	private record ProjectChunk(int events, int issues, boolean acquired) {
 	}
 
-	private record TelemetryCleanup(int logs, int transactions, int spans, int uptimeChecks, int uptimeIncidents) {
+	private record TelemetryCleanup(int logs, int transactions, int spans, int droppedPartitions, int uptimeChecks,
+			int uptimeIncidents) {
+	}
+
+	private record TxnSpanCleanup(int transactions, int spans) {
 	}
 
 	private final JdbcClient jdbc;
+	private final PartitionManager partitions;
 	private final TransactionTemplate projectChunkTransaction;
 	private final TransactionTemplate telemetryTransaction;
 	private final EventIssueLock eventIssueLock;
 	private final int eventChunkSize;
 
 	public DataRetentionService(JdbcClient jdbc, PlatformTransactionManager transactionManager,
-			EventIssueLock eventIssueLock,
+			PartitionManager partitions, EventIssueLock eventIssueLock,
 			@Value("${outpost.retention.event-chunk-size:10000}") int eventChunkSize,
 			@Value("${outpost.retention.chunk-timeout-seconds:30}") int chunkTimeoutSeconds) {
 		if (eventChunkSize < 1) {
@@ -49,9 +56,11 @@ public class DataRetentionService {
 			throw new IllegalArgumentException("outpost.retention.chunk-timeout-seconds must be positive");
 		}
 		this.jdbc = jdbc;
+		this.partitions = partitions;
 		this.projectChunkTransaction = new TransactionTemplate(transactionManager);
 		this.projectChunkTransaction.setTimeout(chunkTimeoutSeconds);
 		this.telemetryTransaction = new TransactionTemplate(transactionManager);
+		this.telemetryTransaction.setTimeout(chunkTimeoutSeconds);
 		this.eventIssueLock = eventIssueLock;
 		this.eventChunkSize = eventChunkSize;
 	}
@@ -92,10 +101,9 @@ public class DataRetentionService {
 			}
 		}
 
-		TelemetryCleanup telemetry = Objects.requireNonNull(
-				telemetryTransaction.execute(status -> cleanupTelemetry(timestamp)));
+		TelemetryCleanup telemetry = cleanupTelemetry(cutoff, timestamp);
 		return new CleanupResult(events, issues, telemetry.logs(), telemetry.transactions(), telemetry.spans(),
-				telemetry.uptimeChecks(), telemetry.uptimeIncidents(), deferredProjects);
+				telemetry.droppedPartitions(), telemetry.uptimeChecks(), telemetry.uptimeIncidents(), deferredProjects);
 	}
 
 	private ProjectChunk cleanupProjectChunk(long projectId, Timestamp cutoff) {
@@ -173,20 +181,75 @@ public class DataRetentionService {
 		return new ProjectChunk(events, issues, true);
 	}
 
-	private TelemetryCleanup cleanupTelemetry(Timestamp cutoff) {
-		int logs = jdbc.sql("DELETE FROM log_record WHERE \"timestamp\" < ?").param(cutoff).update();
-		int transactions = jdbc.sql("DELETE FROM txn WHERE start_ts < ?").param(cutoff).update();
-		int spans = jdbc.sql("""
-				DELETE FROM span s
-				WHERE s.start_ts < ?
-				   OR NOT EXISTS (SELECT 1 FROM txn t WHERE t.id = s.txn_id)
+	/**
+	 * Retires expired telemetry. The partitioned tables (log_record, txn, span)
+	 * shed whole expired weeks by dropping partitions — reclaiming disk instantly
+	 * instead of row-deleting — and row-delete only the single boundary partition
+	 * straddling the cutoff, so the effective cutoff stays exact. Each step runs
+	 * in its own timed transaction, so none pins the vacuum horizon and a timeout
+	 * defers that step to the next run rather than failing the whole cleanup.
+	 */
+	private TelemetryCleanup cleanupTelemetry(Instant cutoff, Timestamp timestamp) {
+		int droppedPartitions = partitions.dropExpiredPartitions(PartitionManager.LOG_RECORD, cutoff)
+				+ partitions.dropExpiredPartitions(PartitionManager.TXN, cutoff)
+				+ partitions.dropExpiredPartitions(PartitionManager.SPAN, cutoff);
+
+		int logs = runStep("log_record boundary delete", 0,
+				() -> boundaryDelete("DELETE FROM log_record WHERE \"timestamp\" < ?", timestamp));
+		TxnSpanCleanup txnSpan = runStep("txn/span boundary delete", new TxnSpanCleanup(0, 0),
+				() -> Objects.requireNonNull(
+						telemetryTransaction.execute(status -> cleanupBoundaryTxnAndSpans(timestamp))));
+		int uptimeChecks = runStep("uptime_check delete", 0,
+				() -> boundaryDelete("DELETE FROM uptime_check WHERE checked_at < ?", timestamp));
+		int uptimeIncidents = runStep("uptime_incident delete", 0, () -> boundaryDelete(
+				"DELETE FROM uptime_incident WHERE closed_at IS NOT NULL AND closed_at < ?", timestamp));
+
+		return new TelemetryCleanup(logs, txnSpan.transactions(), txnSpan.spans(), droppedPartitions, uptimeChecks,
+				uptimeIncidents);
+	}
+
+	private int boundaryDelete(String sql, Timestamp cutoff) {
+		return Objects.requireNonNull(telemetryTransaction.execute(status -> jdbc.sql(sql).param(cutoff).update()));
+	}
+
+	/**
+	 * Deletes the boundary partition's expired txns and spans. Spans whose owning
+	 * txn just expired but that are themselves newer than the cutoff (a span that
+	 * outlived its transaction across the cutoff) are removed via the txn index,
+	 * not the whole-table scan the old {@code NOT EXISTS} predicate forced.
+	 */
+	private TxnSpanCleanup cleanupBoundaryTxnAndSpans(Timestamp cutoff) {
+		jdbc.sql("""
+				CREATE TEMPORARY TABLE retention_deleted_txn (
+				    id uuid PRIMARY KEY
+				) ON COMMIT DROP
+				""").update();
+		int transactions = jdbc.sql("""
+				WITH deleted AS (
+				    DELETE FROM txn WHERE start_ts < ? RETURNING id
+				)
+				INSERT INTO retention_deleted_txn (id) SELECT id FROM deleted
 				""").param(cutoff).update();
-		int uptimeChecks = jdbc.sql("DELETE FROM uptime_check WHERE checked_at < ?").param(cutoff).update();
-		int uptimeIncidents = jdbc
-			.sql("DELETE FROM uptime_incident WHERE closed_at IS NOT NULL AND closed_at < ?")
-			.param(cutoff)
-			.update();
-		return new TelemetryCleanup(logs, transactions, spans, uptimeChecks, uptimeIncidents);
+		int expiredSpans = jdbc.sql("DELETE FROM span WHERE start_ts < ?").param(cutoff).update();
+		int orphanSpans = jdbc.sql("""
+				DELETE FROM span s
+				USING retention_deleted_txn d
+				WHERE s.txn_id = d.id
+				""").update();
+		return new TxnSpanCleanup(transactions, expiredSpans + orphanSpans);
+	}
+
+	private <T> T runStep(String description, T timeoutFallback, Supplier<T> step) {
+		try {
+			return step.get();
+		}
+		catch (RuntimeException e) {
+			if (!isTimeout(e)) {
+				throw e;
+			}
+			log.warn("deferring retention step '{}' after it timed out", description);
+			return timeoutFallback;
+		}
 	}
 
 	private boolean isTimeout(RuntimeException exception) {

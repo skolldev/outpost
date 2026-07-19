@@ -410,6 +410,68 @@ class DataRetentionIntegrationTest {
 		}
 	}
 
+	@Test
+	void retentionDropsFullyExpiredPartitionsAndPrunesBoundary() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z"); // Wed; week Mon 2026-05-18..05-25
+		Instant old = Instant.parse("2026-05-06T12:00:00Z"); // week 05-04..05-11, entirely expired
+		Instant before = cutoff.minusSeconds(1); // boundary week, expired
+		Instant after = cutoff.plusSeconds(1); // boundary week, retained
+		Instant future = Instant.parse("2026-06-01T12:00:00Z"); // week 06-01.., retained
+		long projectId = insertProject();
+		for (Instant instant : List.of(old, before, after, future)) {
+			partitions.ensurePartition(PartitionManager.LOG_RECORD, instant);
+		}
+		for (Instant instant : List.of(old, after)) {
+			partitions.ensurePartition(PartitionManager.TXN, instant);
+			partitions.ensurePartition(PartitionManager.SPAN, instant);
+		}
+		insertLog(projectId, old, "old");
+		insertLog(projectId, before, "before");
+		insertLog(projectId, after, "after");
+		insertLog(projectId, future, "future");
+		UUID oldTxn = insertTransaction(projectId, old, "old");
+		UUID keptTxn = insertTransaction(projectId, after, "kept");
+		insertSpan(projectId, oldTxn, old, "old-span");
+		insertSpan(projectId, keptTxn, after, "kept-span");
+
+		DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
+
+		// Whole expired weeks are dropped, not row-deleted.
+		assertThat(partitionExists("log_record_p20260504")).isFalse();
+		assertThat(partitionExists("txn_p20260504")).isFalse();
+		assertThat(partitionExists("span_p20260504")).isFalse();
+		// The boundary and future weeks survive as partitions.
+		assertThat(partitionExists("log_record_p20260518")).isTrue();
+		assertThat(partitionExists("log_record_p20260601")).isTrue();
+		assertThat(result.droppedPartitions()).isGreaterThanOrEqualTo(3);
+
+		// Boundary rows are pruned at the exact cutoff; retained/future rows stay.
+		assertThat(count("log_record")).isEqualTo(2); // after + future
+		assertThat(count("txn")).isEqualTo(1); // keptTxn
+		assertThat(count("span")).isEqualTo(1); // kept-span
+		assertThat(jdbc.sql("SELECT count(*) FROM span s WHERE NOT EXISTS (SELECT 1 FROM txn t WHERE t.id = s.txn_id)")
+			.query(Long.class).single()).isZero();
+	}
+
+	@Test
+	void retentionDropsPartitionWhoseUpperBoundEqualsCutoffButKeepsTheNext() {
+		Instant cutoff = Instant.parse("2026-05-18T00:00:00Z"); // Monday midnight = a week boundary
+		Instant priorWeek = Instant.parse("2026-05-14T12:00:00Z"); // week 05-11..05-18, upper bound == cutoff
+		Instant atCutoff = cutoff; // first instant of the 05-18..05-25 week, retained
+		long projectId = insertProject();
+		partitions.ensurePartition(PartitionManager.LOG_RECORD, priorWeek);
+		partitions.ensurePartition(PartitionManager.LOG_RECORD, atCutoff);
+		insertLog(projectId, priorWeek, "prior");
+		insertLog(projectId, atCutoff, "at-cutoff");
+
+		cleanup.cleanup(cutoff);
+
+		// upper bound (2026-05-18T00:00Z) <= cutoff -> dropped; the next week is kept.
+		assertThat(partitionExists("log_record_p20260511")).isFalse();
+		assertThat(partitionExists("log_record_p20260518")).isTrue();
+		assertThat(count("log_record")).isEqualTo(1); // the at-cutoff row (>= cutoff) survives
+	}
+
 	private long insertProject() {
 		return insertProject("shop");
 	}
@@ -564,6 +626,10 @@ class DataRetentionIntegrationTest {
 
 	private long count(String table) {
 		return jdbc.sql("SELECT count(*) FROM " + table).query(Long.class).single();
+	}
+
+	private boolean partitionExists(String partition) {
+		return jdbc.sql("SELECT to_regclass(?) IS NOT NULL").param(partition).query(Boolean.class).single();
 	}
 
 	private long eventCount(long projectId) {
