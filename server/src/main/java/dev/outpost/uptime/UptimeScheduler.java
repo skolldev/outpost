@@ -58,6 +58,11 @@ public class UptimeScheduler implements SmartLifecycle {
 
 	@Override
 	public void start() {
+		// Reset coordination state alongside the executors: stop() can drop a
+		// queued probe before check()'s finally clears its id, so on a restart
+		// inFlight may hold stale ids that would make tick() skip those monitors
+		// forever. A fresh start owns no in-flight probes.
+		inFlight.clear();
 		coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
 			Thread thread = new Thread(runnable, "uptime-coordinator");
 			thread.setDaemon(true);
