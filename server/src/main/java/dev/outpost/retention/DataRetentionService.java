@@ -112,9 +112,14 @@ public class DataRetentionService {
 		// With no deferrals, every event below the cutoff was deleted and its issue
 		// aggregates rebuilt, so fully-expired event weeks are empty and can be
 		// dropped. A deferred project may still own rows in them; leave the
-		// partitions for the next run in that case.
+		// partitions for the next run in that case. The drop is only-if-empty:
+		// ingestion can commit a stale-timestamped event into an expired week
+		// after the per-project pass, and dropping it here would bypass the event
+		// lock and strand its just-incremented issue aggregates.
 		int droppedEventPartitions = deferredProjects == 0
-				? dropExpiredPartitions(PartitionManager.EVENT, cutoff) : 0;
+				? runStep("event partition drop", 0,
+						() -> partitions.dropExpiredPartitions(PartitionManager.EVENT, cutoff, chunkTimeoutSeconds, true))
+				: 0;
 
 		TelemetryCleanup telemetry = cleanupTelemetry(cutoff, timestamp);
 		return new CleanupResult(events, issues, telemetry.logs(), telemetry.transactions(), telemetry.spans(),

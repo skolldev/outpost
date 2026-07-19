@@ -73,10 +73,23 @@ public class PartitionManager {
 	 * {@code trace_id}) can hold, so without the bound the daily job could block
 	 * indefinitely and pin a connection. On timeout the drop throws (a query
 	 * cancellation) so the caller can defer it to the next run.
+	 * <p>
+	 * With {@code onlyIfEmpty}, a partition is dropped only when it holds no
+	 * rows, checked after taking its ACCESS EXCLUSIVE lock so a concurrent
+	 * insert either commits before the check (partition is kept) or blocks until
+	 * the decision is made — there is no window where a committed row can be
+	 * dropped. Used for {@code event}, where rows may only be removed under the
+	 * per-project event lock: a stale-timestamped event can land in an expired
+	 * week after that pass, and its partition must then survive until the next
+	 * run row-deletes it and rebuilds the issue aggregates.
 	 *
 	 * @return the number of partitions dropped
 	 */
 	public int dropExpiredPartitions(String table, Instant cutoff, int lockTimeoutSeconds) {
+		return dropExpiredPartitions(table, cutoff, lockTimeoutSeconds, false);
+	}
+
+	public int dropExpiredPartitions(String table, Instant cutoff, int lockTimeoutSeconds, boolean onlyIfEmpty) {
 		TransactionTemplate dropTransaction = new TransactionTemplate(transactionManager);
 		if (lockTimeoutSeconds > 0) {
 			dropTransaction.setTimeout(lockTimeoutSeconds);
@@ -102,12 +115,21 @@ public class PartitionManager {
 			if (upperBound.isAfter(cutoff)) {
 				continue;
 			}
-			dropTransaction.executeWithoutResult(status -> {
+			boolean droppedPartition = Boolean.TRUE.equals(dropTransaction.execute(status -> {
 				jdbc.sql("SELECT pg_advisory_xact_lock(" + ADVISORY_LOCK_KEY + ")").query(rs -> {});
+				if (onlyIfEmpty) {
+					jdbc.sql("LOCK TABLE " + partition + " IN ACCESS EXCLUSIVE MODE").update();
+					if (jdbc.sql("SELECT EXISTS (SELECT 1 FROM " + partition + ")").query(Boolean.class).single()) {
+						return false;
+					}
+				}
 				jdbc.sql("DROP TABLE IF EXISTS " + partition).update();
-			});
-			knownPartitions.remove(partition);
-			dropped++;
+				return true;
+			}));
+			if (droppedPartition) {
+				knownPartitions.remove(partition);
+				dropped++;
+			}
 		}
 		return dropped;
 	}

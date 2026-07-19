@@ -529,6 +529,28 @@ class DataRetentionIntegrationTest {
 		assertThat(count("log_record")).isEqualTo(1); // the at-cutoff row (>= cutoff) survives
 	}
 
+	@Test
+	void onlyIfEmptyDropKeepsExpiredEventPartitionHoldingALateArrival() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
+		Instant old = Instant.parse("2026-05-06T12:00:00Z"); // week 05-04..05-11, entirely expired
+		long projectId = insertProject();
+		partitions.ensurePartition(PartitionManager.EVENT, old);
+		long issueId = insertIssue(projectId, "late", "Late arrival", null, "unresolved", old);
+		// A stale-timestamped event committed after the per-project pass: the
+		// partition is expired but not empty, so it must survive the drop.
+		insertEvent(projectId, issueId, old, "prod", "error");
+
+		assertThat(partitions.dropExpiredPartitions(PartitionManager.EVENT, cutoff, 5, true)).isZero();
+
+		assertThat(partitionExists("event_p20260504")).isTrue();
+		assertThat(count("event")).isEqualTo(1);
+
+		// Once the row is gone (next run's locked cleanup), the drop proceeds.
+		jdbc.sql("DELETE FROM event").update();
+		assertThat(partitions.dropExpiredPartitions(PartitionManager.EVENT, cutoff, 5, true)).isEqualTo(1);
+		assertThat(partitionExists("event_p20260504")).isFalse();
+	}
+
 	private long insertProject() {
 		return insertProject("shop");
 	}
