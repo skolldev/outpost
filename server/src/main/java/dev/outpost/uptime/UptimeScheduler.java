@@ -40,12 +40,11 @@ public class UptimeScheduler implements SmartLifecycle {
 	private final UptimeCheckService checkService;
 	private final long tickMillis;
 
-	private final ScheduledExecutorService coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
-		Thread thread = new Thread(runnable, "uptime-coordinator");
-		thread.setDaemon(true);
-		return thread;
-	});
-	private final ExecutorService probes = Executors.newVirtualThreadPerTaskExecutor();
+	// Recreated on each start() so the bean survives a SmartLifecycle
+	// stop()/start() cycle (e.g. Spring's test-context pause/restart): stop()
+	// shuts these down for good, so a restart needs fresh executors.
+	private ScheduledExecutorService coordinator;
+	private ExecutorService probes;
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 	private volatile boolean running;
 
@@ -59,6 +58,12 @@ public class UptimeScheduler implements SmartLifecycle {
 
 	@Override
 	public void start() {
+		coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
+			Thread thread = new Thread(runnable, "uptime-coordinator");
+			thread.setDaemon(true);
+			return thread;
+		});
+		probes = Executors.newVirtualThreadPerTaskExecutor();
 		running = true;
 		coordinator.scheduleWithFixedDelay(this::tick, tickMillis, tickMillis, TimeUnit.MILLISECONDS);
 	}

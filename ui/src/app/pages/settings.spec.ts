@@ -5,7 +5,15 @@ import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
-import { ApiToken, AppUser, Project, ProjectKey, SessionUser, UptimeMonitor } from '../core/models';
+import {
+  ApiToken,
+  AppUser,
+  NotificationChannel,
+  Project,
+  ProjectKey,
+  SessionUser,
+  UptimeMonitor,
+} from '../core/models';
 import { Session } from '../core/session';
 import { SettingsPage } from './settings';
 
@@ -54,6 +62,18 @@ const MONITOR: UptimeMonitor = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
+const CHANNEL: NotificationChannel = {
+  id: 4,
+  name: 'Team alerts',
+  type: 'teams',
+  url: 'https://example.webhook.office.com/webhookb2/abc',
+  enabled: true,
+  triggers: ['new_issue', 'incident_started'],
+  project_filter: [],
+  environment_filter: [],
+  created_at: '2026-01-01T00:00:00Z',
+};
+
 /**
  * Minimal Session stand-in: the component only ever reads `isAdmin()` (and the
  * template reads it too), so we skip the real cookie/HTTP-backed Session.
@@ -71,6 +91,7 @@ function seedHandlers() {
     http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
     http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
     http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([MONITOR])),
+    http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([CHANNEL])),
     http.get(`${BASE}/projects/:id/environments`, () => HttpResponse.json(['prod', 'dev'])),
     http.get(`${BASE}/settings/data-retention`, () =>
       HttpResponse.json({ enabled: false, retention_days: 90 }),
@@ -103,6 +124,7 @@ describe('SettingsPage', () => {
 
       expect(screen.getByRole('button', { name: 'projects' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'uptime' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'notifications' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Data retention' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'tokens' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
@@ -116,6 +138,7 @@ describe('SettingsPage', () => {
       expect(screen.getByRole('button', { name: 'users' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'tokens' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'uptime' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'notifications' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Data retention' })).not.toBeInTheDocument();
     });
 
@@ -141,6 +164,7 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/users`, () => HttpResponse.json([])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([])),
         http.get(`${BASE}/settings/data-retention`, () =>
           HttpResponse.json({ enabled: false, retention_days: 90 }),
         ),
@@ -165,6 +189,7 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([])),
         http.get(`${BASE}/settings/data-retention`, () =>
           HttpResponse.json({ enabled: false, retention_days: 90 }),
         ),
@@ -434,6 +459,165 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('notifications tab', () => {
+    it('lists existing channels with their scope', async () => {
+      seedHandlers();
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+
+      expect(await screen.findByText('Team alerts')).toBeInTheDocument();
+      const table = within(screen.getByRole('table'));
+      expect(table.getByText('Teams')).toBeInTheDocument();
+      // Empty filters render as "all" in the UI copy.
+      expect(table.getByText(/All projects · All environments/)).toBeInTheDocument();
+    });
+
+    it('shows the empty state when there are no channels', async () => {
+      seedHandlers();
+      server.use(http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([])));
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+
+      expect(await screen.findByText(/No notification channels yet/)).toBeInTheDocument();
+    });
+
+    it('creates a channel with the expected payload, defaulting filters to all', async () => {
+      let created: Record<string, unknown> | null = null;
+      const channels: NotificationChannel[] = [];
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json(channels)),
+        http.post(`${BASE}/notifications/channels`, async ({ request }) => {
+          created = (await request.json()) as Record<string, unknown>;
+          const next: NotificationChannel = {
+            ...CHANNEL,
+            id: 9,
+            name: 'Ops',
+            type: 'generic_json',
+          };
+          channels.push(next);
+          return HttpResponse.json(next);
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.type(await screen.findByLabelText('Name'), 'Ops');
+      await user.selectOptions(nativeSelect('channelType'), 'generic_json');
+      await user.type(screen.getByLabelText('Webhook URL'), 'https://hooks.example.com/x');
+      await user.click(screen.getByLabelText('New issue'));
+      await user.type(screen.getByLabelText('Environments'), 'prod');
+      await user.click(screen.getByRole('button', { name: /create channel/i }));
+
+      await waitFor(() => expect(screen.getByText('Ops')).toBeInTheDocument());
+      expect(created).toEqual({
+        name: 'Ops',
+        type: 'generic_json',
+        url: 'https://hooks.example.com/x',
+        enabled: true,
+        triggers: ['new_issue'],
+        project_filter: [],
+        environment_filter: ['prod'],
+      });
+    });
+
+    it('scopes a channel to a chosen project', async () => {
+      let created: Record<string, unknown> | null = null;
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([])),
+        http.post(`${BASE}/notifications/channels`, async ({ request }) => {
+          created = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...CHANNEL, id: 9 });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.type(await screen.findByLabelText('Name'), 'Shop only');
+      await user.type(screen.getByLabelText('Webhook URL'), 'https://hooks.example.com/x');
+      await user.click(screen.getByLabelText('Incident started'));
+      // The project checkbox is labelled with the project name.
+      await user.click(screen.getByLabelText('shop-frontend'));
+      await user.click(screen.getByRole('button', { name: /create channel/i }));
+
+      await waitFor(() =>
+        expect(created).toEqual({
+          name: 'Shop only',
+          type: 'teams',
+          url: 'https://hooks.example.com/x',
+          enabled: true,
+          triggers: ['incident_started'],
+          project_filter: [1],
+          environment_filter: [],
+        }),
+      );
+    });
+
+    it('toggles a channel enabled/disabled without losing its config', async () => {
+      let patched: Record<string, unknown> | null = null;
+      seedHandlers();
+      server.use(
+        http.patch(`${BASE}/notifications/channels/:id`, async ({ request }) => {
+          patched = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...CHANNEL, enabled: false });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /disable/i }));
+
+      await waitFor(() =>
+        expect(patched).toEqual({
+          name: CHANNEL.name,
+          type: CHANNEL.type,
+          url: CHANNEL.url,
+          enabled: false,
+          triggers: CHANNEL.triggers,
+          project_filter: CHANNEL.project_filter,
+          environment_filter: CHANNEL.environment_filter,
+        }),
+      );
+    });
+
+    it('requires confirmation before deleting a channel', async () => {
+      let deleteCalls = 0;
+      const channels = [CHANNEL];
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json(channels)),
+        http.delete(`${BASE}/notifications/channels/:id`, () => {
+          deleteCalls += 1;
+          channels.length = 0;
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^delete$/i }));
+
+      // First click only arms the confirmation — nothing deleted yet.
+      expect(screen.getByText(/Delete this channel\?/)).toBeInTheDocument();
+      expect(deleteCalls).toBe(0);
+      expect(screen.getByText('Team alerts')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /confirm/i }));
+
+      expect(await screen.findByText(/No notification channels yet/)).toBeInTheDocument();
+      expect(deleteCalls).toBe(1);
+    });
+  });
+
   describe('tokens tab', () => {
     it('lists existing tokens', async () => {
       seedHandlers();
@@ -481,6 +665,7 @@ describe('SettingsPage', () => {
         http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
         http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])),
         http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([])),
         http.get(`${BASE}/settings/data-retention`, () =>
           HttpResponse.json({ enabled: false, retention_days: 90 }),
         ),

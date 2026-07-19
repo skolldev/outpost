@@ -348,3 +348,32 @@ export interface UptimeMonitorOverview {
 export interface UptimeOverview {
   monitors: UptimeMonitorOverview[];
 }
+
+// Notification channels
+
+export type NotificationChannelType = 'teams' | 'generic_json';
+export type NotificationTrigger = 'new_issue' | 'incident_started' | 'incident_resolved';
+
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  type: NotificationChannelType;
+  url: string;
+  enabled: boolean;
+  triggers: NotificationTrigger[];
+  // Empty project_filter = all Projects; empty environment_filter = all Environments.
+  project_filter: number[];
+  environment_filter: string[];
+  created_at: string;
+}
+
+/** Create/update payload — the server-managed id and created_at are omitted. */
+export interface NotificationChannelInput {
+  name: string;
+  type: NotificationChannelType;
+  url: string;
+  enabled: boolean;
+  triggers: NotificationTrigger[];
+  project_filter: number[];
+  environment_filter: string[];
+}

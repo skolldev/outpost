@@ -17,6 +17,9 @@ import {
   ApiToken,
   AppUser,
   DataRetentionSetting,
+  NotificationChannel,
+  NotificationChannelType,
+  NotificationTrigger,
   Project,
   ProjectKey,
   RetentionDays,
@@ -25,7 +28,7 @@ import {
 } from '../core/models';
 import { Session } from '../core/session';
 
-type SettingsTab = 'projects' | 'uptime' | 'data-retention' | 'tokens' | 'users';
+type SettingsTab = 'projects' | 'uptime' | 'notifications' | 'data-retention' | 'tokens' | 'users';
 type RetentionDaysValue = '30' | '60' | '90';
 
 /** Settings (§9 page 6): projects & DSNs, sentry-cli API tokens, users. Admin-only mutations. */
@@ -57,7 +60,7 @@ export class SettingsPage {
   // Installation settings and operational resources are admin-managed.
   readonly tabs = computed<SettingsTab[]>(() =>
     this.session.isAdmin()
-      ? ['projects', 'uptime', 'data-retention', 'tokens', 'users']
+      ? ['projects', 'uptime', 'notifications', 'data-retention', 'tokens', 'users']
       : ['projects', 'users'],
   );
   readonly activeTab = signal<SettingsTab>('projects');
@@ -75,6 +78,15 @@ export class SettingsPage {
   readonly monitorEnvs = signal<string[]>([]);
   readonly testResult = signal<UptimeTestResult | 'pending' | null>(null);
   readonly editingMonitorId = signal<number | null>(null);
+
+  readonly channels = signal<NotificationChannel[]>([]);
+  readonly editingChannelId = signal<number | null>(null);
+  readonly confirmDeleteChannelId = signal<number | null>(null);
+  readonly channelTriggerOptions: { value: NotificationTrigger; label: string }[] = [
+    { value: 'new_issue', label: 'New issue' },
+    { value: 'incident_started', label: 'Incident started' },
+    { value: 'incident_resolved', label: 'Incident resolved' },
+  ];
 
   readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90'];
   readonly retentionLoading = signal(false);
@@ -96,12 +108,28 @@ export class SettingsPage {
   newMonitorInterval = '60';
   newMonitorTimeout = 10;
 
+  newChannelName = '';
+  newChannelType: NotificationChannelType = 'teams';
+  newChannelUrl = '';
+  // Round-trips the enabled flag through the edit form (no visible control —
+  // enable/disable is a per-row toggle in the list). New channels start enabled.
+  newChannelEnabled = true;
+  channelTriggers: Record<NotificationTrigger, boolean> = {
+    new_issue: false,
+    incident_started: false,
+    incident_resolved: false,
+  };
+  // Keyed by project id; a truthy entry means the channel is scoped to it.
+  channelProjectSelected: Record<number, boolean> = {};
+  newChannelEnvironments = '';
+
   constructor() {
     void this.reloadProjects();
     if (this.session.isAdmin()) {
       void firstValueFrom(this.api.users()).then((users) => this.users.set(users));
       void firstValueFrom(this.api.tokens()).then((tokens) => this.tokens.set(tokens));
       void this.reloadMonitors();
+      void this.reloadChannels();
       void this.loadDataRetention();
     }
   }
@@ -279,6 +307,128 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
 
   intervalLabel(seconds: number): string {
     return seconds < 60 ? `${seconds}s` : `${seconds / 60}m`;
+  }
+
+  channelTypeLabel(type: NotificationChannelType): string {
+    return type === 'teams' ? 'Teams' : 'Generic JSON';
+  }
+
+  triggerLabel(trigger: NotificationTrigger): string {
+    return this.channelTriggerOptions.find((option) => option.value === trigger)?.label ?? trigger;
+  }
+
+  channelProjectsLabel(channel: NotificationChannel): string {
+    if (channel.project_filter.length === 0) return 'All projects';
+    const names = new Map(this.projects().map((project) => [project.id, project.name]));
+    return channel.project_filter.map((id) => names.get(id) ?? `#${id}`).join(', ');
+  }
+
+  channelEnvironmentsLabel(channel: NotificationChannel): string {
+    return channel.environment_filter.length === 0
+      ? 'All environments'
+      : channel.environment_filter.join(', ');
+  }
+
+  async saveChannel(): Promise<void> {
+    this.error.set(null);
+    const body = {
+      name: this.newChannelName,
+      type: this.newChannelType,
+      url: this.newChannelUrl,
+      enabled: this.newChannelEnabled,
+      triggers: this.channelTriggerOptions
+        .map((option) => option.value)
+        .filter((value) => this.channelTriggers[value]),
+      project_filter: this.projects()
+        .map((project) => project.id)
+        .filter((id) => this.channelProjectSelected[id]),
+      environment_filter: this.newChannelEnvironments
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
+    };
+    try {
+      const editing = this.editingChannelId();
+      if (editing === null) {
+        await firstValueFrom(this.api.createNotificationChannel(body));
+      } else {
+        await firstValueFrom(this.api.updateNotificationChannel(editing, body));
+      }
+      this.resetChannelForm();
+      await this.reloadChannels();
+    } catch {
+      this.error.set('Could not save notification channel — check the URL and pick a trigger.');
+    }
+  }
+
+  editChannel(channel: NotificationChannel): void {
+    this.editingChannelId.set(channel.id);
+    this.confirmDeleteChannelId.set(null);
+    this.error.set(null);
+    this.newChannelName = channel.name;
+    this.newChannelType = channel.type;
+    this.newChannelUrl = channel.url;
+    this.newChannelEnabled = channel.enabled;
+    for (const option of this.channelTriggerOptions) {
+      this.channelTriggers[option.value] = channel.triggers.includes(option.value);
+    }
+    this.channelProjectSelected = {};
+    for (const id of channel.project_filter) this.channelProjectSelected[id] = true;
+    this.newChannelEnvironments = channel.environment_filter.join(', ');
+  }
+
+  cancelChannelEdit(): void {
+    this.resetChannelForm();
+  }
+
+  async toggleChannel(channel: NotificationChannel): Promise<void> {
+    this.error.set(null);
+    try {
+      await firstValueFrom(
+        this.api.updateNotificationChannel(channel.id, {
+          name: channel.name,
+          type: channel.type,
+          url: channel.url,
+          enabled: !channel.enabled,
+          triggers: channel.triggers,
+          project_filter: channel.project_filter,
+          environment_filter: channel.environment_filter,
+        }),
+      );
+      await this.reloadChannels();
+    } catch {
+      this.error.set('Could not update notification channel.');
+    }
+  }
+
+  requestDeleteChannel(id: number): void {
+    this.confirmDeleteChannelId.set(id);
+  }
+
+  cancelDeleteChannel(): void {
+    this.confirmDeleteChannelId.set(null);
+  }
+
+  async deleteChannel(channel: NotificationChannel): Promise<void> {
+    await firstValueFrom(this.api.deleteNotificationChannel(channel.id));
+    if (this.editingChannelId() === channel.id) this.resetChannelForm();
+    this.confirmDeleteChannelId.set(null);
+    await this.reloadChannels();
+  }
+
+  private resetChannelForm(): void {
+    this.editingChannelId.set(null);
+    this.newChannelName = '';
+    this.newChannelType = 'teams';
+    this.newChannelUrl = '';
+    this.newChannelEnabled = true;
+    this.channelTriggers = { new_issue: false, incident_started: false, incident_resolved: false };
+    this.channelProjectSelected = {};
+    this.newChannelEnvironments = '';
+  }
+
+  private async reloadChannels(): Promise<void> {
+    this.channels.set(await firstValueFrom(this.api.notificationChannels()));
   }
 
   async saveDataRetention(): Promise<void> {
