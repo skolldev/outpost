@@ -27,3 +27,17 @@ All API JSON is **snake_case**: the backend serializes Java records via a
 global Jackson `SNAKE_CASE` strategy, and `ui/src/app/core/models.ts` mirrors
 the JSON field names verbatim. When adding an endpoint, the record DTO on the
 server and the interface in `models.ts` must line up field for field.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the five canonical labels with their default names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses the single-context layout. See `docs/agents/domain.md`.
