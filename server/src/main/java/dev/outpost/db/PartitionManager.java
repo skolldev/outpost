@@ -35,11 +35,13 @@ public class PartitionManager {
 	private static final long ADVISORY_LOCK_KEY = 727_572_057L; // unique to partition DDL
 
 	private final JdbcClient jdbc;
+	private final PlatformTransactionManager transactionManager;
 	private final TransactionTemplate transaction;
 	private final Set<String> knownPartitions = ConcurrentHashMap.newKeySet();
 
 	public PartitionManager(JdbcClient jdbc, PlatformTransactionManager transactionManager) {
 		this.jdbc = jdbc;
+		this.transactionManager = transactionManager;
 		this.transaction = new TransactionTemplate(transactionManager);
 	}
 
@@ -64,10 +66,21 @@ public class PartitionManager {
 	 * Runs under the same advisory lock as creation, so it never races
 	 * {@link #ensureWeek}. The boundary partition straddling the cutoff still
 	 * holds live rows and is left for the caller to prune.
+	 * <p>
+	 * Each drop runs in a transaction bounded by {@code lockTimeoutSeconds}: a
+	 * {@code DROP TABLE} needs an ACCESS EXCLUSIVE lock, which a concurrent
+	 * time-unfiltered scan of an old partition (e.g. a trace fan-out by
+	 * {@code trace_id}) can hold, so without the bound the daily job could block
+	 * indefinitely and pin a connection. On timeout the drop throws (a query
+	 * cancellation) so the caller can defer it to the next run.
 	 *
 	 * @return the number of partitions dropped
 	 */
-	public int dropExpiredPartitions(String table, Instant cutoff) {
+	public int dropExpiredPartitions(String table, Instant cutoff, int lockTimeoutSeconds) {
+		TransactionTemplate dropTransaction = new TransactionTemplate(transactionManager);
+		if (lockTimeoutSeconds > 0) {
+			dropTransaction.setTimeout(lockTimeoutSeconds);
+		}
 		String prefix = table + "_p";
 		List<String> partitions = jdbc.sql("""
 				SELECT c.relname
@@ -89,7 +102,7 @@ public class PartitionManager {
 			if (upperBound.isAfter(cutoff)) {
 				continue;
 			}
-			transaction.executeWithoutResult(status -> {
+			dropTransaction.executeWithoutResult(status -> {
 				jdbc.sql("SELECT pg_advisory_xact_lock(" + ADVISORY_LOCK_KEY + ")").query(rs -> {});
 				jdbc.sql("DROP TABLE IF EXISTS " + partition).update();
 			});

@@ -47,6 +47,7 @@ public class DataRetentionService {
 	private final TransactionTemplate telemetryTransaction;
 	private final EventIssueLock eventIssueLock;
 	private final int eventChunkSize;
+	private final int chunkTimeoutSeconds;
 
 	public DataRetentionService(JdbcClient jdbc, PlatformTransactionManager transactionManager,
 			PartitionManager partitions, EventIssueLock eventIssueLock,
@@ -66,6 +67,7 @@ public class DataRetentionService {
 		this.telemetryTransaction.setTimeout(chunkTimeoutSeconds);
 		this.eventIssueLock = eventIssueLock;
 		this.eventChunkSize = eventChunkSize;
+		this.chunkTimeoutSeconds = chunkTimeoutSeconds;
 	}
 
 	/** Runs bounded event cleanup per project, then cleans unrelated telemetry without the event lock. */
@@ -193,9 +195,9 @@ public class DataRetentionService {
 	 * defers that step to the next run rather than failing the whole cleanup.
 	 */
 	private TelemetryCleanup cleanupTelemetry(Instant cutoff, Timestamp timestamp) {
-		int droppedPartitions = partitions.dropExpiredPartitions(PartitionManager.LOG_RECORD, cutoff)
-				+ partitions.dropExpiredPartitions(PartitionManager.TXN, cutoff)
-				+ partitions.dropExpiredPartitions(PartitionManager.SPAN, cutoff);
+		int droppedPartitions = dropExpiredPartitions(PartitionManager.LOG_RECORD, cutoff)
+				+ dropExpiredPartitions(PartitionManager.TXN, cutoff)
+				+ dropExpiredPartitions(PartitionManager.SPAN, cutoff);
 
 		int logs = runStep("log_record boundary delete", 0,
 				() -> boundaryDelete("DELETE FROM log_record WHERE \"timestamp\" < ?", timestamp));
@@ -210,6 +212,11 @@ public class DataRetentionService {
 
 		return new TelemetryCleanup(logs, txnSpan.transactions(), txnSpan.spans(), droppedPartitions, uptimeChecks,
 				uptimeIncidents);
+	}
+
+	private int dropExpiredPartitions(String table, Instant cutoff) {
+		return runStep(table + " partition drop", 0,
+				() -> partitions.dropExpiredPartitions(table, cutoff, chunkTimeoutSeconds));
 	}
 
 	private int boundaryDelete(String sql, Timestamp cutoff) {
