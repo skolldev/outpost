@@ -18,10 +18,12 @@ import org.springframework.stereotype.Component;
 /**
  * Drives uptime monitors: a single-thread coordinator polls for monitors whose
  * {@code next_check_at} is due and fans probes out to virtual threads, one
- * in-flight probe per monitor. Re-arming happens from completion (inside
- * {@link UptimeCheckService#recordResult}), so a slow probe never overlaps
- * itself and a restart yields at most one immediate catch-up check per
- * monitor.
+ * in-flight probe per monitor. A monitor is provisionally re-armed before its
+ * probe starts, then re-armed from completion by
+ * {@link UptimeCheckService#recordResult}. The provisional schedule prevents a
+ * result-recording failure from making the coordinator immediately probe the
+ * still-due monitor again, while the in-flight set prevents slow probes from
+ * overlapping.
  *
  * <p>Also sweeps retention hourly: raw check rows and closed incidents older
  * than 90 days.
@@ -93,7 +95,28 @@ public class UptimeScheduler implements SmartLifecycle {
 			for (DueMonitor monitor : due) {
 				// One in-flight probe per monitor; parallel across monitors.
 				if (inFlight.add(monitor.id())) {
-					probes.submit(() -> check(monitor));
+					try {
+						// Claim before making the outbound request. recordResult normally
+						// moves this to one interval after completion; this provisional
+						// schedule is retained if recording the result rolls back.
+						int claimed = jdbc.sql("""
+								UPDATE uptime_monitor
+								SET next_check_at = now() + make_interval(secs => ?)
+								WHERE id = ? AND next_check_at <= now()
+								""")
+							.param(monitor.intervalSeconds())
+							.param(monitor.id())
+							.update();
+						if (claimed == 0) {
+							inFlight.remove(monitor.id());
+							continue;
+						}
+						probes.submit(() -> check(monitor));
+					}
+					catch (RuntimeException e) {
+						inFlight.remove(monitor.id());
+						throw e;
+					}
 				}
 			}
 		}

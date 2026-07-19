@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +59,7 @@ class UptimeIntegrationTest {
 	String adminCookie;
 	HttpServer stub;
 	volatile int stubStatus = 200;
+	final AtomicInteger stubRequests = new AtomicInteger();
 
 	@BeforeEach
 	void setUp() throws IOException {
@@ -73,6 +75,7 @@ class UptimeIntegrationTest {
 		adminCookie = login("admin@test.local", "test-password");
 		stub = HttpServer.create(new InetSocketAddress(0), 0);
 		stub.createContext("/health", exchange -> {
+			stubRequests.incrementAndGet();
 			exchange.sendResponseHeaders(stubStatus, -1);
 			exchange.close();
 		});
@@ -242,6 +245,35 @@ class UptimeIntegrationTest {
 		assertThat(checkCount(id)).isGreaterThanOrEqualTo(1);
 		// Re-armed one interval out — not due again.
 		assertThat(jdbc.sql("SELECT next_check_at > now() + interval '30 minutes' FROM uptime_monitor WHERE id = ?")
+			.param(id)
+			.query(Boolean.class)
+			.single()).isTrue();
+	}
+
+	@Test
+	void schedulerDefersMonitorWhenRecordingResultFails() {
+		stubStatus = 500;
+		long id = insertMonitor(stubUrl("/health"), 30);
+		// The failed probe overflows this counter, rolling back recordResult.
+		jdbc.sql("""
+				UPDATE uptime_monitor
+				SET consecutive_failures = 2147483647, next_check_at = now()
+				WHERE id = ?
+				""").param(id).update();
+
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
+		while (Instant.now().isBefore(deadline) && stubRequests.get() == 0) {
+			sleep();
+		}
+		assertThat(stubRequests.get()).isEqualTo(1);
+
+		// Several coordinator ticks must not issue another outbound request.
+		for (int i = 0; i < 5; i++) {
+			sleep();
+		}
+		assertThat(stubRequests.get()).isEqualTo(1);
+		assertThat(checkCount(id)).isZero();
+		assertThat(jdbc.sql("SELECT next_check_at > now() + interval '20 seconds' FROM uptime_monitor WHERE id = ?")
 			.param(id)
 			.query(Boolean.class)
 			.single()).isTrue();
