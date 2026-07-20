@@ -40,7 +40,7 @@ public class DataRetentionSettings {
 
 	public Policy save(boolean enabled, int retentionDays) {
 		if (!isSupported(retentionDays)) {
-			throw new IllegalArgumentException("retention_days must be one of 30, 60, or 90");
+			throw new IllegalArgumentException("retention_days must be one of 30, 60, 90, or 180");
 		}
 		transaction.executeWithoutResult(status -> {
 			upsert(ENABLED_KEY, Boolean.toString(enabled));
@@ -50,7 +50,7 @@ public class DataRetentionSettings {
 	}
 
 	public static boolean isSupported(int retentionDays) {
-		return retentionDays == 30 || retentionDays == 60 || retentionDays == 90;
+		return retentionDays == 30 || retentionDays == 60 || retentionDays == 90 || retentionDays == 180;
 	}
 
 	private int validDays(String value) {

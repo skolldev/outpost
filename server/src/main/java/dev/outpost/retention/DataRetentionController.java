@@ -40,7 +40,7 @@ public class DataRetentionController {
 		}
 		if (!DataRetentionSettings.isSupported(request.retentionDays())) {
 			return ResponseEntity.badRequest()
-				.body(Map.of("detail", "retention_days must be one of 30, 60, or 90"));
+				.body(Map.of("detail", "retention_days must be one of 30, 60, 90, or 180"));
 		}
 		return ResponseEntity.ok(response(settings.save(request.enabled(), request.retentionDays())));
 	}

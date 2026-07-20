@@ -32,7 +32,7 @@ import {
 import { Session } from '../core/session';
 
 type SettingsTab = 'projects' | 'uptime' | 'notifications' | 'data-retention' | 'tokens' | 'users';
-type RetentionDaysValue = '30' | '60' | '90';
+type RetentionDaysValue = '30' | '60' | '90' | '180';
 
 /** Settings (§9 page 6): projects & DSNs, sentry-cli API tokens, users. Admin-only mutations. */
 @Component({
@@ -98,7 +98,7 @@ export class SettingsPage {
     { value: 'incident_resolved', label: 'Incident resolved' },
   ];
 
-  readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90'];
+  readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90', '180'];
   readonly retentionLoading = signal(false);
   readonly retentionSaving = signal(false);
   readonly retentionError = signal<string | null>(null);
