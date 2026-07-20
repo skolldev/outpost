@@ -4,10 +4,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.pipeline.LogTail;
 import dev.outpost.pipeline.ProcessedLog;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,6 +31,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class LogController {
 
 	private static final int PAGE_SIZE = 100;
+
+	/** Log list keyset by {@code (timestamp, id)}; the SQL column is quoted, the row key is not. */
+	private static final KeysetPage PAGE = KeysetPage.of(KeysetPage.KeyColumn.instant("\"timestamp\"", "timestamp"),
+			KeysetPage.KeyColumn.uuid("id"), PAGE_SIZE);
 
 	private final JdbcTemplate jdbc;
 	private final LogTail tail;
@@ -68,11 +70,11 @@ public class LogController {
 			params.add(project);
 		}
 		if (environment != null && !environment.isEmpty()) {
-			sql.append(" AND environment IN (").append(placeholders(environment.size())).append(")");
+			sql.append(" AND environment IN (").append(QuerySupport.placeholders(environment.size())).append(")");
 			params.addAll(environment);
 		}
 		if (level != null && !level.isEmpty()) {
-			sql.append(" AND level IN (").append(placeholders(level.size())).append(")");
+			sql.append(" AND level IN (").append(QuerySupport.placeholders(level.size())).append(")");
 			params.addAll(level);
 		}
 		if (traceId != null && !traceId.isBlank()) {
@@ -106,13 +108,9 @@ public class LogController {
 			sql.append(" AND \"timestamp\" <= ?");
 			params.add(java.sql.Timestamp.from(to));
 		}
-		if (cursor != null && !cursor.isBlank()) {
-			String[] parts = decodeCursor(cursor);
-			sql.append(" AND (\"timestamp\", id) < (?, ?)");
-			params.add(java.sql.Timestamp.from(Instant.parse(parts[0])));
-			params.add(UUID.fromString(parts[1]));
-		}
-		sql.append(" ORDER BY \"timestamp\" DESC, id DESC LIMIT ").append(PAGE_SIZE + 1);
+		KeysetPage.Tail tail = PAGE.build(cursor);
+		sql.append(tail.sql());
+		params.addAll(tail.params());
 
 		List<Map<String, Object>> rows = jdbc.query(sql.toString(), (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
@@ -125,21 +123,15 @@ public class LogController {
 			row.put("level", rs.getString("level"));
 			row.put("severity_number", rs.getObject("severity_number", Integer.class));
 			row.put("body", rs.getString("body"));
-			row.put("attributes", parseJson(rs.getString("attributes")));
+			row.put("attributes", QuerySupport.parseJson(mapper, rs.getString("attributes")));
 			row.put("release", rs.getString("release"));
 			return row;
 		}, params.toArray());
 
-		boolean hasMore = rows.size() > PAGE_SIZE;
-		if (hasMore) {
-			rows = rows.subList(0, PAGE_SIZE);
-		}
-		String nextCursor = hasMore && !rows.isEmpty() ? encodeCursor(
-				rows.get(rows.size() - 1).get("timestamp").toString(), rows.get(rows.size() - 1).get("id").toString())
-				: null;
+		KeysetPage.Page page = PAGE.paginate(rows);
 		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("logs", rows);
-		body.put("next_cursor", nextCursor);
+		body.put("logs", page.rows());
+		body.put("next_cursor", page.nextCursor());
 		return body;
 	}
 
@@ -184,32 +176,5 @@ public class LogController {
 	}
 
 	private record AttrFilter(String key, String value) {
-	}
-
-	private JsonNode parseJson(String json) {
-		try {
-			return mapper.readTree(json);
-		}
-		catch (Exception e) {
-			return mapper.createObjectNode();
-		}
-	}
-
-	private static String placeholders(int n) {
-		return String.join(",", java.util.Collections.nCopies(n, "?"));
-	}
-
-	private static String encodeCursor(String sortValue, String id) {
-		return Base64.getUrlEncoder().withoutPadding()
-			.encodeToString((sortValue + "|" + id).getBytes(StandardCharsets.UTF_8));
-	}
-
-	private static String[] decodeCursor(String cursor) {
-		String decoded = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
-		String[] parts = decoded.split("\\|", 2);
-		if (parts.length != 2) {
-			throw new IllegalArgumentException("invalid cursor");
-		}
-		return parts;
 	}
 }

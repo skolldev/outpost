@@ -1,6 +1,5 @@
 package dev.outpost.query;
 
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,6 +28,10 @@ import org.springframework.web.bind.annotation.RestController;
 public class TraceController {
 
 	private static final int PAGE_SIZE = 50;
+
+	/** Trace search pages by {@code (start_ts, id)} descending over the deduped trace rows. */
+	private static final KeysetPage PAGE = KeysetPage.of(KeysetPage.KeyColumn.instant("start_ts"),
+			KeysetPage.KeyColumn.uuid("id"), PAGE_SIZE);
 
 	private final JdbcTemplate jdbc;
 	private final ObjectMapper mapper;
@@ -72,17 +75,10 @@ public class TraceController {
 			return row;
 		}, search.params().toArray());
 
-		boolean hasMore = rows.size() > PAGE_SIZE;
-		if (hasMore) {
-			rows = rows.subList(0, PAGE_SIZE);
-		}
-		String nextCursor = hasMore && !rows.isEmpty()
-				? QuerySupport.encodeCursor(rows.get(rows.size() - 1).get("start_ts").toString(),
-						rows.get(rows.size() - 1).get("id").toString())
-				: null;
+		KeysetPage.Page page = PAGE.paginate(rows);
 		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("traces", rows);
-		body.put("next_cursor", nextCursor);
+		body.put("traces", page.rows());
+		body.put("next_cursor", page.nextCursor());
 		return body;
 	}
 
@@ -154,13 +150,9 @@ public class TraceController {
 		inner.append(" ORDER BY t.trace_id, (t.parent_span_id IS NULL) DESC, t.start_ts");
 
 		StringBuilder page = new StringBuilder("SELECT * FROM (").append(inner).append(") traces WHERE 1=1");
-		if (cursor != null && !cursor.isBlank()) {
-			String[] parts = QuerySupport.decodeCursor(cursor);
-			page.append(" AND (start_ts, id) < (?, ?)");
-			params.add(java.sql.Timestamp.from(Instant.parse(parts[0])));
-			params.add(UUID.fromString(parts[1]));
-		}
-		page.append(" ORDER BY start_ts DESC, id DESC LIMIT ").append(PAGE_SIZE + 1);
+		KeysetPage.Tail tail = PAGE.build(cursor);
+		page.append(tail.sql());
+		params.addAll(tail.params());
 
 		// Count spans/errors only for the paginated representative rows — computing
 		// them inside the DISTINCT ON scan runs both correlated subqueries once per
@@ -202,7 +194,7 @@ public class TraceController {
 			row.put("end_ts", rs.getTimestamp("end_ts").toInstant());
 			row.put("duration_ms", rs.getDouble("duration_ms"));
 			row.put("status", rs.getString("status"));
-			row.put("data", parseJson(rs.getString("data")));
+			row.put("data", QuerySupport.parseJson(mapper, rs.getString("data")));
 			return row;
 		}, traceId);
 
@@ -234,7 +226,7 @@ public class TraceController {
 			row.put("end_ts", rs.getTimestamp("end_ts").toInstant());
 			row.put("duration_ms", rs.getDouble("duration_ms"));
 			row.put("status", rs.getString("status"));
-			row.put("data", parseJson(rs.getString("data")));
+			row.put("data", QuerySupport.parseJson(mapper, rs.getString("data")));
 			return row;
 		}, traceId);
 
@@ -271,7 +263,7 @@ public class TraceController {
 			row.put("level", rs.getString("level"));
 			row.put("severity_number", rs.getObject("severity_number", Integer.class));
 			row.put("body", rs.getString("body"));
-			row.put("attributes", parseJson(rs.getString("attributes")));
+			row.put("attributes", QuerySupport.parseJson(mapper, rs.getString("attributes")));
 			row.put("release", rs.getString("release"));
 			return row;
 		}, traceId);
@@ -283,14 +275,5 @@ public class TraceController {
 		body.put("errors", errors);
 		body.put("logs", logs);
 		return ResponseEntity.ok(body);
-	}
-
-	private JsonNode parseJson(String json) {
-		try {
-			return mapper.readTree(json);
-		}
-		catch (Exception e) {
-			return mapper.createObjectNode();
-		}
 	}
 }

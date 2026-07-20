@@ -1,14 +1,15 @@
 package dev.outpost.query;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import java.util.Collections;
 
 /**
- * Shared query-controller helpers: SQL {@code IN}-clause placeholders and the
- * base64url keyset-pagination cursor codec. Extracted when the third query
- * controller (traces) would otherwise have copied them a third time; the older
- * {@link LogController} / IssueController keep their private copies.
+ * Small shared helpers for the query controllers. Keyset pagination and its
+ * cursor codec live in {@link KeysetPage}; what remains here are the two
+ * mechanics unrelated to paging that every list/detail controller needs: SQL
+ * {@code IN}-clause placeholder expansion and lenient {@code jsonb} column
+ * parsing.
  */
 final class QuerySupport {
 
@@ -20,19 +21,18 @@ final class QuerySupport {
 		return String.join(",", Collections.nCopies(n, "?"));
 	}
 
-	/** Encodes a keyset cursor as base64url of {@code sortValue|id}. */
-	static String encodeCursor(String sortValue, String id) {
-		return Base64.getUrlEncoder().withoutPadding()
-			.encodeToString((sortValue + "|" + id).getBytes(StandardCharsets.UTF_8));
-	}
-
-	/** Decodes a cursor into its {@code [sortValue, id]} parts; throws on a malformed cursor. */
-	static String[] decodeCursor(String cursor) {
-		String decoded = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
-		String[] parts = decoded.split("\\|", 2);
-		if (parts.length != 2) {
-			throw new IllegalArgumentException("invalid cursor");
+	/**
+	 * Parses a {@code jsonb} column value into a tree, falling back to an empty
+	 * object on malformed or null input — a stored column should never be
+	 * unparseable, so a bad value degrades the one row rather than failing the
+	 * whole query.
+	 */
+	static JsonNode parseJson(ObjectMapper mapper, String json) {
+		try {
+			return mapper.readTree(json);
 		}
-		return parts;
+		catch (Exception e) {
+			return mapper.createObjectNode();
+		}
 	}
 }

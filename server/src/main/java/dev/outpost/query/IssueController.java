@@ -1,15 +1,12 @@
 package dev.outpost.query;
 
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +33,16 @@ public class IssueController {
 
 	private static final int PAGE_SIZE = 50;
 	private static final int SPARKLINE_DAYS = 14;
+
+	/** Issue list keyset: default by {@code (last_seen, id)}, or by {@code (event_count, id)} when sort=count. */
+	private static final KeysetPage BY_LAST_SEEN = KeysetPage.of(KeysetPage.KeyColumn.instant("last_seen"),
+			KeysetPage.KeyColumn.longs("id"), PAGE_SIZE);
+	private static final KeysetPage BY_EVENT_COUNT = KeysetPage.of(KeysetPage.KeyColumn.longs("event_count"),
+			KeysetPage.KeyColumn.longs("id"), PAGE_SIZE);
+
+	/** Event-within-issue keyset by {@code (timestamp, id)}; the SQL column is quoted, the row key is not. */
+	private static final KeysetPage EVENTS = KeysetPage.of(KeysetPage.KeyColumn.instant("\"timestamp\"", "timestamp"),
+			KeysetPage.KeyColumn.uuid("id"), PAGE_SIZE);
 
 	private final JdbcTemplate jdbc;
 	private final ObjectMapper mapper;
@@ -74,7 +81,7 @@ public class IssueController {
 		}
 		if (environment != null && !environment.isEmpty()) {
 			sql.append(" AND EXISTS (SELECT 1 FROM issue_env_stats s WHERE s.issue_id = issue.id AND s.environment IN ("
-					+ placeholders(environment.size()) + "))");
+					+ QuerySupport.placeholders(environment.size()) + "))");
 			params.addAll(environment);
 		}
 		if (release != null && !release.isBlank()) {
@@ -95,39 +102,18 @@ public class IssueController {
 			params.add("%" + query + "%");
 		}
 
-		boolean sortByCount = "count".equals(sort);
-		if (cursor != null && !cursor.isBlank()) {
-			String[] parts = decodeCursor(cursor);
-			if (sortByCount) {
-				sql.append(" AND (event_count, id) < (?, ?)");
-				params.add(Long.parseLong(parts[0]));
-			}
-			else {
-				sql.append(" AND (last_seen, id) < (?, ?)");
-				params.add(java.sql.Timestamp.from(Instant.parse(parts[0])));
-			}
-			params.add(Long.parseLong(parts[1]));
-		}
-		sql.append(sortByCount ? " ORDER BY event_count DESC, id DESC" : " ORDER BY last_seen DESC, id DESC");
-		sql.append(" LIMIT ").append(PAGE_SIZE + 1);
+		KeysetPage page = "count".equals(sort) ? BY_EVENT_COUNT : BY_LAST_SEEN;
+		KeysetPage.Tail tail = page.build(cursor);
+		sql.append(tail.sql());
+		params.addAll(tail.params());
 
 		List<Map<String, Object>> rows = jdbc.query(sql.toString(), this::mapIssue, params.toArray());
-		boolean hasMore = rows.size() > PAGE_SIZE;
-		if (hasMore) {
-			rows = rows.subList(0, PAGE_SIZE);
-		}
-		attachAggregates(rows);
+		KeysetPage.Page result = page.paginate(rows);
+		attachAggregates(result.rows());
 
-		String nextCursor = null;
-		if (hasMore && !rows.isEmpty()) {
-			Map<String, Object> last = rows.get(rows.size() - 1);
-			nextCursor = encodeCursor(
-					sortByCount ? String.valueOf(last.get("event_count")) : last.get("last_seen").toString(),
-					String.valueOf(last.get("id")));
-		}
 		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("issues", rows);
-		body.put("next_cursor", nextCursor);
+		body.put("issues", result.rows());
+		body.put("next_cursor", result.nextCursor());
 		return body;
 	}
 
@@ -137,7 +123,7 @@ public class IssueController {
 			return;
 		}
 		List<Long> ids = rows.stream().map(r -> (Long) r.get("id")).toList();
-		String idList = placeholders(ids.size());
+		String idList = QuerySupport.placeholders(ids.size());
 		Object[] idParams = ids.toArray();
 
 		Map<Long, long[]> sparklines = new HashMap<>();
@@ -219,16 +205,12 @@ public class IssueController {
 		List<Object> params = new ArrayList<>();
 		params.add(id);
 		if (environment != null && !environment.isEmpty()) {
-			sql.append(" AND environment IN (").append(placeholders(environment.size())).append(")");
+			sql.append(" AND environment IN (").append(QuerySupport.placeholders(environment.size())).append(")");
 			params.addAll(environment);
 		}
-		if (cursor != null && !cursor.isBlank()) {
-			String[] parts = decodeCursor(cursor);
-			sql.append(" AND (\"timestamp\", id) < (?, ?)");
-			params.add(java.sql.Timestamp.from(Instant.parse(parts[0])));
-			params.add(UUID.fromString(parts[1]));
-		}
-		sql.append(" ORDER BY \"timestamp\" DESC, id DESC LIMIT ").append(PAGE_SIZE + 1);
+		KeysetPage.Tail tail = EVENTS.build(cursor);
+		sql.append(tail.sql());
+		params.addAll(tail.params());
 
 		List<Map<String, Object>> rows = jdbc.query(sql.toString(), (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
@@ -243,16 +225,10 @@ public class IssueController {
 			return row;
 		}, params.toArray());
 
-		boolean hasMore = rows.size() > PAGE_SIZE;
-		if (hasMore) {
-			rows = rows.subList(0, PAGE_SIZE);
-		}
-		String nextCursor = hasMore && !rows.isEmpty() ? encodeCursor(
-				rows.get(rows.size() - 1).get("timestamp").toString(), rows.get(rows.size() - 1).get("id").toString())
-				: null;
+		KeysetPage.Page page = EVENTS.paginate(rows);
 		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("events", rows);
-		body.put("next_cursor", nextCursor);
+		body.put("events", page.rows());
+		body.put("next_cursor", page.nextCursor());
 		return body;
 	}
 
@@ -275,7 +251,7 @@ public class IssueController {
 			row.put("message", rs.getString("message"));
 			row.put("exception_type", rs.getString("exception_type"));
 			row.put("user_ident", rs.getString("user_ident"));
-			row.put("data", parseJson(rs.getString("data")));
+			row.put("data", QuerySupport.parseJson(mapper, rs.getString("data")));
 			row.put("symbolication_status", rs.getString("symbolication_status"));
 			return row;
 		}, id);
@@ -318,32 +294,5 @@ public class IssueController {
 		row.put("last_seen", rs.getTimestamp("last_seen").toInstant());
 		row.put("event_count", rs.getLong("event_count"));
 		return row;
-	}
-
-	private JsonNode parseJson(String json) {
-		try {
-			return mapper.readTree(json);
-		}
-		catch (Exception e) {
-			return mapper.createObjectNode();
-		}
-	}
-
-	private static String placeholders(int n) {
-		return String.join(",", java.util.Collections.nCopies(n, "?"));
-	}
-
-	private static String encodeCursor(String sortValue, String id) {
-		return Base64.getUrlEncoder().withoutPadding()
-			.encodeToString((sortValue + "|" + id).getBytes(StandardCharsets.UTF_8));
-	}
-
-	private static String[] decodeCursor(String cursor) {
-		String decoded = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
-		String[] parts = decoded.split("\\|", 2);
-		if (parts.length != 2) {
-			throw new IllegalArgumentException("invalid cursor");
-		}
-		return parts;
 	}
 }
