@@ -26,6 +26,13 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	private static final Logger log = LoggerFactory.getLogger(DataRetentionScheduler.class);
 	private static final LocalTime RUN_TIME = LocalTime.of(2, 0);
 
+	/**
+	 * Fixed window for notification-history pruning (#47). Independent of the Data
+	 * Retention Policy — that policy is telemetry-only; notification history is
+	 * always capped so it never grows unbounded.
+	 */
+	private static final Duration NOTIFICATION_HISTORY_RETENTION = Duration.ofDays(30);
+
 	private final DataRetentionSettings settings;
 	private final DataRetentionService cleanup;
 	private ScheduledExecutorService executor;
@@ -68,6 +75,9 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	}
 
 	void runOnce(Instant runInstant) {
+		// Notification history is capped unconditionally (#47), independent of the
+		// opt-in telemetry policy, so it runs on every sweep before either branch.
+		pruneNotificationHistory(runInstant);
 		DataRetentionSettings.Policy policy = settings.get();
 		if (!policy.enabled()) {
 			sweepUptime(runInstant);
@@ -80,6 +90,14 @@ public class DataRetentionScheduler implements SmartLifecycle {
 				+ "{} projects deferred", policy.retentionDays(), result.events(), result.issues(),
 				result.droppedPartitions(), result.logs(), result.transactions(), result.spans(),
 				result.uptimeChecks(), result.uptimeIncidents(), result.deferredProjects());
+	}
+
+	private void pruneNotificationHistory(Instant runInstant) {
+		int deleted = cleanup.cleanupNotificationHistory(runInstant.minus(NOTIFICATION_HISTORY_RETENTION));
+		if (deleted > 0) {
+			log.info("notification history retention ({} days): deleted {} rows",
+					NOTIFICATION_HISTORY_RETENTION.toDays(), deleted);
+		}
 	}
 
 	private void sweepUptime(Instant runInstant) {
