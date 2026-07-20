@@ -53,12 +53,21 @@
       </div>
     </div>
     <div class="mx-auto flex max-w-[96rem] flex-wrap items-center gap-3 px-4 pb-3">
-      <hlm-native-select size="sm" [value]="projectValue()" (change)="onProjectChange($event)">
-        <option hlmNativeSelectOption value="">All projects</option>
-        @for (project of projectsStore.projects(); track project.id) {
-          <option hlmNativeSelectOption [value]="project.id">{{ project.name }}</option>
-        }
-      </hlm-native-select>
+      <hlm-select
+        [value]="projectValue()"
+        [itemToString]="projectLabel"
+        (valueChange)="onProjectChange($event)"
+      >
+        <hlm-select-trigger size="sm" class="w-44">
+          <hlm-select-value />
+        </hlm-select-trigger>
+        <hlm-select-content *hlmSelectPortal>
+          <hlm-select-item value="all">All projects</hlm-select-item>
+          @for (project of projectsStore.projects(); track project.id) {
+            <hlm-select-item [value]="project.id">{{ project.name }}</hlm-select-item>
+          }
+        </hlm-select-content>
+      </hlm-select>
 
       @if (environments().length > 0) {
         <div class="flex items-center gap-1.5">
@@ -76,19 +85,21 @@
         </div>
       }
 
-      <hlm-native-select
-        size="sm"
+      <hlm-select
         class="ml-auto"
         [value]="filters.range()"
-        (change)="onRangeChange($event)"
+        [itemToString]="rangeLabel"
+        (valueChange)="onRangeChange($event)"
       >
-        <option hlmNativeSelectOption value="1h">Last hour</option>
-        <option hlmNativeSelectOption value="24h">Last 24 hours</option>
-        <option hlmNativeSelectOption value="7d">Last 7 days</option>
-        <option hlmNativeSelectOption value="14d">Last 14 days</option>
-        <option hlmNativeSelectOption value="30d">Last 30 days</option>
-        <option hlmNativeSelectOption value="all">All time</option>
-      </hlm-native-select>
+        <hlm-select-trigger size="sm" class="w-40">
+          <hlm-select-value />
+        </hlm-select-trigger>
+        <hlm-select-content *hlmSelectPortal>
+          @for (range of ranges; track range.value) {
+            <hlm-select-item [value]="range.value">{{ range.label }}</hlm-select-item>
+          }
+        </hlm-select-content>
+      </hlm-select>
     </div>
   </header>
   <main class="mx-auto flex w-full max-w-[96rem] min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6">
