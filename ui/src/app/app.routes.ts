@@ -5,7 +5,7 @@ import { authGuard } from './core/auth.guard';
 export const routes: Routes = [
   {
     path: 'login',
-    loadComponent: () => import('./pages/login').then((m) => m.LoginPage),
+    loadComponent: () => import('./pages/login/login').then((m) => m.LoginPage),
   },
   {
     path: '',
@@ -15,31 +15,31 @@ export const routes: Routes = [
       { path: '', pathMatch: 'full', redirectTo: 'issues' },
       {
         path: 'issues',
-        loadComponent: () => import('./pages/issues').then((m) => m.IssuesPage),
+        loadComponent: () => import('./pages/issues/issues').then((m) => m.IssuesPage),
       },
       {
         path: 'issues/:id',
-        loadComponent: () => import('./pages/issue-detail').then((m) => m.IssueDetailPage),
+        loadComponent: () => import('./pages/issues/issue-detail').then((m) => m.IssueDetailPage),
       },
       {
         path: 'logs',
-        loadComponent: () => import('./pages/logs').then((m) => m.LogsPage),
+        loadComponent: () => import('./pages/logs/logs').then((m) => m.LogsPage),
       },
       {
         path: 'traces',
-        loadComponent: () => import('./pages/traces').then((m) => m.TracesPage),
+        loadComponent: () => import('./pages/traces/traces').then((m) => m.TracesPage),
       },
       {
         path: 'traces/:traceId',
-        loadComponent: () => import('./pages/trace-detail').then((m) => m.TraceDetailPage),
+        loadComponent: () => import('./pages/traces/trace-detail').then((m) => m.TraceDetailPage),
       },
       {
         path: 'releases',
-        loadComponent: () => import('./pages/releases').then((m) => m.ReleasesPage),
+        loadComponent: () => import('./pages/releases/releases').then((m) => m.ReleasesPage),
       },
       {
         path: 'uptime',
-        loadComponent: () => import('./pages/uptime').then((m) => m.UptimePage),
+        loadComponent: () => import('./pages/uptime/uptime').then((m) => m.UptimePage),
       },
       {
         path: 'settings',

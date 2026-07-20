@@ -1,0 +1,61 @@
+import { provideHttpClient } from '@angular/common/http';
+import { render, screen, waitFor, within } from '@testing-library/angular';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+
+import { server } from '../../../../mocks/node';
+import { AppUser } from '../../../core/models';
+import { OutpostUsersSettings } from './outpost-users';
+
+const BASE = '*/api/internal';
+
+const USER: AppUser = {
+  id: 5,
+  email: 'member@example.com',
+  role: 'member',
+  created_at: '2026-01-01T00:00:00Z',
+};
+
+function renderUsers() {
+  return render(OutpostUsersSettings, { providers: [provideHttpClient()] });
+}
+
+describe('OutpostUsersSettings', () => {
+  it('lists existing users', async () => {
+    server.use(http.get(`${BASE}/users`, () => HttpResponse.json([USER])));
+    await renderUsers();
+
+    expect(await screen.findByText('member@example.com')).toBeInTheDocument();
+  });
+
+  it('creates a user and reloads the list', async () => {
+    let created: { email: string; role: string } | null = null;
+    const users = [USER];
+    server.use(
+      http.get(`${BASE}/users`, () => HttpResponse.json(users)),
+      http.post(`${BASE}/users`, async ({ request }) => {
+        created = (await request.json()) as typeof created;
+        const next: AppUser = {
+          id: 6,
+          email: 'new@example.com',
+          role: 'admin',
+          created_at: '2026-02-01T00:00:00Z',
+        };
+        users.push(next);
+        return HttpResponse.json(next);
+      }),
+    );
+    await renderUsers();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Email'), 'new@example.com');
+    await user.type(screen.getByLabelText('Password'), 'password123');
+    await user.selectOptions(document.querySelector('#role select')!, 'admin');
+    await user.click(screen.getByRole('button', { name: 'Add user' }));
+
+    await waitFor(() =>
+      expect(within(screen.getByRole('table')).getByText('new@example.com')).toBeInTheDocument(),
+    );
+    expect(created).toMatchObject({ email: 'new@example.com', role: 'admin' });
+  });
+});

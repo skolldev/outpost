@@ -16,28 +16,33 @@ export const SETTINGS_ROUTES: Routes = [
       { path: '', pathMatch: 'full', redirectTo: 'projects' },
       {
         path: 'projects',
-        loadComponent: () => import('./projects').then((m) => m.ProjectsSettings),
+        loadComponent: () => import('./projects/projects').then((m) => m.ProjectsSettings),
       },
       {
         path: 'uptime-monitors',
-        loadComponent: () => import('./uptime-monitors').then((m) => m.UptimeMonitorsSettings),
+        loadComponent: () =>
+          import('./uptime-monitors/uptime-monitors').then((m) => m.UptimeMonitorsSettings),
       },
       {
         path: 'notification-channels',
         loadComponent: () =>
-          import('./notification-channels').then((m) => m.NotificationChannelsSettings),
+          import('./notification-channels/notification-channels').then(
+            (m) => m.NotificationChannelsSettings,
+          ),
       },
       {
         path: 'data-retention',
-        loadComponent: () => import('./data-retention').then((m) => m.DataRetentionSettings),
+        loadComponent: () =>
+          import('./data-retention/data-retention').then((m) => m.DataRetentionSettings),
       },
       {
         path: 'api-tokens',
-        loadComponent: () => import('./api-tokens').then((m) => m.ApiTokensSettings),
+        loadComponent: () => import('./api-tokens/api-tokens').then((m) => m.ApiTokensSettings),
       },
       {
         path: 'outpost-users',
-        loadComponent: () => import('./outpost-users').then((m) => m.OutpostUsersSettings),
+        loadComponent: () =>
+          import('./outpost-users/outpost-users').then((m) => m.OutpostUsersSettings),
       },
     ],
   },
