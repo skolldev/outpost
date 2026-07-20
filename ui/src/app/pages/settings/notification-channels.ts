@@ -203,10 +203,15 @@ export class NotificationChannelsSettings {
   }
 
   async deleteChannel(channel: NotificationChannel): Promise<void> {
-    await firstValueFrom(this.api.deleteNotificationChannel(channel.id));
-    if (this.editingChannelId() === channel.id) this.resetChannelForm();
-    this.confirmDeleteChannelId.set(null);
-    this.channelsResource.reload();
+    this.error.set(null);
+    try {
+      await firstValueFrom(this.api.deleteNotificationChannel(channel.id));
+      if (this.editingChannelId() === channel.id) this.resetChannelForm();
+      this.confirmDeleteChannelId.set(null);
+      this.channelsResource.reload();
+    } catch {
+      this.error.set('Could not delete notification channel.');
+    }
   }
 
   /**

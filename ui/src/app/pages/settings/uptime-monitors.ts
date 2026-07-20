@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
@@ -43,7 +43,12 @@ export class UptimeMonitorsSettings {
     },
     { defaultValue: [] },
   );
-  readonly monitorEnvs = this.envsResource.value;
+  // Empty while a new project's environments load, so switching projects never
+  // leaves the prior project's options selectable (httpResource retains its last
+  // value across a re-fetch; the old page cleared the list explicitly).
+  readonly monitorEnvs = computed(() =>
+    this.envsResource.isLoading() ? [] : this.envsResource.value(),
+  );
 
   newMonitorEnv = '';
   newMonitorUrl = '';
@@ -95,11 +100,16 @@ export class UptimeMonitorsSettings {
   }
 
   async deleteMonitor(monitor: UptimeMonitor): Promise<void> {
-    await firstValueFrom(this.api.deleteUptimeMonitor(monitor.id));
-    if (this.editingMonitorId() === monitor.id) {
-      this.resetMonitorForm();
+    this.error.set(null);
+    try {
+      await firstValueFrom(this.api.deleteUptimeMonitor(monitor.id));
+      if (this.editingMonitorId() === monitor.id) {
+        this.resetMonitorForm();
+      }
+      this.monitorsResource.reload();
+    } catch {
+      this.error.set('Could not delete monitor.');
     }
-    this.monitorsResource.reload();
   }
 
   async testMonitor(): Promise<void> {
