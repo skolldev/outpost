@@ -3,7 +3,10 @@ package dev.outpost.pipeline;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
+import dev.outpost.notifications.NotificationOccurrence;
+import dev.outpost.notifications.NotificationPublisher;
 import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,12 +22,24 @@ import org.springframework.transaction.support.TransactionTemplate;
  * Persists processed error events (§6.2): environment/release auto-upsert,
  * issue upsert with regression handling, per-environment stats, then a JDBC
  * batch insert of the event rows.
+ *
+ * <p>The publisher seam (parent #41): when an issue upsert inserts — a
+ * fingerprint's first Event — a {@code new_issue} occurrence is published, but
+ * only after the storing transaction commits, so a notification is never sent
+ * for an Issue that rolled back. Repeats and regressions do not publish.
  */
 @Component
 public class EventStore {
 
 	private static final Logger log = LoggerFactory.getLogger(EventStore.class);
 
+	/** Result of the issue upsert: the row id and whether this statement inserted it. */
+	private record IssueUpsert(long id, boolean inserted) {
+	}
+
+	// xmax = 0 marks a row this statement just inserted; a row updated via ON
+	// CONFLICT has a non-zero xmax. This distinguishes a fingerprint's first
+	// Event (a new Issue → notify) from a repeat or a regression (never notify).
 	private static final String ISSUE_UPSERT = """
 			INSERT INTO issue (project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count)
 			VALUES (?, ?, ?, ?, ?, 'unresolved', ?, ?, 1)
@@ -36,7 +51,7 @@ public class EventStore {
 			    level = EXCLUDED.level,
 			    event_count = issue.event_count + 1,
 			    status = CASE WHEN issue.status = 'resolved' THEN 'unresolved' ELSE issue.status END
-			RETURNING id
+			RETURNING id, (xmax = 0) AS inserted
 			""";
 
 	private static final String EVENT_INSERT = """
@@ -51,14 +66,16 @@ public class EventStore {
 	private final PartitionManager partitions;
 	private final ObjectMapper mapper;
 	private final EventIssueLock eventIssueLock;
+	private final NotificationPublisher notifications;
 
 	public EventStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			ObjectMapper mapper, EventIssueLock eventIssueLock) {
+			ObjectMapper mapper, EventIssueLock eventIssueLock, NotificationPublisher notifications) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
 		this.eventIssueLock = eventIssueLock;
+		this.notifications = notifications;
 	}
 
 	/**
@@ -81,8 +98,9 @@ public class EventStore {
 	}
 
 	private void storeProject(List<ProcessedEvent> batch) {
+		List<NotificationOccurrence> newIssues = new ArrayList<>();
 		try {
-			transaction.executeWithoutResult(status -> storeAll(batch));
+			transaction.executeWithoutResult(status -> storeAll(batch, newIssues));
 		}
 		catch (RuntimeException e) {
 			if (batch.size() == 1) {
@@ -93,10 +111,22 @@ public class EventStore {
 			for (ProcessedEvent event : batch) {
 				storeProject(List.of(event));
 			}
+			return;
+		}
+		// Publish only after the transaction commits, so a rolled-back Issue never
+		// notifies. The seam is fire-and-forget (ADR 0005): publish never throws,
+		// but guard anyway so a notification hiccup can't fail a stored batch.
+		for (NotificationOccurrence occurrence : newIssues) {
+			try {
+				notifications.publish(occurrence);
+			}
+			catch (RuntimeException e) {
+				log.warn("failed to publish new-issue notification: {}", e.toString());
+			}
 		}
 	}
 
-	private void storeAll(List<ProcessedEvent> batch) {
+	private void storeAll(List<ProcessedEvent> batch, List<NotificationOccurrence> newIssues) {
 		eventIssueLock.acquire(batch.getFirst().projectId());
 		for (ProcessedEvent event : batch) {
 			jdbc.update("""
@@ -111,9 +141,15 @@ public class EventStore {
 			}
 		}
 		List<Object[]> eventRows = batch.stream().map(event -> {
-			Long issueId = jdbc.queryForObject(ISSUE_UPSERT, Long.class, event.projectId(), event.fingerprint(),
-					event.title(), event.culprit(), event.level(), Timestamp.from(event.timestamp()),
-					Timestamp.from(event.timestamp()));
+			IssueUpsert upsert = jdbc.queryForObject(ISSUE_UPSERT,
+					(rs, i) -> new IssueUpsert(rs.getLong("id"), rs.getBoolean("inserted")), event.projectId(),
+					event.fingerprint(), event.title(), event.culprit(), event.level(),
+					Timestamp.from(event.timestamp()), Timestamp.from(event.timestamp()));
+			long issueId = upsert.id();
+			if (upsert.inserted()) {
+				newIssues.add(new NotificationOccurrence.NewIssue(event.projectId(), issueId, event.title(),
+						event.culprit(), event.environment(), event.timestamp()));
+			}
 			jdbc.update("""
 					INSERT INTO issue_env_stats (issue_id, environment, event_count, last_seen)
 					VALUES (?, ?, 1, ?)
