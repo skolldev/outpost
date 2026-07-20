@@ -63,4 +63,19 @@ class GenericJsonFormatterTest {
 		assertThat(issue.get("environment").isNull()).isTrue();
 		assertThat(issue.get("culprit").isNull()).isTrue();
 	}
+
+	@Test
+	void testPayloadCarriesVersionTypeChannelAndMessage() {
+		JsonNode payload = format(
+				new NotificationOccurrence.Test(7, "Ops JSON", Instant.parse("2026-07-20T10:00:00Z")),
+				new NotificationContext(null, null, "https://outpost.example/settings"));
+
+		assertThat(payload.get("version").asInt()).isEqualTo(1);
+		assertThat(payload.get("type").asString()).isEqualTo("test");
+		assertThat(payload.get("channel").get("id").asLong()).isEqualTo(7);
+		assertThat(payload.get("channel").get("name").asString()).isEqualTo("Ops JSON");
+		assertThat(payload.get("message").asString()).contains("Ops JSON");
+		assertThat(payload.get("fired_at").asString()).isEqualTo("2026-07-20T10:00:00Z");
+		assertThat(payload.get("link").asString()).isEqualTo("https://outpost.example/settings");
+	}
 }

@@ -16,6 +16,8 @@ import {
   LogPage,
   NotificationChannel,
   NotificationChannelInput,
+  NotificationHistoryEntry,
+  NotificationTestResult,
   Project,
   ProjectKey,
   Release,
@@ -210,6 +212,19 @@ export class Api {
 
   deleteNotificationChannel(id: number): Observable<void> {
     return this.http.delete<void>(`${this.base}/notifications/channels/${id}`);
+  }
+
+  testNotificationChannel(id: number): Observable<NotificationTestResult> {
+    return this.http.post<NotificationTestResult>(
+      `${this.base}/notifications/channels/${id}/test`,
+      {},
+    );
+  }
+
+  notificationChannelHistory(id: number): Observable<NotificationHistoryEntry[]> {
+    return this.http.get<NotificationHistoryEntry[]>(
+      `${this.base}/notifications/channels/${id}/history`,
+    );
   }
 
   users(): Observable<AppUser[]> {

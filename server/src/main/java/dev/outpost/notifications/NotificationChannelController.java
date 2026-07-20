@@ -43,20 +43,38 @@ public class NotificationChannelController {
 	}
 
 	public record Channel(long id, String name, String type, String url, boolean enabled, List<String> triggers,
-			List<Long> projectFilter, List<String> environmentFilter, Instant createdAt) {
+			List<Long> projectFilter, List<String> environmentFilter, Instant createdAt, String lastStatus,
+			Instant lastDeliveryAt) {
+	}
+
+	/** One Notification history row for a channel's recent-delivery listing (#44). */
+	public record HistoryEntry(long id, String triggerType, String status, String summary, String errorDetail,
+			Instant createdAt, Instant updatedAt) {
+	}
+
+	/** Test-send outcome reported inline to the Admin (#44). */
+	public record TestSendResponse(String status, String errorDetail) {
 	}
 
 	private final JdbcClient jdbc;
+	private final NotificationService notificationService;
 
-	public NotificationChannelController(JdbcClient jdbc) {
+	public NotificationChannelController(JdbcClient jdbc, NotificationService notificationService) {
 		this.jdbc = jdbc;
+		this.notificationService = notificationService;
 	}
 
 	@GetMapping
 	public List<Channel> list() {
 		return jdbc.sql("""
-				SELECT id, name, type, url, enabled, triggers, project_filter, environment_filter, created_at
-				FROM notification_channel ORDER BY name, id
+				SELECT c.id, c.name, c.type, c.url, c.enabled, c.triggers, c.project_filter,
+				       c.environment_filter, c.created_at, h.status AS last_status, h.created_at AS last_delivery_at
+				FROM notification_channel c
+				LEFT JOIN LATERAL (
+					SELECT status, created_at FROM notification_history
+					WHERE channel_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+				) h ON true
+				ORDER BY c.name, c.id
 				""").query(this::mapChannel).list();
 	}
 
@@ -116,10 +134,62 @@ public class NotificationChannelController {
 		return deleted > 0 ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
 	}
 
+	/**
+	 * Fire a test Notification at one channel (#44): runs the full delivery
+	 * pipeline (matching bypassed, per-type formatting, history row, async send)
+	 * and reports the outcome inline. A disabled channel is refused (409) rather
+	 * than silently skipped, so the Admin gets a clear reason.
+	 */
+	@PostMapping("/{id}/test")
+	public ResponseEntity<?> test(@PathVariable long id) {
+		NotificationService.TestSendResult result = notificationService.testSend(id);
+		return switch (result.status()) {
+			case NOT_FOUND -> ResponseEntity.notFound().build();
+			case DISABLED -> ResponseEntity.status(HttpStatus.CONFLICT)
+				.body(Map.of("detail", "channel is disabled — enable it before testing"));
+			case UNAVAILABLE -> ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+				.body(Map.of("detail", "delivery is not running"));
+			case SENT -> ResponseEntity.ok(new TestSendResponse("sent", null));
+			case FAILED -> ResponseEntity.ok(new TestSendResponse("failed", result.errorDetail()));
+		};
+	}
+
+	/** Recent Notifications delivered to one channel, newest first (#44). */
+	@GetMapping("/{id}/history")
+	public ResponseEntity<List<HistoryEntry>> history(@PathVariable long id) {
+		Integer exists = jdbc.sql("SELECT 1 FROM notification_channel WHERE id = ?")
+			.param(id)
+			.query(Integer.class)
+			.optional()
+			.orElse(null);
+		if (exists == null) {
+			return ResponseEntity.notFound().build();
+		}
+		List<HistoryEntry> entries = jdbc.sql("""
+				SELECT id, trigger_type, status, summary, error_detail, created_at, updated_at
+				FROM notification_history
+				WHERE channel_id = ?
+				ORDER BY created_at DESC, id DESC
+				LIMIT 50
+				""")
+			.param(id)
+			.query((rs, i) -> new HistoryEntry(rs.getLong("id"), rs.getString("trigger_type"), rs.getString("status"),
+					rs.getString("summary"), rs.getString("error_detail"), rs.getTimestamp("created_at").toInstant(),
+					rs.getTimestamp("updated_at").toInstant()))
+			.list();
+		return ResponseEntity.ok(entries);
+	}
+
 	private Channel get(long id) {
 		return jdbc.sql("""
-				SELECT id, name, type, url, enabled, triggers, project_filter, environment_filter, created_at
-				FROM notification_channel WHERE id = ?
+				SELECT c.id, c.name, c.type, c.url, c.enabled, c.triggers, c.project_filter,
+				       c.environment_filter, c.created_at, h.status AS last_status, h.created_at AS last_delivery_at
+				FROM notification_channel c
+				LEFT JOIN LATERAL (
+					SELECT status, created_at FROM notification_history
+					WHERE channel_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+				) h ON true
+				WHERE c.id = ?
 				""").param(id).query(this::mapChannel).single();
 	}
 
@@ -203,8 +273,10 @@ public class NotificationChannelController {
 		List<String> triggers = List.of((String[]) rs.getArray("triggers").getArray());
 		List<Long> projectFilter = Arrays.asList((Long[]) rs.getArray("project_filter").getArray());
 		List<String> environmentFilter = List.of((String[]) rs.getArray("environment_filter").getArray());
+		java.sql.Timestamp lastDelivery = rs.getTimestamp("last_delivery_at");
 		return new Channel(rs.getLong("id"), rs.getString("name"), rs.getString("type"), rs.getString("url"),
 				rs.getBoolean("enabled"), triggers, projectFilter, environmentFilter,
-				rs.getTimestamp("created_at").toInstant());
+				rs.getTimestamp("created_at").toInstant(), rs.getString("last_status"),
+				lastDelivery == null ? null : lastDelivery.toInstant());
 	}
 }
