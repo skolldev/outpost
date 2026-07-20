@@ -34,8 +34,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <p>Monitors are seeded with a future {@code next_check_at} so the live uptime
  * scheduler never probes them; every check here is issued by the test.
  */
-@SpringBootTest(properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
-		"outpost.notifications.retry-backoff-millis=1", "outpost.notifications.max-attempts=3" })
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
+				"outpost.notifications.retry-backoff-millis=1", "outpost.notifications.max-attempts=3" })
 @Import(TestcontainersConfiguration.class)
 class UptimeNotificationIntegrationTest {
 
