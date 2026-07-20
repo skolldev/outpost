@@ -2,7 +2,9 @@ package dev.outpost.notifications;
 
 import dev.outpost.config.OutpostProperties;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -13,8 +15,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The one deep module behind the publisher seam (parent #41). Owns everything
@@ -31,12 +31,14 @@ import tools.jackson.databind.node.ObjectNode;
  * mid-send leaves the row stale rather than redelivering.
  *
  * <p>This module delivers {@code new_issue}, {@code incident_started}, and
- * {@code incident_resolved} to {@code generic_json} channels and
+ * {@code incident_resolved} to every matching channel and
  * backs the Admin test-send action (#44) via {@link #testSend}: a {@code test}
  * occurrence bypasses matching (the channel is named directly) but runs the same
  * format → history → async-deliver pipeline, so a green test proves the whole
- * path. Teams formatting (#46) slots in behind the same
- * seam without touching callers.
+ * path. Per-type formatting lives behind the {@link NotificationFormatter} seam
+ * (resolved by {@link NotificationFormatters}): Generic JSON and Teams Adaptive
+ * Card (#46) each slot in as a formatter bean without touching this delivery
+ * path, the matching query, or any caller.
  */
 @Component
 public class NotificationService implements NotificationPublisher, SmartLifecycle {
@@ -58,7 +60,7 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 		}
 	}
 
-	private record MatchedChannel(long id, String url) {
+	private record MatchedChannel(long id, String type, String url) {
 	}
 
 	/** A channel resolved for test-send: everything delivery and formatting need. */
@@ -68,23 +70,21 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
 	private final JdbcClient jdbc;
-	private final GenericJsonFormatter genericJsonFormatter;
+	private final NotificationFormatters formatters;
 	private final WebhookSender sender;
 	private final OutpostProperties properties;
-	private final ObjectMapper mapper;
 
 	// Recreated on each start() so a SmartLifecycle stop()/start() cycle (e.g.
 	// the test-context pause) gets a live executor.
 	private ExecutorService deliveries;
 	private volatile boolean running;
 
-	public NotificationService(JdbcClient jdbc, GenericJsonFormatter genericJsonFormatter, WebhookSender sender,
-			OutpostProperties properties, ObjectMapper mapper) {
+	public NotificationService(JdbcClient jdbc, NotificationFormatters formatters, WebhookSender sender,
+			OutpostProperties properties) {
 		this.jdbc = jdbc;
-		this.genericJsonFormatter = genericJsonFormatter;
+		this.formatters = formatters;
 		this.sender = sender;
 		this.properties = properties;
-		this.mapper = mapper;
 	}
 
 	@Override
@@ -173,12 +173,12 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Match, format once, and deliver an occurrence to every channel that fires on
-	 * it. The payload is identical for every matched channel (only the destination
-	 * URL differs), so it is formatted before any pending row is written — a
-	 * formatting failure then can't strand a row stuck at {@code pending}. Shared
-	 * by every stored trigger type; {@code test} bypasses this (channel named
-	 * directly).
+	 * Match, format, and deliver an occurrence to every channel that fires on it.
+	 * The payload depends only on the channel's <em>type</em> (the destination URL
+	 * aside), so it is formatted once per distinct type and reused across channels
+	 * of that type — and always before any pending row is written, so a formatting
+	 * failure can't strand a row stuck at {@code pending}. Shared by every stored
+	 * trigger type; {@code test} bypasses this (channel named directly).
 	 */
 	private void deliverToMatches(NotificationOccurrence occurrence, NotificationContext context, long projectId,
 			String environment, String summary) {
@@ -186,8 +186,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 		if (matches.isEmpty()) {
 			return;
 		}
-		String payload = genericJsonFormatter.format(occurrence, context);
+		Map<String, String> payloadByType = new HashMap<>();
 		for (MatchedChannel channel : matches) {
+			String payload = payloadByType.computeIfAbsent(channel.type(),
+					type -> formatters.format(type, occurrence, context));
 			long historyId = insertPending(channel.id(), occurrence.triggerType(), summary);
 			WebhookSender.Result result = sender.send(channel.url(), payload);
 			recordOutcome(historyId, result);
@@ -211,7 +213,8 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 		if (!channel.enabled()) {
 			return TestSendResult.of(TestSendResult.Status.DISABLED);
 		}
-		String payload = formatForType(occurrence, channel.type());
+		String payload = formatters.format(channel.type(), occurrence,
+				new NotificationContext(null, null, settingsLink()));
 		String summary = "test: " + channel.name();
 		long historyId = insertPending(channel.id(), occurrence.triggerType(), summary);
 		WebhookSender.Result result = sender.send(channel.url(), payload);
@@ -270,21 +273,6 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Formats a test occurrence for the channel's type. Generic JSON reuses the
-	 * documented public contract; Teams gets a minimal valid MessageCard body
-	 * ({@code {"text": ...}}) — rich Adaptive Card formatting is #46, but a test
-	 * must still deliver a well-formed message so the round-trip is real.
-	 */
-	private String formatForType(NotificationOccurrence.Test occurrence, String type) {
-		if ("teams".equals(type)) {
-			ObjectNode root = mapper.createObjectNode();
-			root.put("text", occurrence.message());
-			return root.toString();
-		}
-		return genericJsonFormatter.format(occurrence, new NotificationContext(null, null, settingsLink()));
-	}
-
-	/**
 	 * Resolves Project display fields and pairs them with the supplied deep link,
 	 * or null if the Project is gone. Shared by every occurrence that names a
 	 * Project; the caller supplies the link because it differs per trigger (Issue
@@ -299,19 +287,20 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Channels that fire on this occurrence: enabled, Generic JSON, subscribed to
-	 * the trigger, and passing both filters. An empty {@code project_filter}
-	 * matches all Projects; an empty {@code environment_filter} matches all
-	 * Environments. A non-empty {@code environment_filter} never matches an
-	 * occurrence with no environment — {@code null = ANY(...)} is not true, so
-	 * only the empty-filter branch admits it, exactly the spec semantics. (Uptime
-	 * occurrences always carry an environment; new-issue ones may not.)
+	 * Channels that fire on this occurrence: enabled, subscribed to the trigger,
+	 * and passing both filters — of any channel type (the {@link
+	 * NotificationFormatter} seam formats per type at delivery). An empty
+	 * {@code project_filter} matches all Projects; an empty
+	 * {@code environment_filter} matches all Environments. A non-empty
+	 * {@code environment_filter} never matches an occurrence with no environment —
+	 * {@code null = ANY(...)} is not true, so only the empty-filter branch admits
+	 * it, exactly the spec semantics. (Uptime occurrences always carry an
+	 * environment; new-issue ones may not.)
 	 */
 	private List<MatchedChannel> matchChannels(String triggerType, long projectId, String environment) {
 		return jdbc.sql("""
-				SELECT id, url FROM notification_channel
+				SELECT id, type, url FROM notification_channel
 				WHERE enabled = true
-				  AND type = 'generic_json'
 				  AND ? = ANY(triggers)
 				  AND (cardinality(project_filter) = 0 OR ? = ANY(project_filter))
 				  AND (cardinality(environment_filter) = 0 OR ? = ANY(environment_filter))
@@ -319,7 +308,7 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 			.param(triggerType)
 			.param(projectId)
 			.param(environment)
-			.query((rs, i) -> new MatchedChannel(rs.getLong("id"), rs.getString("url")))
+			.query((rs, i) -> new MatchedChannel(rs.getLong("id"), rs.getString("type"), rs.getString("url")))
 			.list();
 	}
 
