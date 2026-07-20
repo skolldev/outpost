@@ -1,0 +1,20 @@
+<div class="mb-6 flex gap-1 border-b border-border text-sm">
+  @for (tab of tabs; track tab.path) {
+    <a
+      #rla="routerLinkActive"
+      [routerLink]="tab.path"
+      queryParamsHandling="merge"
+      routerLinkActive
+      class="-mb-px border-b-2 px-4 py-2 transition-colors"
+      [class]="
+        rla.isActive
+          ? 'border-primary text-foreground'
+          : 'border-transparent text-muted-foreground hover:text-foreground'
+      "
+    >
+      {{ tab.label }}
+    </a>
+  }
+</div>
+
+<router-outlet></router-outlet>

@@ -1,0 +1,84 @@
+<p class="mb-4 text-sm text-muted-foreground">
+  API tokens authenticate <code class="rounded bg-muted px-1">sentry-cli</code> source-map uploads
+  from CI (scope <code class="rounded bg-muted px-1">artifacts:write</code>).
+</p>
+<form (ngSubmit)="createToken()" class="mb-4 flex flex-wrap items-end gap-3">
+  <div>
+    <label hlmLabel class="mb-1" for="tokenName">Name</label>
+    <input
+      hlmInput
+      id="tokenName"
+      name="tokenName"
+      [(ngModel)]="newTokenName"
+      placeholder="ci-shop-frontend"
+      required
+      class="h-8"
+    />
+  </div>
+  <button hlmBtn size="sm" type="submit">Create token</button>
+  @if (error()) {
+    <span class="text-sm text-destructive">{{ error() }}</span>
+  }
+</form>
+
+@if (createdToken(); as created) {
+  <div
+    hlmAlert
+    class="mb-4"
+    [style.background-color]="'var(--level-success-bg)'"
+    [style.border-color]="'color-mix(in oklch, var(--level-success) 40%, transparent)'"
+  >
+    <p hlmAlertTitle [style.color]="'var(--level-success)'">
+      Token <span class="font-semibold">{{ created.name }}</span> created — copy it now, it is shown
+      only once.
+    </p>
+    <div hlmAlertDescription>
+      <div class="flex flex-wrap items-center gap-2 font-mono text-xs">
+        <span class="rounded bg-muted px-2 py-1 text-foreground">{{ created.token }}</span>
+        <button hlmBtn variant="outline" size="xs" class="font-sans" (click)="copy(created.token!)">
+          {{ copied() === created.token ? 'Copied!' : 'Copy' }}
+        </button>
+      </div>
+      <pre
+        class="mt-3 overflow-x-auto rounded bg-muted px-3 py-3 text-xs leading-relaxed text-foreground"
+        >{{ cliSnippet(created.token!) }}</pre>
+    </div>
+  </div>
+}
+
+<div class="overflow-hidden rounded-lg border border-border">
+  <table class="w-full text-sm">
+    <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
+      <tr>
+        <th class="px-4 py-2 font-medium">Name</th>
+        <th class="px-4 py-2 font-medium">Scopes</th>
+        <th class="px-4 py-2 font-medium">Created</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (token of tokens(); track token.id) {
+        <tr class="border-b border-border/60 last:border-0">
+          <td class="px-4 py-2">{{ token.name }}</td>
+          <td class="px-4 py-2 font-mono text-xs text-muted-foreground">
+            {{ token.scopes.join(', ') }}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted-foreground">
+            {{ token.created_at | date: 'mediumDate' }}
+          </td>
+          <td class="px-4 py-2 text-right">
+            <button hlmBtn variant="destructive" size="xs" (click)="deleteToken(token)">
+              Revoke
+            </button>
+          </td>
+        </tr>
+      } @empty {
+        <tr>
+          <td colspan="4" class="px-4 py-6 text-center text-sm text-muted-foreground">
+            No tokens yet.
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>

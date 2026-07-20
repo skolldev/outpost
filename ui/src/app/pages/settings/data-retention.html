@@ -1,0 +1,76 @@
+<section hlmCard class="max-w-2xl">
+  <div hlmCardHeader>
+    <h2 hlmCardTitle>Data retention</h2>
+    <p hlmCardDescription>Automatically remove telemetry after a fixed retention period.</p>
+  </div>
+  <form (ngSubmit)="saveDataRetention()">
+    <div hlmCardContent class="flex flex-col gap-6">
+      @if (retentionLoading()) {
+        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+          <hlm-spinner aria-label="Loading data retention settings" />
+          Loading settings…
+        </div>
+      }
+
+      <div hlmField orientation="horizontal">
+        <hlm-checkbox
+          inputId="retentionEnabled"
+          name="retentionEnabled"
+          [(ngModel)]="retentionEnabled"
+          [disabled]="retentionLoading() || retentionSaving()"
+        />
+        <label hlmFieldLabel for="retentionEnabled">Automatically delete old data</label>
+      </div>
+
+      <div hlmField>
+        <label hlmFieldLabel for="retentionDays">Retention period</label>
+        <hlm-native-select
+          id="retentionDays"
+          name="retentionDays"
+          [(ngModel)]="retentionDays"
+          [disabled]="!retentionEnabled || retentionLoading() || retentionSaving()"
+        >
+          @for (days of retentionDurations; track days) {
+            <option hlmNativeSelectOption [value]="days">{{ days }} days</option>
+          }
+        </hlm-native-select>
+        <p hlmFieldDescription>
+          Changes apply at the next daily cleanup run at 02:00 UTC. Days are exact 24-hour periods
+          measured from that run.
+        </p>
+      </div>
+
+      <div hlmAlert>
+        <p hlmAlertTitle>Permanent deletion</p>
+        <p hlmAlertDescription>
+          Expired errors, logs, traces, uptime checks, and closed incidents cannot be recovered.
+          Projects, users, monitors, releases, and source-map artifacts are retained. Uptime checks
+          and closed incidents are always removed after 90 days, even when this setting is off.
+        </p>
+      </div>
+
+      @if (retentionError()) {
+        <div hlmAlert variant="destructive" role="alert">
+          <p hlmAlertTitle>Data retention unavailable</p>
+          <p hlmAlertDescription>{{ retentionError() }}</p>
+        </div>
+      }
+      @if (retentionSuccess()) {
+        <div hlmAlert role="status">
+          <p hlmAlertTitle>Settings saved</p>
+          <p hlmAlertDescription>
+            {{ retentionSuccess() }} Changes take effect at the next 02:00 UTC run.
+          </p>
+        </div>
+      }
+    </div>
+    <div hlmCardFooter>
+      <button hlmBtn type="submit" [disabled]="retentionLoading() || retentionSaving()">
+        @if (retentionSaving()) {
+          <hlm-spinner aria-label="Saving data retention settings" />
+        }
+        {{ retentionSaving() ? 'Saving…' : 'Save data retention' }}
+      </button>
+    </div>
+  </form>
+</section>

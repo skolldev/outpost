@@ -1,0 +1,60 @@
+import { provideHttpClient } from '@angular/common/http';
+import { render, screen, waitFor, within } from '@testing-library/angular';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+
+import { server } from '../../../mocks/node';
+import { ApiToken } from '../../core/models';
+import { ApiTokensSettings } from './api-tokens';
+
+const BASE = '*/api/internal';
+
+const TOKEN: ApiToken = {
+  id: 7,
+  name: 'ci-shop',
+  scopes: ['artifacts:write'],
+  created_at: '2026-01-01T00:00:00Z',
+};
+
+function renderTokens() {
+  return render(ApiTokensSettings, { providers: [provideHttpClient()] });
+}
+
+describe('ApiTokensSettings', () => {
+  it('lists existing tokens', async () => {
+    server.use(http.get(`${BASE}/tokens`, () => HttpResponse.json([TOKEN])));
+    await renderTokens();
+
+    expect(
+      await within(await screen.findByRole('table')).findByText('ci-shop'),
+    ).toBeInTheDocument();
+  });
+
+  it('creates a token and reveals the secret once', async () => {
+    const tokens: ApiToken[] = [];
+    server.use(
+      http.get(`${BASE}/tokens`, () => HttpResponse.json(tokens)),
+      http.post(`${BASE}/tokens`, async ({ request }) => {
+        const body = (await request.json()) as { name: string };
+        const created: ApiToken = { ...TOKEN, name: body.name, token: 'secret-xyz' };
+        tokens.push({
+          id: created.id,
+          name: created.name,
+          scopes: created.scopes,
+          created_at: created.created_at,
+        });
+        return HttpResponse.json(created);
+      }),
+    );
+    await renderTokens();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Name'), 'ci-new');
+    await user.click(screen.getByRole('button', { name: 'Create token' }));
+
+    expect(await screen.findByText('secret-xyz')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(screen.getByRole('table')).getByText('ci-new')).toBeInTheDocument(),
+    );
+  });
+});
