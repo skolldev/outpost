@@ -242,6 +242,19 @@ public class DataRetentionService {
 		return new UptimeCleanup(checks, incidents);
 	}
 
+	/**
+	 * Prunes notification history rows older than {@code cutoff} (#47). Runs on
+	 * every daily sweep regardless of the Data Retention Policy — that policy is
+	 * telemetry-only, whereas notification history is capped unconditionally at a
+	 * fixed ~30-day window so it never grows unbounded (mirrors how uptime history
+	 * is always capped). A plain single-transaction delete: the table is low
+	 * volume, and channel deletion already cascades its rows away.
+	 */
+	public int cleanupNotificationHistory(Instant cutoff) {
+		return runStep("notification_history delete", 0,
+				() -> boundaryDelete("DELETE FROM notification_history WHERE created_at < ?", Timestamp.from(cutoff)));
+	}
+
 	private int dropExpiredPartitions(String table, Instant cutoff) {
 		return runStep(table + " partition drop", 0,
 				() -> partitions.dropExpiredPartitions(table, cutoff, chunkTimeoutSeconds));

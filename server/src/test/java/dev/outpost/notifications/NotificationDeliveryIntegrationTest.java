@@ -195,6 +195,50 @@ class NotificationDeliveryIntegrationTest {
 		assertThat(error).contains("HTTP 500");
 	}
 
+	@Test
+	void floodBeyondTheCapDeliversTenAndSuppressesTheRest() {
+		long channelId = createChannel("generic_json", hookUrl("/hook"), true, "{new_issue}", "{}", "{}");
+
+		// 15 never-seen fingerprints in a burst: each is a new Issue, one publish each.
+		int flood = 15;
+		for (int i = 0; i < flood; i++) {
+			postEnvelope(jsEventEnvelope("prod", "flood.fn" + i));
+		}
+
+		// The cap is a fixed 10/minute: 10 delivered, the remaining 5 suppressed.
+		awaitStatusCount(channelId, "suppressed", flood - 10);
+		awaitStatusCount(channelId, "sent", 10);
+		assertThat(statusCount(channelId, "pending")).isZero();
+		assertThat(received.stream().filter(r -> r.path().equals("/hook")).count()).isEqualTo(10);
+
+		// Suppressed rows carry a reason and never hit the network.
+		String reason = jdbc.sql(
+				"SELECT error_detail FROM notification_history WHERE channel_id = ? AND status = 'suppressed' LIMIT 1")
+			.param(channelId)
+			.query(String.class)
+			.single();
+		assertThat(reason).contains("rate limit");
+	}
+
+	@Test
+	void rateCapIsPerChannelSoOneFloodedChannelDoesNotSuppressAnother() {
+		long channelA = createChannel("generic_json", hookUrl("/hook"), true, "{new_issue}", "{}", "{}");
+		long channelB = createChannel("generic_json", hookUrl("/hook"), true, "{new_issue}", "{}", "{}");
+
+		// Every new Issue matches both channels; each channel has its own cap.
+		int flood = 15;
+		for (int i = 0; i < flood; i++) {
+			postEnvelope(jsEventEnvelope("prod", "flood.fn" + i));
+		}
+
+		// Both channels independently deliver 10 and suppress 5 — neither starves the other.
+		for (long channelId : new long[] { channelA, channelB }) {
+			awaitStatusCount(channelId, "sent", 10);
+			awaitStatusCount(channelId, "suppressed", flood - 10);
+			assertThat(statusCount(channelId, "pending")).isZero();
+		}
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	private long createChannel(String type, String url, boolean enabled, String triggers, String projectFilter,
@@ -250,6 +294,33 @@ class NotificationDeliveryIntegrationTest {
 
 	private int historyCount() {
 		return jdbc.sql("SELECT count(*) FROM notification_history").query(Integer.class).single();
+	}
+
+	private int statusCount(long channelId, String status) {
+		return jdbc.sql("SELECT count(*) FROM notification_history WHERE channel_id = ? AND status = ?")
+			.param(channelId)
+			.param(status)
+			.query(Integer.class)
+			.single();
+	}
+
+	/** Waits until a channel has exactly {@code expected} rows in {@code status}, failing if it overshoots. */
+	private void awaitStatusCount(long channelId, String status, int expected) {
+		Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
+		int actual = 0;
+		while (Instant.now().isBefore(deadline)) {
+			actual = statusCount(channelId, status);
+			if (actual == expected) {
+				return;
+			}
+			if (actual > expected) {
+				throw new AssertionError(
+						"channel " + channelId + " has " + actual + " " + status + " rows, expected " + expected);
+			}
+			sleep(100);
+		}
+		throw new AssertionError(
+				"channel " + channelId + " reached only " + actual + " " + status + " rows, expected " + expected);
 	}
 
 	private void postEnvelope(String envelope) {

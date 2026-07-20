@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -15,6 +16,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The one deep module behind the publisher seam (parent #41). Owns everything
@@ -39,6 +42,17 @@ import org.springframework.stereotype.Component;
  * (resolved by {@link NotificationFormatters}): Generic JSON and Teams Adaptive
  * Card (#46) each slot in as a formatter bean without touching this delivery
  * path, the matching query, or any caller.
+ *
+ * <p>A fixed, non-configurable per-channel cap of {@link #RATE_CAP_PER_MINUTE}
+ * deliveries per rolling minute (#47) keeps a bad deploy minting dozens of new
+ * Issues from flooding a chat channel: occurrences beyond the cap are recorded
+ * as {@code suppressed} history rows (visible in the same per-channel history)
+ * with no HTTP delivery. The cap is per channel — one flooded channel never
+ * suppresses another — and applies to matched trigger deliveries only;
+ * Admin test-sends bypass it. The count-and-decide is serialized per channel by
+ * a transaction-scoped advisory lock so concurrent virtual-thread deliveries
+ * can never overshoot the cap; the lock is released before the HTTP send, never
+ * held across the network.
  */
 @Component
 public class NotificationService implements NotificationPublisher, SmartLifecycle {
@@ -69,10 +83,25 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 
 	private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
+	/**
+	 * The fixed per-channel per-minute delivery cap (#47). Non-configurable by
+	 * design: a rate limit that protects chat channels from a new-Issue flood is a
+	 * product invariant, not an install knob.
+	 */
+	static final int RATE_CAP_PER_MINUTE = 10;
+
+	/**
+	 * Advisory-lock namespace for serializing a channel's rate-cap decision, so
+	 * concurrent deliveries count-and-insert one at a time (distinct from
+	 * {@code EventIssueLock}'s namespace).
+	 */
+	private static final int RATE_LOCK_NAMESPACE = 0x4E4F5449; // "NOTI"
+
 	private final JdbcClient jdbc;
 	private final NotificationFormatters formatters;
 	private final WebhookSender sender;
 	private final OutpostProperties properties;
+	private final TransactionTemplate rateLimitTransaction;
 
 	// Recreated on each start() so a SmartLifecycle stop()/start() cycle (e.g.
 	// the test-context pause) gets a live executor.
@@ -80,11 +109,12 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	private volatile boolean running;
 
 	public NotificationService(JdbcClient jdbc, NotificationFormatters formatters, WebhookSender sender,
-			OutpostProperties properties) {
+			OutpostProperties properties, PlatformTransactionManager transactionManager) {
 		this.jdbc = jdbc;
 		this.formatters = formatters;
 		this.sender = sender;
 		this.properties = properties;
+		this.rateLimitTransaction = new TransactionTemplate(transactionManager);
 	}
 
 	@Override
@@ -179,6 +209,11 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	 * of that type — and always before any pending row is written, so a formatting
 	 * failure can't strand a row stuck at {@code pending}. Shared by every stored
 	 * trigger type; {@code test} bypasses this (channel named directly).
+	 *
+	 * <p>Each channel's delivery is gated by the per-minute rate cap (#47): {@link
+	 * #reserveSlot} either reserves a slot (a {@code pending} row to fill in) or,
+	 * when the channel is already at the cap, records a {@code suppressed} row and
+	 * we skip the HTTP send entirely.
 	 */
 	private void deliverToMatches(NotificationOccurrence occurrence, NotificationContext context, long projectId,
 			String environment, String summary) {
@@ -190,10 +225,67 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 		for (MatchedChannel channel : matches) {
 			String payload = payloadByType.computeIfAbsent(channel.type(),
 					type -> formatters.format(type, occurrence, context));
-			long historyId = insertPending(channel.id(), occurrence.triggerType(), summary);
+			OptionalLong reserved = reserveSlot(channel.id(), occurrence.triggerType(), summary);
+			if (reserved.isEmpty()) {
+				continue; // Over the cap: a suppressed row is recorded, no HTTP delivery.
+			}
 			WebhookSender.Result result = sender.send(channel.url(), payload);
-			recordOutcome(historyId, result);
+			recordOutcome(reserved.getAsLong(), result);
 		}
+	}
+
+	/**
+	 * Enforce the per-channel rate cap (#47) and, if there is room, reserve a
+	 * delivery slot. Under a transaction-scoped advisory lock keyed on the channel,
+	 * count the channel's deliveries in the trailing minute (a delivery is any
+	 * non-{@code suppressed} row — {@code pending}/{@code sent}/{@code failed} each
+	 * consumed an attempt): below {@link #RATE_CAP_PER_MINUTE}, insert a {@code
+	 * pending} row and return its id for the caller to send and finalize; at or
+	 * over it, insert a {@code suppressed} row and return empty. Serializing
+	 * count-and-insert per channel means concurrent virtual-thread deliveries can
+	 * never overshoot the cap; the lock covers only the DB decision and is released
+	 * (transaction commit) before any HTTP send, so a slow receiver never delays
+	 * another occurrence's decision, and one channel's lock never blocks another's.
+	 */
+	private OptionalLong reserveSlot(long channelId, String triggerType, String summary) {
+		return rateLimitTransaction.execute(status -> {
+			lockChannelForRate(channelId);
+			long recent = jdbc.sql("""
+					SELECT count(*) FROM notification_history
+					WHERE channel_id = ?
+					  AND status <> 'suppressed'
+					  AND created_at > now() - interval '1 minute'
+					""").param(channelId).query(Long.class).single();
+			if (recent >= RATE_CAP_PER_MINUTE) {
+				jdbc.sql("""
+						INSERT INTO notification_history (channel_id, trigger_type, status, summary, error_detail)
+						VALUES (?, ?, 'suppressed', ?, ?)
+						""")
+					.param(channelId)
+					.param(triggerType)
+					.param(summary)
+					.param("rate limit: over " + RATE_CAP_PER_MINUTE + " notifications/minute for this channel")
+					.update();
+				return OptionalLong.empty();
+			}
+			return OptionalLong.of(insertPending(channelId, triggerType, summary));
+		});
+	}
+
+	/**
+	 * Transaction-scoped advisory lock keyed on the channel, serializing that
+	 * channel's rate-cap decision (count-then-insert) so concurrent deliveries
+	 * cannot overshoot the cap. Held only for the DB decision — the caller's
+	 * transaction commits before any HTTP send — and per-channel, so one channel's
+	 * lock never blocks another's. (Same idiom as {@code EventIssueLock} but a
+	 * separate namespace and concern, so it stays local to this module.)
+	 */
+	private void lockChannelForRate(long channelId) {
+		jdbc.sql("SELECT pg_advisory_xact_lock(?, ?)")
+			.param(RATE_LOCK_NAMESPACE)
+			.param(Long.hashCode(channelId))
+			.query(rs -> {
+			});
 	}
 
 	/**

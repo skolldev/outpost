@@ -79,6 +79,8 @@ class DataRetentionIntegrationTest {
 	@BeforeEach
 	void setUp() {
 		rest.setErrorHandler(new org.springframework.web.client.NoOpResponseErrorHandler());
+		jdbc.sql("DELETE FROM notification_history").update();
+		jdbc.sql("DELETE FROM notification_channel").update();
 		jdbc.sql("DELETE FROM span").update();
 		jdbc.sql("DELETE FROM txn").update();
 		jdbc.sql("DELETE FROM log_record").update();
@@ -158,6 +160,27 @@ class DataRetentionIntegrationTest {
 		assertThat(count("uptime_incident")).isEqualTo(2);
 		assertThat(jdbc.sql("SELECT count(*) FROM uptime_incident WHERE closed_at IS NULL")
 			.query(Long.class).single()).isEqualTo(1);
+	}
+
+	@Test
+	void notificationHistoryPrunedAtThirtyDaysRegardlessOfPolicy() {
+		Instant run = Instant.parse("2026-07-19T02:00:00Z");
+		Instant old = run.minus(Duration.ofDays(31));
+		Instant recent = run.minus(Duration.ofDays(29));
+		long projectId = insertProject();
+		long channelId = insertChannel(projectId);
+		insertNotification(channelId, "sent", old);
+		insertNotification(channelId, "suppressed", old);
+		insertNotification(channelId, "sent", recent);
+
+		// The Data Retention Policy is telemetry-only; even switched off, notification
+		// history is capped at the fixed 30-day window.
+		settings.save(false, 90);
+		scheduler.runOnce(run);
+
+		assertThat(count("notification_history")).isEqualTo(1);
+		assertThat(jdbc.sql("SELECT count(*) FROM notification_history WHERE created_at = ?")
+			.param(timestamp(recent)).query(Long.class).single()).isEqualTo(1);
 	}
 
 	@Test
@@ -630,6 +653,21 @@ class DataRetentionIntegrationTest {
 				INSERT INTO uptime_check (monitor_id, checked_at, success, status_code, latency_ms)
 				VALUES (?, ?, true, 200, 10)
 				""").param(monitorId).param(timestamp(timestamp)).update();
+	}
+
+	private long insertChannel(long projectId) {
+		return jdbc.sql("""
+				INSERT INTO notification_channel (name, type, url, enabled, triggers, project_filter, environment_filter)
+				VALUES ('ch', 'generic_json', 'http://localhost/hook', true, '{new_issue}', ?::bigint[], '{}')
+				RETURNING id
+				""").param("{" + projectId + "}").query(Long.class).single();
+	}
+
+	private void insertNotification(long channelId, String status, Instant createdAt) {
+		jdbc.sql("""
+				INSERT INTO notification_history (channel_id, trigger_type, status, summary, created_at)
+				VALUES (?, 'new_issue', ?, 'summary', ?)
+				""").param(channelId).param(status).param(timestamp(createdAt)).update();
 	}
 
 	private Timestamp timestamp(Instant instant) {
