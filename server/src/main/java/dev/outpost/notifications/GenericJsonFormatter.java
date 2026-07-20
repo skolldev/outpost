@@ -1,5 +1,6 @@
 package dev.outpost.notifications;
 
+import java.time.Duration;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -34,6 +35,8 @@ public class GenericJsonFormatter {
 		root.put("type", occurrence.triggerType());
 		switch (occurrence) {
 			case NotificationOccurrence.NewIssue issue -> writeNewIssue(root, issue, context);
+			case NotificationOccurrence.IncidentStarted incident -> writeIncidentStarted(root, incident, context);
+			case NotificationOccurrence.IncidentResolved incident -> writeIncidentResolved(root, incident, context);
 			case NotificationOccurrence.Test test -> writeTest(root, test, context);
 		}
 		return write(root);
@@ -41,10 +44,7 @@ public class GenericJsonFormatter {
 
 	private void writeNewIssue(ObjectNode root, NotificationOccurrence.NewIssue occurrence,
 			NotificationContext context) {
-		ObjectNode project = root.putObject("project");
-		project.put("id", occurrence.projectId());
-		project.put("slug", context.projectSlug());
-		project.put("name", context.projectName());
+		writeProject(root, occurrence.projectId(), context);
 
 		ObjectNode issue = root.putObject("issue");
 		issue.put("id", occurrence.issueId());
@@ -53,6 +53,71 @@ public class GenericJsonFormatter {
 		issue.put("environment", occurrence.environment());
 		issue.put("first_seen", occurrence.firstSeen() == null ? null : occurrence.firstSeen().toString());
 		issue.put("link", context.link());
+	}
+
+	private void writeIncidentStarted(ObjectNode root, NotificationOccurrence.IncidentStarted occurrence,
+			NotificationContext context) {
+		writeProject(root, occurrence.projectId(), context);
+		ObjectNode incident = writeMonitor(root, occurrence.monitorId(), occurrence.monitorUrl(),
+				occurrence.environment(), context);
+		incident.put("failure_reason", occurrence.failureReason());
+		incident.put("opened_at", occurrence.openedAt() == null ? null : occurrence.openedAt().toString());
+	}
+
+	private void writeIncidentResolved(ObjectNode root, NotificationOccurrence.IncidentResolved occurrence,
+			NotificationContext context) {
+		writeProject(root, occurrence.projectId(), context);
+		ObjectNode incident = writeMonitor(root, occurrence.monitorId(), occurrence.monitorUrl(),
+				occurrence.environment(), context);
+		incident.put("opened_at", occurrence.openedAt() == null ? null : occurrence.openedAt().toString());
+		incident.put("closed_at", occurrence.closedAt() == null ? null : occurrence.closedAt().toString());
+		incident.put("downtime_seconds", occurrence.downtime() == null ? null : occurrence.downtime().toSeconds());
+		incident.put("downtime_human", occurrence.downtime() == null ? null : humanDuration(occurrence.downtime()));
+	}
+
+	/** Project block, shared by every occurrence type that names a Project. */
+	private void writeProject(ObjectNode root, long projectId, NotificationContext context) {
+		ObjectNode project = root.putObject("project");
+		project.put("id", projectId);
+		project.put("slug", context.projectSlug());
+		project.put("name", context.projectName());
+	}
+
+	/**
+	 * The {@code monitor} + {@code incident} blocks common to both incident
+	 * triggers. Returns the {@code incident} node so each caller can add its own
+	 * trigger-specific fields (failure reason vs. downtime).
+	 */
+	private ObjectNode writeMonitor(ObjectNode root, long monitorId, String monitorUrl, String environment,
+			NotificationContext context) {
+		ObjectNode monitor = root.putObject("monitor");
+		monitor.put("id", monitorId);
+		monitor.put("url", monitorUrl);
+		monitor.put("environment", environment);
+		monitor.put("link", context.link());
+
+		return root.putObject("incident");
+	}
+
+	/**
+	 * Compact human-readable duration for the payload's {@code downtime_human}
+	 * field, e.g. {@code "2h 5m 30s"}. Presentation sugar alongside the canonical
+	 * {@code downtime_seconds}; receivers that compute their own can ignore it.
+	 */
+	private static String humanDuration(Duration downtime) {
+		long seconds = Math.max(0, downtime.toSeconds());
+		long hours = seconds / 3600;
+		long minutes = (seconds % 3600) / 60;
+		long secs = seconds % 60;
+		StringBuilder out = new StringBuilder();
+		if (hours > 0) {
+			out.append(hours).append("h ");
+		}
+		if (hours > 0 || minutes > 0) {
+			out.append(minutes).append("m ");
+		}
+		out.append(secs).append('s');
+		return out.toString();
 	}
 
 	private void writeTest(ObjectNode root, NotificationOccurrence.Test occurrence, NotificationContext context) {

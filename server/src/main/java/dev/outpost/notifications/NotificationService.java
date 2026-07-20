@@ -30,11 +30,12 @@ import tools.jackson.databind.node.ObjectNode;
  * moved to {@code sent}/{@code failed} once the send resolves; a shutdown
  * mid-send leaves the row stale rather than redelivering.
  *
- * <p>This slice delivers {@code new_issue} to {@code generic_json} channels and
+ * <p>This module delivers {@code new_issue}, {@code incident_started}, and
+ * {@code incident_resolved} to {@code generic_json} channels and
  * backs the Admin test-send action (#44) via {@link #testSend}: a {@code test}
  * occurrence bypasses matching (the channel is named directly) but runs the same
  * format → history → async-deliver pipeline, so a green test proves the whole
- * path. Teams formatting (#46) and other triggers (#45) slot in behind the same
+ * path. Teams formatting (#46) slots in behind the same
  * seam without touching callers.
  */
 @Component
@@ -138,24 +139,54 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	private void deliver(NotificationOccurrence occurrence) {
 		switch (occurrence) {
 			case NotificationOccurrence.NewIssue issue -> deliverNewIssue(issue);
+			case NotificationOccurrence.IncidentStarted incident ->
+				deliverIncident(incident, incident.projectId(), incident.environment(), incident.monitorUrl());
+			case NotificationOccurrence.IncidentResolved incident ->
+				deliverIncident(incident, incident.projectId(), incident.environment(), incident.monitorUrl());
 			case NotificationOccurrence.Test test -> deliverTest(test);
 		}
 	}
 
 	private void deliverNewIssue(NotificationOccurrence.NewIssue occurrence) {
-		NotificationContext context = resolveContext(occurrence);
+		NotificationContext context = resolveContext(occurrence.projectId(), issueLink(occurrence.issueId()));
 		if (context == null) {
 			return; // Project vanished between insert and delivery; nothing to announce.
 		}
-		List<MatchedChannel> matches = matchChannels(occurrence);
+		deliverToMatches(occurrence, context, occurrence.projectId(), occurrence.environment(),
+				occurrence.triggerType() + ": " + occurrence.title());
+	}
+
+	/**
+	 * Both incident triggers deliver identically: a {@code /uptime} deep link, and a
+	 * summary of the trigger type plus the probed monitor URL (a Monitor's identity —
+	 * there is no name). The two variants differ only in the payload the formatter
+	 * writes, so the delivery path is shared.
+	 */
+	private void deliverIncident(NotificationOccurrence occurrence, long projectId, String environment,
+			String monitorUrl) {
+		NotificationContext context = resolveContext(projectId, uptimeLink());
+		if (context == null) {
+			return; // Project vanished; the monitor and incident cascade with it.
+		}
+		deliverToMatches(occurrence, context, projectId, environment,
+				occurrence.triggerType() + ": " + monitorUrl);
+	}
+
+	/**
+	 * Match, format once, and deliver an occurrence to every channel that fires on
+	 * it. The payload is identical for every matched channel (only the destination
+	 * URL differs), so it is formatted before any pending row is written — a
+	 * formatting failure then can't strand a row stuck at {@code pending}. Shared
+	 * by every stored trigger type; {@code test} bypasses this (channel named
+	 * directly).
+	 */
+	private void deliverToMatches(NotificationOccurrence occurrence, NotificationContext context, long projectId,
+			String environment, String summary) {
+		List<MatchedChannel> matches = matchChannels(occurrence.triggerType(), projectId, environment);
 		if (matches.isEmpty()) {
 			return;
 		}
-		// Format once: the payload is identical for every matched channel (only the
-		// destination URL differs). Do it before writing any pending row so a
-		// formatting failure can't strand a row stuck at 'pending'.
 		String payload = genericJsonFormatter.format(occurrence, context);
-		String summary = occurrence.triggerType() + ": " + occurrence.title();
 		for (MatchedChannel channel : matches) {
 			long historyId = insertPending(channel.id(), occurrence.triggerType(), summary);
 			WebhookSender.Result result = sender.send(channel.url(), payload);
@@ -253,12 +284,16 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 		return genericJsonFormatter.format(occurrence, new NotificationContext(null, null, settingsLink()));
 	}
 
-	/** Resolves Project display fields and the deep link, or null if the Project is gone. */
-	private NotificationContext resolveContext(NotificationOccurrence.NewIssue occurrence) {
+	/**
+	 * Resolves Project display fields and pairs them with the supplied deep link,
+	 * or null if the Project is gone. Shared by every occurrence that names a
+	 * Project; the caller supplies the link because it differs per trigger (Issue
+	 * vs. Uptime).
+	 */
+	private NotificationContext resolveContext(long projectId, String link) {
 		return jdbc.sql("SELECT slug, name FROM project WHERE id = ?")
-			.param(occurrence.projectId())
-			.query((rs, i) -> new NotificationContext(rs.getString("name"), rs.getString("slug"),
-					issueLink(occurrence.issueId())))
+			.param(projectId)
+			.query((rs, i) -> new NotificationContext(rs.getString("name"), rs.getString("slug"), link))
 			.optional()
 			.orElse(null);
 	}
@@ -269,9 +304,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	 * matches all Projects; an empty {@code environment_filter} matches all
 	 * Environments. A non-empty {@code environment_filter} never matches an
 	 * occurrence with no environment — {@code null = ANY(...)} is not true, so
-	 * only the empty-filter branch admits it, exactly the spec semantics.
+	 * only the empty-filter branch admits it, exactly the spec semantics. (Uptime
+	 * occurrences always carry an environment; new-issue ones may not.)
 	 */
-	private List<MatchedChannel> matchChannels(NotificationOccurrence.NewIssue occurrence) {
+	private List<MatchedChannel> matchChannels(String triggerType, long projectId, String environment) {
 		return jdbc.sql("""
 				SELECT id, url FROM notification_channel
 				WHERE enabled = true
@@ -280,9 +316,9 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 				  AND (cardinality(project_filter) = 0 OR ? = ANY(project_filter))
 				  AND (cardinality(environment_filter) = 0 OR ? = ANY(environment_filter))
 				""")
-			.param(occurrence.triggerType())
-			.param(occurrence.projectId())
-			.param(occurrence.environment())
+			.param(triggerType)
+			.param(projectId)
+			.param(environment)
 			.query((rs, i) -> new MatchedChannel(rs.getLong("id"), rs.getString("url")))
 			.list();
 	}
@@ -314,6 +350,16 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	 */
 	private String issueLink(long issueId) {
 		return properties.baseUrl() + "/issues/" + issueId;
+	}
+
+	/**
+	 * Deep link for an incident notification. There is no per-monitor route, so
+	 * this targets the Uptime status page (built from {@code outpost.public-url}
+	 * like {@link #issueLink}); one click takes the reader from chat to the
+	 * monitor overview.
+	 */
+	private String uptimeLink() {
+		return properties.baseUrl() + "/uptime";
 	}
 
 	/** Deep link to the notification-channel settings, for the test payload's link. */

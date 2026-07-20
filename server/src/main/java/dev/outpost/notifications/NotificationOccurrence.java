@@ -1,5 +1,6 @@
 package dev.outpost.notifications;
 
+import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -10,8 +11,9 @@ import java.time.Instant;
  * to them.
  *
  * <p>Sealed so the formatter/delivery switch is exhaustive. Ships {@link NewIssue}
- * and {@link Test}; {@code incident_started}/{@code incident_resolved} are
- * additive later variants (#45) that reuse the same seam.
+ * and {@link Test} (#43/#44) plus the Uptime incident variants
+ * {@link IncidentStarted} and {@link IncidentResolved} (#45) — all reusing the
+ * same seam, callers unchanged.
  */
 public sealed interface NotificationOccurrence {
 
@@ -34,6 +36,47 @@ public sealed interface NotificationOccurrence {
 		@Override
 		public String triggerType() {
 			return "new_issue";
+		}
+	}
+
+	/**
+	 * An Uptime Monitor's third consecutive failed check opened an Incident (#45).
+	 * Fired by {@code UptimeCheckService} exactly when the incident row is inserted
+	 * — not on every failed check, and not when an edit re-arms an already-open
+	 * incident. Monitors are identified by their probed URL (no name column;
+	 * CONTEXT.md defines a Monitor as a configuration that probes one URL), so
+	 * {@code monitorUrl} is both the identity and the probed URL in the payload.
+	 *
+	 * @param environment the monitor's Environment (always present —
+	 * {@code uptime_monitor.environment} is {@code NOT NULL}), matched against
+	 * channel Environment filters like any other occurrence.
+	 * @param failureReason the failing check's error, HTTP status or connection
+	 * error (e.g. {@code "HTTP 503"}); may be {@code null} if none was recorded.
+	 */
+	record IncidentStarted(long projectId, long monitorId, String monitorUrl, String environment,
+			String failureReason, Instant openedAt) implements NotificationOccurrence {
+
+		@Override
+		public String triggerType() {
+			return "incident_started";
+		}
+	}
+
+	/**
+	 * The next successful check closed an open Incident (#45). Fired by
+	 * {@code UptimeCheckService} exactly when the close actually transitions an
+	 * open incident (not on every success while already healthy). Carries the
+	 * downtime — {@code closedAt − openedAt} — in addition to the started fields.
+	 *
+	 * @param downtime how long the Incident was open; formatted for the payload as
+	 * whole seconds plus a human-readable string.
+	 */
+	record IncidentResolved(long projectId, long monitorId, String monitorUrl, String environment, Instant openedAt,
+			Instant closedAt, Duration downtime) implements NotificationOccurrence {
+
+		@Override
+		public String triggerType() {
+			return "incident_resolved";
 		}
 	}
 

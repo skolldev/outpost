@@ -20,9 +20,8 @@ Every payload has these two top-level fields:
 | `version` | integer | Contract version. Currently always `1`.                       |
 | `type`    | string  | Trigger discriminator. Switch on this to read the rest.       |
 
-Known `type` values: `new_issue` and `test` (both below). `incident_started`
-and `incident_resolved` are reserved for later slices and documented when they
-ship.
+Known `type` values: `new_issue`, `incident_started`, `incident_resolved`, and
+`test` (all below).
 
 ## `type: "new_issue"`
 
@@ -68,6 +67,95 @@ a resolved Issue, do **not** fire this trigger.
 - `link` honors a reverse-proxy sub-path if Outpost is served under one
   (`OUTPOST_PUBLIC_URL` including a path).
 - New fields may be added within `version: 1`; ignore ones you do not recognize.
+
+## `type: "incident_started"`
+
+Sent when an Uptime Monitor's **third consecutive failed check** opens an
+Incident. It fires **once per Incident** — not on every failed check, and not
+when an already-open Incident merely records a newer failure reason. A Monitor is
+identified by the URL it probes (there is no separate monitor name), so
+`monitor.url` is both its identity and the probed URL.
+
+Both incident triggers respect the channel's trigger selection and its Project
+and Environment filters. Uptime Monitors are Project- and Environment-scoped, so
+an incident always carries an `environment`; a channel with a non-empty
+Environment filter only fires when that environment is listed.
+
+```json
+{
+  "version": 1,
+  "type": "incident_started",
+  "project": {
+    "id": 42,
+    "slug": "shop",
+    "name": "Shop"
+  },
+  "monitor": {
+    "id": 9,
+    "url": "https://shop.example.com/health",
+    "environment": "production",
+    "link": "https://outpost.example.com/uptime"
+  },
+  "incident": {
+    "failure_reason": "HTTP 503",
+    "opened_at": "2026-07-20T10:00:00Z"
+  }
+}
+```
+
+| Field                     | Type           | Notes                                                                  |
+| ------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `project.id`              | integer        | Project id.                                                            |
+| `project.slug`            | string         | Project slug.                                                          |
+| `project.name`            | string         | Project display name.                                                  |
+| `monitor.id`              | integer        | Uptime Monitor id.                                                     |
+| `monitor.url`             | string         | The probed URL — the Monitor's identity.                               |
+| `monitor.environment`     | string         | Environment the Monitor is scoped to.                                  |
+| `monitor.link`            | string         | Deep link to the Uptime status page, built from `outpost.public-url`.  |
+| `incident.failure_reason` | string \| null | The failing check's HTTP status or connection error. `null` if none.  |
+| `incident.opened_at`      | string         | ISO-8601 UTC instant the Incident opened.                             |
+
+## `type: "incident_resolved"`
+
+Sent when the **next successful check** closes an open Incident. It fires **once
+per recovery** — never on a success while the Monitor is already healthy. It
+carries the same `project` and `monitor` blocks as `incident_started`, plus the
+downtime.
+
+```json
+{
+  "version": 1,
+  "type": "incident_resolved",
+  "project": {
+    "id": 42,
+    "slug": "shop",
+    "name": "Shop"
+  },
+  "monitor": {
+    "id": 9,
+    "url": "https://shop.example.com/health",
+    "environment": "production",
+    "link": "https://outpost.example.com/uptime"
+  },
+  "incident": {
+    "opened_at": "2026-07-20T10:00:00Z",
+    "closed_at": "2026-07-20T12:05:30Z",
+    "downtime_seconds": 7530,
+    "downtime_human": "2h 5m 30s"
+  }
+}
+```
+
+| Field                       | Type    | Notes                                                                        |
+| --------------------------- | ------- | ---------------------------------------------------------------------------- |
+| `project.*`, `monitor.*`    |         | Identical to `incident_started`.                                             |
+| `incident.opened_at`        | string  | ISO-8601 UTC instant the Incident opened.                                    |
+| `incident.closed_at`        | string  | ISO-8601 UTC instant the Incident closed (this recovery).                    |
+| `incident.downtime_seconds` | integer | Whole seconds the Incident was open (`closed_at − opened_at`). Canonical.    |
+| `incident.downtime_human`   | string  | Compact human-readable downtime (e.g. `2h 5m 30s`); presentation sugar.      |
+
+Compute your own duration from the two timestamps if you prefer;
+`downtime_seconds` is the canonical value and `downtime_human` is convenience.
 
 ## `type: "test"`
 
