@@ -1,8 +1,6 @@
 package dev.outpost.notifications;
 
-import java.time.Duration;
 import org.springframework.stereotype.Component;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -16,9 +14,12 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>Contract rules: top-level {@code version} is {@code 1}; {@code type} is the
  * trigger discriminator; changes within a version are additive only. Documented
  * in {@code docs/notifications/generic-json-payload.md}.
+ *
+ * <p>The {@code generic_json} implementation of the {@link NotificationFormatter}
+ * seam (issue #46): resolved by {@link NotificationFormatters} on channel type.
  */
 @Component
-public class GenericJsonFormatter {
+public class GenericJsonFormatter implements NotificationFormatter {
 
 	private static final int VERSION = 1;
 
@@ -28,7 +29,13 @@ public class GenericJsonFormatter {
 		this.mapper = mapper;
 	}
 
+	@Override
+	public String channelType() {
+		return "generic_json";
+	}
+
 	/** Serializes {@code occurrence} into the Generic JSON payload for one delivery. */
+	@Override
 	public String format(NotificationOccurrence occurrence, NotificationContext context) {
 		ObjectNode root = mapper.createObjectNode();
 		root.put("version", VERSION);
@@ -72,7 +79,8 @@ public class GenericJsonFormatter {
 		incident.put("opened_at", occurrence.openedAt() == null ? null : occurrence.openedAt().toString());
 		incident.put("closed_at", occurrence.closedAt() == null ? null : occurrence.closedAt().toString());
 		incident.put("downtime_seconds", occurrence.downtime() == null ? null : occurrence.downtime().toSeconds());
-		incident.put("downtime_human", occurrence.downtime() == null ? null : humanDuration(occurrence.downtime()));
+		incident.put("downtime_human",
+				occurrence.downtime() == null ? null : NotificationText.humanDuration(occurrence.downtime()));
 	}
 
 	/** Project block, shared by every occurrence type that names a Project. */
@@ -99,27 +107,6 @@ public class GenericJsonFormatter {
 		return root.putObject("incident");
 	}
 
-	/**
-	 * Compact human-readable duration for the payload's {@code downtime_human}
-	 * field, e.g. {@code "2h 5m 30s"}. Presentation sugar alongside the canonical
-	 * {@code downtime_seconds}; receivers that compute their own can ignore it.
-	 */
-	private static String humanDuration(Duration downtime) {
-		long seconds = Math.max(0, downtime.toSeconds());
-		long hours = seconds / 3600;
-		long minutes = (seconds % 3600) / 60;
-		long secs = seconds % 60;
-		StringBuilder out = new StringBuilder();
-		if (hours > 0) {
-			out.append(hours).append("h ");
-		}
-		if (hours > 0 || minutes > 0) {
-			out.append(minutes).append("m ");
-		}
-		out.append(secs).append('s');
-		return out.toString();
-	}
-
 	private void writeTest(ObjectNode root, NotificationOccurrence.Test occurrence, NotificationContext context) {
 		ObjectNode channel = root.putObject("channel");
 		channel.put("id", occurrence.channelId());
@@ -131,11 +118,6 @@ public class GenericJsonFormatter {
 	}
 
 	private String write(ObjectNode root) {
-		try {
-			return mapper.writeValueAsString(root);
-		}
-		catch (JacksonException e) {
-			throw new IllegalStateException("notification payload not serializable", e);
-		}
+		return NotificationText.serialize(mapper, root);
 	}
 }
