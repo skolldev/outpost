@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { AppUser } from '../../../core/models';
 import { OutpostUsersSettings } from './outpost-users';
 
@@ -16,8 +17,13 @@ const USER: AppUser = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderUsers() {
-  return render(OutpostUsersSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(OutpostUsersSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('OutpostUsersSettings', () => {
@@ -57,5 +63,6 @@ describe('OutpostUsersSettings', () => {
       expect(within(screen.getByRole('table')).getByText('new@example.com')).toBeInTheDocument(),
     );
     expect(created).toMatchObject({ email: 'new@example.com', role: 'admin' });
+    expect(feedback.success).toHaveBeenCalledWith('User created.');
   });
 });

@@ -12,6 +12,7 @@ import { HlmFieldImports } from '@spartan-ng/helm/field';
 
 import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
+import { Feedback } from '../../../core/feedback';
 import {
   NotificationChannel,
   NotificationChannelType,
@@ -41,6 +42,7 @@ import { ProjectsStore } from '../../../core/projects';
 })
 export class NotificationChannelsSettings {
   private readonly api = inject(Api);
+  private readonly feedback = inject(Feedback);
   readonly projectsStore = inject(ProjectsStore);
 
   private readonly channelsResource = httpResource<NotificationChannel[]>(
@@ -49,7 +51,6 @@ export class NotificationChannelsSettings {
   );
   readonly channels = this.channelsResource.value;
 
-  readonly error = signal<string | null>(null);
   readonly editingChannelId = signal<number | null>(null);
   readonly confirmDeleteChannelId = signal<number | null>(null);
   // Per-channel test-send outcome, shown inline until the next test or edit.
@@ -109,7 +110,6 @@ export class NotificationChannelsSettings {
   }
 
   async saveChannel(): Promise<void> {
-    this.error.set(null);
     const body = {
       name: this.newChannelName,
       type: this.newChannelType,
@@ -130,8 +130,8 @@ export class NotificationChannelsSettings {
         .map((name) => name.trim())
         .filter((name) => name.length > 0),
     };
+    const editing = this.editingChannelId();
     try {
-      const editing = this.editingChannelId();
       if (editing === null) {
         await firstValueFrom(this.api.createNotificationChannel(body));
       } else {
@@ -139,15 +139,17 @@ export class NotificationChannelsSettings {
       }
       this.resetChannelForm();
       this.channelsResource.reload();
+      this.feedback.success(editing === null ? 'Channel created.' : 'Channel updated.');
     } catch {
-      this.error.set('Could not save notification channel — check the URL and pick a trigger.');
+      this.feedback.error(
+        'Could not save notification channel — check the URL and pick a trigger.',
+      );
     }
   }
 
   editChannel(channel: NotificationChannel): void {
     this.editingChannelId.set(channel.id);
     this.confirmDeleteChannelId.set(null);
-    this.error.set(null);
     this.channelTestResult.update((map) => {
       const next = { ...map };
       delete next[channel.id];
@@ -170,7 +172,6 @@ export class NotificationChannelsSettings {
   }
 
   async toggleChannel(channel: NotificationChannel): Promise<void> {
-    this.error.set(null);
     try {
       await firstValueFrom(
         this.api.updateNotificationChannel(channel.id, {
@@ -190,7 +191,7 @@ export class NotificationChannelsSettings {
       }
       this.channelsResource.reload();
     } catch {
-      this.error.set('Could not update notification channel.');
+      this.feedback.error('Could not update notification channel.');
     }
   }
 
@@ -203,14 +204,14 @@ export class NotificationChannelsSettings {
   }
 
   async deleteChannel(channel: NotificationChannel): Promise<void> {
-    this.error.set(null);
     try {
       await firstValueFrom(this.api.deleteNotificationChannel(channel.id));
       if (this.editingChannelId() === channel.id) this.resetChannelForm();
       this.confirmDeleteChannelId.set(null);
       this.channelsResource.reload();
+      this.feedback.success('Channel deleted.');
     } catch {
-      this.error.set('Could not delete notification channel.');
+      this.feedback.error('Could not delete notification channel.');
     }
   }
 
@@ -220,7 +221,6 @@ export class NotificationChannelsSettings {
    * and, if the channel's history is open, refresh it so the new row appears.
    */
   async testChannel(channel: NotificationChannel): Promise<void> {
-    this.error.set(null);
     this.channelTestResult.update((map) => ({ ...map, [channel.id]: 'pending' }));
     try {
       const result = await firstValueFrom(this.api.testNotificationChannel(channel.id));
@@ -235,7 +235,7 @@ export class NotificationChannelsSettings {
         delete next[channel.id];
         return next;
       });
-      this.error.set('Could not test channel — it may be disabled or unreachable.');
+      this.feedback.error('Could not test channel — it may be disabled or unreachable.');
     }
   }
 

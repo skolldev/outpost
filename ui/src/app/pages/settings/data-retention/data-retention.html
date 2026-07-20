@@ -55,14 +55,6 @@
           <p hlmAlertDescription>{{ retentionError() }}</p>
         </div>
       }
-      @if (retentionSuccess()) {
-        <div hlmAlert role="status">
-          <p hlmAlertTitle>Settings saved</p>
-          <p hlmAlertDescription>
-            {{ retentionSuccess() }} Changes take effect at the next 02:00 UTC run.
-          </p>
-        </div>
-      }
     </div>
     <div hlmCardFooter>
       <button hlmBtn type="submit" [disabled]="retentionLoading() || retentionSaving()">

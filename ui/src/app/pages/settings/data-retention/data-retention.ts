@@ -12,6 +12,7 @@ import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
 import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
+import { Feedback } from '../../../core/feedback';
 import { DataRetentionSetting, RetentionDays } from '../../../core/models';
 
 type RetentionDaysValue = '30' | '60' | '90' | '180';
@@ -37,6 +38,7 @@ type RetentionDaysValue = '30' | '60' | '90' | '180';
 })
 export class DataRetentionSettings {
   private readonly api = inject(Api);
+  private readonly feedback = inject(Feedback);
 
   readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90', '180'];
 
@@ -48,8 +50,9 @@ export class DataRetentionSettings {
   readonly retentionLoading = this.retentionResource.isLoading;
 
   readonly retentionSaving = signal(false);
+  // Persistent page-state error for a failed *load*; the panel is unusable
+  // until it clears. Save outcomes go through the Feedback seam instead.
   readonly retentionError = signal<string | null>(null);
-  readonly retentionSuccess = signal<string | null>(null);
 
   retentionEnabled = false;
   retentionDays: RetentionDaysValue = '90';
@@ -72,8 +75,6 @@ export class DataRetentionSettings {
   }
 
   async saveDataRetention(): Promise<void> {
-    this.retentionError.set(null);
-    this.retentionSuccess.set(null);
     this.retentionSaving.set(true);
     const body: DataRetentionSetting = {
       enabled: this.retentionEnabled,
@@ -83,9 +84,11 @@ export class DataRetentionSettings {
       const saved = await firstValueFrom(this.api.updateDataRetention(body));
       this.retentionEnabled = saved.enabled;
       this.retentionDays = String(saved.retention_days) as RetentionDaysValue;
-      this.retentionSuccess.set('Data retention settings saved.');
+      this.feedback.success(
+        'Data retention settings saved. Changes take effect at the next 02:00 UTC run.',
+      );
     } catch {
-      this.retentionError.set('Could not save data retention settings.');
+      this.feedback.error('Could not save data retention settings.');
     } finally {
       this.retentionSaving.set(false);
     }

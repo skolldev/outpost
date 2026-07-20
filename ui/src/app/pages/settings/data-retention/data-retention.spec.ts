@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { DataRetentionSettings } from './data-retention';
 
 const BASE = '*/api/internal';
@@ -14,8 +15,13 @@ function nativeSelect(wrapperId: string): HTMLSelectElement {
   return select;
 }
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderRetention() {
-  return render(DataRetentionSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(DataRetentionSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('DataRetentionSettings', () => {
@@ -53,7 +59,11 @@ describe('DataRetentionSettings', () => {
     await user.click(screen.getByRole('button', { name: 'Save data retention' }));
 
     await waitFor(() => expect(saved).toEqual({ enabled: true, retention_days: 30 }));
-    expect(await screen.findByText('Settings saved')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(feedback.success).toHaveBeenCalledWith(
+        'Data retention settings saved. Changes take effect at the next 02:00 UTC run.',
+      ),
+    );
   });
 
   it('shows an alert when the setting cannot be loaded', async () => {

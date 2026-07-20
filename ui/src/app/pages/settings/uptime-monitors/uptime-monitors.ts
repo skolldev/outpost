@@ -9,6 +9,7 @@ import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-
 
 import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
+import { Feedback } from '../../../core/feedback';
 import { UptimeMonitor, UptimeTestResult } from '../../../core/models';
 import { ProjectsStore } from '../../../core/projects';
 
@@ -21,6 +22,7 @@ import { ProjectsStore } from '../../../core/projects';
 })
 export class UptimeMonitorsSettings {
   private readonly api = inject(Api);
+  private readonly feedback = inject(Feedback);
   readonly projectsStore = inject(ProjectsStore);
 
   private readonly monitorsResource = httpResource<UptimeMonitor[]>(
@@ -29,7 +31,8 @@ export class UptimeMonitorsSettings {
   );
   readonly monitors = this.monitorsResource.value;
 
-  readonly error = signal<string | null>(null);
+  // The detailed probe result stays inline (per-row data, not a transient
+  // confirmation); action outcomes go through the Feedback seam.
   readonly testResult = signal<UptimeTestResult | 'pending' | null>(null);
   readonly editingMonitorId = signal<number | null>(null);
 
@@ -61,7 +64,6 @@ export class UptimeMonitorsSettings {
   }
 
   async saveMonitor(): Promise<void> {
-    this.error.set(null);
     const body = {
       project_id: Number(this.newMonitorProjectId()),
       environment: this.newMonitorEnv,
@@ -69,8 +71,8 @@ export class UptimeMonitorsSettings {
       interval_seconds: Number(this.newMonitorInterval),
       timeout_seconds: Number(this.newMonitorTimeout),
     };
+    const editing = this.editingMonitorId();
     try {
-      const editing = this.editingMonitorId();
       if (editing === null) {
         await firstValueFrom(this.api.createUptimeMonitor(body));
       } else {
@@ -78,8 +80,9 @@ export class UptimeMonitorsSettings {
       }
       this.resetMonitorForm();
       this.monitorsResource.reload();
+      this.feedback.success(editing === null ? 'Monitor created.' : 'Monitor updated.');
     } catch {
-      this.error.set('Could not save monitor — check the URL.');
+      this.feedback.error('Could not save monitor — check the URL.');
     }
   }
 
@@ -100,15 +103,15 @@ export class UptimeMonitorsSettings {
   }
 
   async deleteMonitor(monitor: UptimeMonitor): Promise<void> {
-    this.error.set(null);
     try {
       await firstValueFrom(this.api.deleteUptimeMonitor(monitor.id));
       if (this.editingMonitorId() === monitor.id) {
         this.resetMonitorForm();
       }
       this.monitorsResource.reload();
+      this.feedback.success('Monitor deleted.');
     } catch {
-      this.error.set('Could not delete monitor.');
+      this.feedback.error('Could not delete monitor.');
     }
   }
 
@@ -122,7 +125,7 @@ export class UptimeMonitorsSettings {
       );
     } catch {
       this.testResult.set(null);
-      this.error.set('Test request failed — check the URL.');
+      this.feedback.error('Test request failed — check the URL.');
     }
   }
 

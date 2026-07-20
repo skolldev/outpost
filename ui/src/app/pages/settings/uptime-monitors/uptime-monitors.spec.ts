@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { Project, UptimeMonitor } from '../../../core/models';
 import { UptimeMonitorsSettings } from './uptime-monitors';
 
@@ -36,8 +37,13 @@ function nativeSelect(wrapperId: string): HTMLSelectElement {
   return select;
 }
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderMonitors() {
-  return render(UptimeMonitorsSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(UptimeMonitorsSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('UptimeMonitorsSettings', () => {
@@ -107,5 +113,6 @@ describe('UptimeMonitorsSettings', () => {
       environment: 'prod',
       url: 'https://shop.example.com/health',
     });
+    expect(feedback.success).toHaveBeenCalledWith('Monitor created.');
   });
 });

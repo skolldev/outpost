@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { NotificationChannel, NotificationHistoryEntry } from '../../../core/models';
 import { NotificationChannelsSettings } from './notification-channels';
 
@@ -33,8 +34,13 @@ const HISTORY: NotificationHistoryEntry = {
   updated_at: '2026-01-02T00:00:00Z',
 };
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderChannels() {
-  return render(NotificationChannelsSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(NotificationChannelsSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('NotificationChannelsSettings', () => {
@@ -72,6 +78,7 @@ describe('NotificationChannelsSettings', () => {
       expect(within(screen.getByRole('table')).getByText('Team alerts')).toBeInTheDocument(),
     );
     expect(created).toMatchObject({ name: 'Team alerts', triggers: ['new_issue'] });
+    expect(feedback.success).toHaveBeenCalledWith('Channel created.');
   });
 
   it('expands a channel to load its delivery history', async () => {

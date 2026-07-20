@@ -16,9 +16,6 @@
     />
   </div>
   <button hlmBtn size="sm" type="submit">Create token</button>
-  @if (error()) {
-    <span class="text-sm text-destructive">{{ error() }}</span>
-  }
 </form>
 
 @if (createdToken(); as created) {

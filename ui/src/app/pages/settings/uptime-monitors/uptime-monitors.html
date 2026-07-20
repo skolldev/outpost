@@ -100,9 +100,6 @@
   >
     {{ testResult() === 'pending' ? 'Testing…' : 'Test connection' }}
   </button>
-  @if (error()) {
-    <span class="text-sm text-destructive">{{ error() }}</span>
-  }
 </form>
 
 @if (testResult(); as result) {

@@ -11,9 +11,13 @@ everywhere. spartan/ui: Brain primitives from npm, Helm components vendored in
   keeps project/environment/range in URL query params; nav links use
   `queryParamsHandling="merge"` to preserve them.
 - Forms are template-driven (`FormsModule` + `[(ngModel)]`) with native HTML
-  validation. Save pattern: `firstValueFrom(api.x())` in try/catch, setting an
-  `error` signal on failure and reloading the list on success (see
-  `pages/settings.ts`).
+  validation. Save pattern: `firstValueFrom(api.x())` in try/catch, reloading
+  the list on success; report the transient outcome through the `Feedback`
+  seam (`core/feedback.ts`) — `feedback.error(...)` on failure,
+  `feedback.success(...)` on success — never an inline `error` signal (see
+  `pages/settings/projects/projects.ts`, ADR 0007). Persistent page state,
+  such as a failed initial load, may still use an inline signal (see
+  `pages/settings/data-retention`).
 - API: one method per endpoint in `core/api.ts` returning `Observable`, plus
   `httpResource` for auto-refetching list pages. Every response type is an
   interface in `core/models.ts` with **snake_case** fields matching the JSON.
