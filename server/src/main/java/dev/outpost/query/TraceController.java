@@ -51,18 +51,65 @@ public class TraceController {
 			@RequestParam(required = false) Instant to,
 			@RequestParam(required = false) String cursor) {
 
-		// One row per trace_id. A distributed trace has many transactions sharing a
-		// trace_id (browser pageload + backend request…); we represent each trace by
-		// its root transaction (parent_span_id IS NULL), or — when a filter only
-		// matches a continuation — by the best-matching transaction, so filtering by
-		// the backend project still surfaces the trace. Filters apply per-transaction;
-		// span/error counts span the whole trace.
+		SearchQuery search = buildSearchQuery(project, environment, release, query, minDuration, maxDuration,
+				hasErrors, from, to, cursor);
+
+		List<Map<String, Object>> rows = jdbc.query(search.sql(), (rs, i) -> {
+			Map<String, Object> row = new LinkedHashMap<>();
+			row.put("id", rs.getObject("id", UUID.class));
+			row.put("project_id", rs.getLong("project_id"));
+			row.put("environment", rs.getString("environment"));
+			row.put("release", rs.getString("release"));
+			row.put("trace_id", rs.getString("trace_id"));
+			row.put("name", rs.getString("name"));
+			row.put("op", rs.getString("op"));
+			row.put("start_ts", rs.getTimestamp("start_ts").toInstant());
+			row.put("end_ts", rs.getTimestamp("end_ts").toInstant());
+			row.put("duration_ms", rs.getDouble("duration_ms"));
+			row.put("status", rs.getString("status"));
+			row.put("span_count", rs.getLong("span_count"));
+			row.put("error_count", rs.getLong("error_count"));
+			return row;
+		}, search.params().toArray());
+
+		boolean hasMore = rows.size() > PAGE_SIZE;
+		if (hasMore) {
+			rows = rows.subList(0, PAGE_SIZE);
+		}
+		String nextCursor = hasMore && !rows.isEmpty()
+				? QuerySupport.encodeCursor(rows.get(rows.size() - 1).get("start_ts").toString(),
+						rows.get(rows.size() - 1).get("id").toString())
+				: null;
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("traces", rows);
+		body.put("next_cursor", nextCursor);
+		return body;
+	}
+
+	/** The trace-search SQL and its ordered bind parameters. */
+	record SearchQuery(String sql, List<Object> params) {
+	}
+
+	/**
+	 * Builds the trace-search SQL (§9.4 list) and its bind parameters. Extracted
+	 * so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact query
+	 * the controller runs — a regression guard that copied the SQL would keep
+	 * passing if the real query regressed.
+	 *
+	 * <p>One row per trace_id. A distributed trace has many transactions sharing
+	 * a trace_id (browser pageload + backend request…); we represent each trace
+	 * by its root transaction (parent_span_id IS NULL), or — when a filter only
+	 * matches a continuation — by the best-matching transaction, so filtering by
+	 * the backend project still surfaces the trace. Filters apply per-transaction;
+	 * span/error counts span the whole trace.
+	 */
+	static SearchQuery buildSearchQuery(Long project, List<String> environment, String release, String query,
+			Double minDuration, Double maxDuration, Boolean hasErrors, Instant from, Instant to, String cursor) {
+
 		StringBuilder inner = new StringBuilder("""
 				SELECT DISTINCT ON (t.trace_id)
 				       t.id, t.project_id, t.environment, t.release, t.trace_id, t.name, t.op,
-				       t.start_ts, t.end_ts, t.duration_ms, t.status,
-				       (SELECT count(*) FROM span s WHERE s.trace_id = t.trace_id) AS span_count,
-				       (SELECT count(*) FROM event e WHERE e.trace_id = t.trace_id) AS error_count
+				       t.start_ts, t.end_ts, t.duration_ms, t.status
 				FROM txn t WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
@@ -106,45 +153,26 @@ public class TraceController {
 		// earliest transaction, as the representative row for each trace.
 		inner.append(" ORDER BY t.trace_id, (t.parent_span_id IS NULL) DESC, t.start_ts");
 
-		StringBuilder sql = new StringBuilder("SELECT * FROM (").append(inner).append(") traces WHERE 1=1");
+		StringBuilder page = new StringBuilder("SELECT * FROM (").append(inner).append(") traces WHERE 1=1");
 		if (cursor != null && !cursor.isBlank()) {
 			String[] parts = QuerySupport.decodeCursor(cursor);
-			sql.append(" AND (start_ts, id) < (?, ?)");
+			page.append(" AND (start_ts, id) < (?, ?)");
 			params.add(java.sql.Timestamp.from(Instant.parse(parts[0])));
 			params.add(UUID.fromString(parts[1]));
 		}
-		sql.append(" ORDER BY start_ts DESC, id DESC LIMIT ").append(PAGE_SIZE + 1);
+		page.append(" ORDER BY start_ts DESC, id DESC LIMIT ").append(PAGE_SIZE + 1);
 
-		List<Map<String, Object>> rows = jdbc.query(sql.toString(), (rs, i) -> {
-			Map<String, Object> row = new LinkedHashMap<>();
-			row.put("id", rs.getObject("id", UUID.class));
-			row.put("project_id", rs.getLong("project_id"));
-			row.put("environment", rs.getString("environment"));
-			row.put("release", rs.getString("release"));
-			row.put("trace_id", rs.getString("trace_id"));
-			row.put("name", rs.getString("name"));
-			row.put("op", rs.getString("op"));
-			row.put("start_ts", rs.getTimestamp("start_ts").toInstant());
-			row.put("end_ts", rs.getTimestamp("end_ts").toInstant());
-			row.put("duration_ms", rs.getDouble("duration_ms"));
-			row.put("status", rs.getString("status"));
-			row.put("span_count", rs.getLong("span_count"));
-			row.put("error_count", rs.getLong("error_count"));
-			return row;
-		}, params.toArray());
+		// Count spans/errors only for the paginated representative rows — computing
+		// them inside the DISTINCT ON scan runs both correlated subqueries once per
+		// candidate transaction (thousands) just to discard all but one row per
+		// trace; here they run for at most PAGE_SIZE+1 rows. Order is re-asserted
+		// because the outer SELECT does not inherit the subquery's ordering.
+		String sql = "SELECT p.*,\n"
+				+ "       (SELECT count(*) FROM span s WHERE s.trace_id = p.trace_id) AS span_count,\n"
+				+ "       (SELECT count(*) FROM event e WHERE e.trace_id = p.trace_id) AS error_count\n"
+				+ "FROM (" + page + ") p ORDER BY p.start_ts DESC, p.id DESC";
 
-		boolean hasMore = rows.size() > PAGE_SIZE;
-		if (hasMore) {
-			rows = rows.subList(0, PAGE_SIZE);
-		}
-		String nextCursor = hasMore && !rows.isEmpty()
-				? QuerySupport.encodeCursor(rows.get(rows.size() - 1).get("start_ts").toString(),
-						rows.get(rows.size() - 1).get("id").toString())
-				: null;
-		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("traces", rows);
-		body.put("next_cursor", nextCursor);
-		return body;
+		return new SearchQuery(sql, params);
 	}
 
 	/**
