@@ -81,6 +81,9 @@ export class LogsPage {
   readonly debouncedQuery = debounced(this.search, 300);
 
   readonly live = signal(false);
+  // Tracks whether the previous live-effect run was already live, so a filter
+  // change while live clears the stale buffer but entering live does not.
+  private wasLive = false;
   readonly expanded = signal<ReadonlySet<string>>(new Set());
   readonly copiedId = signal<string | null>(null);
 
@@ -126,6 +129,11 @@ export class LogsPage {
     effect((onCleanup) => {
       if (!this.live()) return;
       this.filterKey(); // reconnect when filters change
+      // A filter change while already live invalidates the buffered records
+      // (they were streamed under the old filter). Entering live keeps the
+      // rows the resource already fetched — clear only on the reconnect case.
+      if (this.wasLive) this.logs.set([]);
+      this.wasLive = true;
       const source = new EventSource(this.api.logTailUrl(untracked(() => this.currentFilters())));
       source.onmessage = (message: MessageEvent<string>) => {
         let record: LogRecord;
@@ -170,6 +178,7 @@ export class LogsPage {
     if (this.live()) {
       this.logs.set([]);
       this.cursor.set(undefined);
+      this.wasLive = false;
     }
     this.live.set(!this.live());
   }
