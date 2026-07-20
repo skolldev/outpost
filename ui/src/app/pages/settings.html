@@ -414,6 +414,7 @@
           <th class="px-4 py-2 font-medium">Triggers</th>
           <th class="px-4 py-2 font-medium">Scope</th>
           <th class="px-4 py-2 font-medium">Status</th>
+          <th class="px-4 py-2 font-medium">Last delivery</th>
           <th class="px-4 py-2"></th>
         </tr>
       </thead>
@@ -441,6 +442,18 @@
                 <span class="text-muted-foreground">Disabled</span>
               }
             </td>
+            <td class="px-4 py-2 text-xs">
+              @if (channel.last_status) {
+                <span [style.color]="deliveryStatusColor(channel.last_status)" class="font-medium">
+                  {{ channel.last_status }}
+                </span>
+                <span class="ml-1 text-muted-foreground">
+                  {{ channel.last_delivery_at | date: 'short' }}
+                </span>
+              } @else {
+                <span class="text-muted-foreground">Never</span>
+              }
+            </td>
             <td class="px-4 py-2 text-right whitespace-nowrap">
               @if (confirmDeleteChannelId() === channel.id) {
                 <span class="mr-2 text-xs text-muted-foreground">Delete this channel?</span>
@@ -457,8 +470,43 @@
                   Cancel
                 </button>
               } @else {
+                @if (testResultFor(channel.id); as result) {
+                  @if (result === 'pending') {
+                    <span class="mr-2 text-xs text-muted-foreground">Testing…</span>
+                  } @else if (result.status === 'sent') {
+                    <span class="mr-2 text-xs font-medium" [style.color]="'var(--level-success)'"
+                      >Test delivered</span
+                    >
+                  } @else {
+                    <span
+                      class="mr-2 text-xs font-medium"
+                      [style.color]="'var(--level-error)'"
+                      [title]="result.error_detail ?? ''"
+                      >Test failed</span
+                    >
+                  }
+                }
                 <button hlmBtn variant="outline" size="xs" (click)="editChannel(channel)">
                   Edit
+                </button>
+                <button
+                  hlmBtn
+                  variant="outline"
+                  size="xs"
+                  class="ml-2"
+                  [disabled]="!channel.enabled || testResultFor(channel.id) === 'pending'"
+                  (click)="testChannel(channel)"
+                >
+                  Test
+                </button>
+                <button
+                  hlmBtn
+                  variant="outline"
+                  size="xs"
+                  class="ml-2"
+                  (click)="toggleChannelHistory(channel)"
+                >
+                  {{ expandedChannelId() === channel.id ? 'Hide history' : 'History' }}
                 </button>
                 <button
                   hlmBtn
@@ -481,9 +529,52 @@
               }
             </td>
           </tr>
+          @if (expandedChannelId() === channel.id) {
+            <tr class="border-b border-border/60 bg-muted/30 last:border-0">
+              <td colspan="8" class="px-4 py-3">
+                <h3 class="mb-2 text-xs font-medium text-muted-foreground">Recent deliveries</h3>
+                @if (channelHistoryLoading()) {
+                  <p class="text-xs text-muted-foreground">Loading…</p>
+                } @else if (channelHistory().length === 0) {
+                  <p class="text-xs text-muted-foreground">No deliveries yet.</p>
+                } @else {
+                  <table class="w-full text-xs">
+                    <thead class="text-left text-muted-foreground">
+                      <tr>
+                        <th class="py-1 pr-4 font-medium">Trigger</th>
+                        <th class="py-1 pr-4 font-medium">Status</th>
+                        <th class="py-1 pr-4 font-medium">When</th>
+                        <th class="py-1 font-medium">Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      @for (entry of channelHistory(); track entry.id) {
+                        <tr class="border-t border-border/40">
+                          <td class="py-1 pr-4">{{ historyTriggerLabel(entry.trigger_type) }}</td>
+                          <td class="py-1 pr-4">
+                            <span
+                              class="font-medium"
+                              [style.color]="deliveryStatusColor(entry.status)"
+                              >{{ entry.status }}</span
+                            >
+                          </td>
+                          <td class="py-1 pr-4 text-muted-foreground">
+                            {{ entry.created_at | date: 'short' }}
+                          </td>
+                          <td class="py-1 text-muted-foreground">
+                            {{ entry.error_detail ?? '—' }}
+                          </td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                }
+              </td>
+            </tr>
+          }
         } @empty {
           <tr>
-            <td colspan="7" class="px-4 py-6 text-center text-sm text-muted-foreground">
+            <td colspan="8" class="px-4 py-6 text-center text-sm text-muted-foreground">
               No notification channels yet.
             </td>
           </tr>

@@ -19,6 +19,9 @@ import {
   DataRetentionSetting,
   NotificationChannel,
   NotificationChannelType,
+  NotificationDeliveryStatus,
+  NotificationHistoryEntry,
+  NotificationTestResult,
   NotificationTrigger,
   Project,
   ProjectKey,
@@ -82,6 +85,13 @@ export class SettingsPage {
   readonly channels = signal<NotificationChannel[]>([]);
   readonly editingChannelId = signal<number | null>(null);
   readonly confirmDeleteChannelId = signal<number | null>(null);
+  // Per-channel test-send outcome, shown inline until the next test or edit.
+  // 'pending' while the request is in flight.
+  readonly channelTestResult = signal<Record<number, NotificationTestResult | 'pending'>>({});
+  // The channel whose delivery history is expanded, and the loaded rows.
+  readonly expandedChannelId = signal<number | null>(null);
+  readonly channelHistory = signal<NotificationHistoryEntry[]>([]);
+  readonly channelHistoryLoading = signal(false);
   readonly channelTriggerOptions: { value: NotificationTrigger; label: string }[] = [
     { value: 'new_issue', label: 'New issue' },
     { value: 'incident_started', label: 'Incident started' },
@@ -369,6 +379,11 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
     this.editingChannelId.set(channel.id);
     this.confirmDeleteChannelId.set(null);
     this.error.set(null);
+    this.channelTestResult.update((map) => {
+      const next = { ...map };
+      delete next[channel.id];
+      return next;
+    });
     this.newChannelName = channel.name;
     this.newChannelType = channel.type;
     this.newChannelUrl = channel.url;
@@ -423,6 +438,74 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
     if (this.editingChannelId() === channel.id) this.resetChannelForm();
     this.confirmDeleteChannelId.set(null);
     await this.reloadChannels();
+  }
+
+  /**
+   * Fire a real test Notification through the full pipeline and show the outcome
+   * inline. On success we also reload the list (its last-outcome column moves)
+   * and, if the channel's history is open, refresh it so the new row appears.
+   */
+  async testChannel(channel: NotificationChannel): Promise<void> {
+    this.error.set(null);
+    this.channelTestResult.update((map) => ({ ...map, [channel.id]: 'pending' }));
+    try {
+      const result = await firstValueFrom(this.api.testNotificationChannel(channel.id));
+      this.channelTestResult.update((map) => ({ ...map, [channel.id]: result }));
+      await this.reloadChannels();
+      if (this.expandedChannelId() === channel.id) {
+        await this.loadChannelHistory(channel.id);
+      }
+    } catch {
+      this.channelTestResult.update((map) => {
+        const next = { ...map };
+        delete next[channel.id];
+        return next;
+      });
+      this.error.set('Could not test channel — it may be disabled or unreachable.');
+    }
+  }
+
+  testResultFor(channelId: number): NotificationTestResult | 'pending' | undefined {
+    return this.channelTestResult()[channelId];
+  }
+
+  async toggleChannelHistory(channel: NotificationChannel): Promise<void> {
+    if (this.expandedChannelId() === channel.id) {
+      this.expandedChannelId.set(null);
+      return;
+    }
+    this.expandedChannelId.set(channel.id);
+    await this.loadChannelHistory(channel.id);
+  }
+
+  private async loadChannelHistory(channelId: number): Promise<void> {
+    this.channelHistoryLoading.set(true);
+    try {
+      this.channelHistory.set(await firstValueFrom(this.api.notificationChannelHistory(channelId)));
+    } catch {
+      this.channelHistory.set([]);
+      this.error.set('Could not load delivery history.');
+    } finally {
+      this.channelHistoryLoading.set(false);
+    }
+  }
+
+  historyTriggerLabel(trigger: NotificationHistoryEntry['trigger_type']): string {
+    return trigger === 'test' ? 'Test' : this.triggerLabel(trigger);
+  }
+
+  /** A CSS color token for a delivery status, matching the status stripes elsewhere. */
+  deliveryStatusColor(status: NotificationDeliveryStatus | null): string {
+    switch (status) {
+      case 'sent':
+        return 'var(--level-success)';
+      case 'failed':
+        return 'var(--level-error)';
+      case 'suppressed':
+        return 'var(--level-warn)';
+      default:
+        return 'var(--muted-foreground)';
+    }
   }
 
   private resetChannelForm(): void {

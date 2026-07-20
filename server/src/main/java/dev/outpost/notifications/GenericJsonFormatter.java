@@ -34,6 +34,7 @@ public class GenericJsonFormatter {
 		root.put("type", occurrence.triggerType());
 		switch (occurrence) {
 			case NotificationOccurrence.NewIssue issue -> writeNewIssue(root, issue, context);
+			case NotificationOccurrence.Test test -> writeTest(root, test, context);
 		}
 		return write(root);
 	}
@@ -52,6 +53,16 @@ public class GenericJsonFormatter {
 		issue.put("environment", occurrence.environment());
 		issue.put("first_seen", occurrence.firstSeen() == null ? null : occurrence.firstSeen().toString());
 		issue.put("link", context.link());
+	}
+
+	private void writeTest(ObjectNode root, NotificationOccurrence.Test occurrence, NotificationContext context) {
+		ObjectNode channel = root.putObject("channel");
+		channel.put("id", occurrence.channelId());
+		channel.put("name", occurrence.channelName());
+
+		root.put("message", occurrence.message());
+		root.put("fired_at", occurrence.firedAt() == null ? null : occurrence.firedAt().toString());
+		root.put("link", context.link());
 	}
 
 	private String write(ObjectNode root) {

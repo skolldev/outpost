@@ -365,6 +365,32 @@ export interface NotificationChannel {
   project_filter: number[];
   environment_filter: string[];
   created_at: string;
+  // Last delivery outcome for this channel, or null before anything was sent.
+  last_status: NotificationDeliveryStatus | null;
+  last_delivery_at: string | null;
+}
+
+/** Delivery lifecycle of one Notification: pending → sent/failed (suppressed = rate-capped). */
+export type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed' | 'suppressed';
+
+/** The trigger recorded on a history row — the channel triggers plus the test action. */
+export type NotificationHistoryTrigger = NotificationTrigger | 'test';
+
+/** One Notification in a channel's recent-delivery history. */
+export interface NotificationHistoryEntry {
+  id: number;
+  trigger_type: NotificationHistoryTrigger;
+  status: NotificationDeliveryStatus;
+  summary: string;
+  error_detail: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Inline outcome of an Admin test-send. */
+export interface NotificationTestResult {
+  status: 'sent' | 'failed';
+  error_detail: string | null;
 }
 
 /** Create/update payload — the server-managed id and created_at are omitted. */

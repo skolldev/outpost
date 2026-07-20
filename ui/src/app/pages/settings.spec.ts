@@ -72,6 +72,8 @@ const CHANNEL: NotificationChannel = {
   project_filter: [],
   environment_filter: [],
   created_at: '2026-01-01T00:00:00Z',
+  last_status: null,
+  last_delivery_at: null,
 };
 
 /**
@@ -673,6 +675,138 @@ describe('SettingsPage', () => {
       await waitFor(() => expect(patched).not.toBeNull());
       // The stale id survives instead of collapsing the scope to "all projects".
       expect(patched!['project_filter']).toEqual([1, 999]);
+    });
+
+    it('shows the last delivery outcome and time per channel', async () => {
+      const delivered: NotificationChannel = {
+        ...CHANNEL,
+        last_status: 'sent',
+        last_delivery_at: '2026-07-20T10:00:00Z',
+      };
+      seedHandlers();
+      server.use(http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([delivered])));
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+
+      const table = within(await screen.findByRole('table'));
+      expect(table.getByText('sent')).toBeInTheDocument();
+    });
+
+    it('shows "Never" for a channel with no deliveries', async () => {
+      seedHandlers();
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+
+      const table = within(await screen.findByRole('table'));
+      expect(table.getByText('Never')).toBeInTheDocument();
+    });
+
+    it('test-sends a channel and reports a delivered outcome inline', async () => {
+      let testCalls = 0;
+      seedHandlers();
+      const generic: NotificationChannel = { ...CHANNEL, type: 'generic_json' };
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([generic])),
+        http.post(`${BASE}/notifications/channels/:id/test`, () => {
+          testCalls += 1;
+          return HttpResponse.json({ status: 'sent', error_detail: null });
+        }),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^test$/i }));
+
+      expect(await screen.findByText('Test delivered')).toBeInTheDocument();
+      expect(testCalls).toBe(1);
+    });
+
+    it('reports a failed test-send inline', async () => {
+      seedHandlers();
+      const generic: NotificationChannel = { ...CHANNEL, type: 'generic_json' };
+      server.use(
+        http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([generic])),
+        http.post(`${BASE}/notifications/channels/:id/test`, () =>
+          HttpResponse.json({ status: 'failed', error_detail: 'HTTP 500' }),
+        ),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^test$/i }));
+
+      expect(await screen.findByText('Test failed')).toBeInTheDocument();
+    });
+
+    it('disables the Test button for a disabled channel', async () => {
+      const disabled: NotificationChannel = { ...CHANNEL, enabled: false };
+      seedHandlers();
+      server.use(http.get(`${BASE}/notifications/channels`, () => HttpResponse.json([disabled])));
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+
+      expect(await screen.findByRole('button', { name: /^test$/i })).toBeDisabled();
+    });
+
+    it('expands a channel to show its recent delivery history', async () => {
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels/:id/history`, () =>
+          HttpResponse.json([
+            {
+              id: 20,
+              trigger_type: 'test',
+              status: 'sent',
+              summary: 'test: Team alerts',
+              error_detail: null,
+              created_at: '2026-07-20T10:00:00Z',
+              updated_at: '2026-07-20T10:00:00Z',
+            },
+            {
+              id: 19,
+              trigger_type: 'new_issue',
+              status: 'failed',
+              summary: 'new_issue: boom',
+              error_detail: 'HTTP 500',
+              created_at: '2026-07-19T10:00:00Z',
+              updated_at: '2026-07-19T10:00:00Z',
+            },
+          ]),
+        ),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^history$/i }));
+
+      expect(await screen.findByText('Recent deliveries')).toBeInTheDocument();
+      // Both rows rendered: the failed row's error detail and both statuses show.
+      expect(screen.getByText('HTTP 500')).toBeInTheDocument();
+      expect(screen.getByText('sent')).toBeInTheDocument();
+      expect(screen.getByText('failed')).toBeInTheDocument();
+    });
+
+    it('shows an empty history state when a channel has no deliveries', async () => {
+      seedHandlers();
+      server.use(
+        http.get(`${BASE}/notifications/channels/:id/history`, () => HttpResponse.json([])),
+      );
+      await renderSettings('admin');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('button', { name: 'notifications' }));
+      await user.click(await screen.findByRole('button', { name: /^history$/i }));
+
+      expect(await screen.findByText('No deliveries yet.')).toBeInTheDocument();
     });
   });
 

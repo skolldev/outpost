@@ -9,9 +9,9 @@ import java.time.Instant;
  * behind the seam — channel matching, formatting, history, delivery — is opaque
  * to them.
  *
- * <p>Sealed so the formatter/delivery switch is exhaustive. This slice ships
- * {@link NewIssue} only; {@code incident_started}/{@code incident_resolved} and
- * {@code test} are additive later variants (#44, #45) that reuse the same seam.
+ * <p>Sealed so the formatter/delivery switch is exhaustive. Ships {@link NewIssue}
+ * and {@link Test}; {@code incident_started}/{@code incident_resolved} are
+ * additive later variants (#45) that reuse the same seam.
  */
 public sealed interface NotificationOccurrence {
 
@@ -34,6 +34,30 @@ public sealed interface NotificationOccurrence {
 		@Override
 		public String triggerType() {
 			return "new_issue";
+		}
+	}
+
+	/**
+	 * An Admin verifying a channel: fired only by the test-send action (#44),
+	 * never stored in {@code notification_channel.triggers}. It bypasses channel
+	 * matching entirely (the target channel is named directly) but is still
+	 * formatted and delivered through the same pipeline, so a successful test
+	 * proves the whole path end to end. The message is a fixed human-readable
+	 * confirmation string the receiver can display.
+	 *
+	 * @param channelName the target channel's display name, echoed in the payload
+	 * so the receiver can confirm which channel was verified.
+	 */
+	record Test(long channelId, String channelName, Instant firedAt) implements NotificationOccurrence {
+
+		@Override
+		public String triggerType() {
+			return "test";
+		}
+
+		/** The human-readable confirmation string, shared by every per-type formatter. */
+		public String message() {
+			return "Test notification from Outpost — the channel \"" + channelName + "\" is configured correctly.";
 		}
 	}
 }
