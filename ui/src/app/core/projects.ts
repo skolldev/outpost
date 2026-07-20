@@ -24,4 +24,9 @@ export class ProjectsStore {
   name(id: number): string {
     return this.nameById().get(id) ?? `project ${id}`;
   }
+
+  /** Re-fetch the shared list — call after a mutation (e.g. creating a Project). */
+  reload(): void {
+    this.resource.reload();
+  }
 }

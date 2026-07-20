@@ -1,0 +1,288 @@
+<p class="mb-4 text-sm text-muted-foreground">
+  Notification channels are where Outpost will announce problems. Pick a type, paste the webhook
+  URL, and choose which triggers fire. Webhook URLs are stored unmasked and are only visible to
+  Admins. Nothing is delivered yet — this is destination configuration.
+</p>
+
+<form (ngSubmit)="saveChannel()" class="mb-6 flex flex-col gap-4">
+  <div class="flex flex-wrap items-end gap-3">
+    <div>
+      <label hlmLabel class="mb-1" for="channelName">Name</label>
+      <input
+        hlmInput
+        id="channelName"
+        name="channelName"
+        [(ngModel)]="newChannelName"
+        placeholder="Team alerts"
+        required
+        class="h-8 w-56"
+      />
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="channelType">Type</label>
+      <hlm-native-select id="channelType" name="channelType" size="sm" [(ngModel)]="newChannelType">
+        <option hlmNativeSelectOption value="teams">Teams</option>
+        <option hlmNativeSelectOption value="generic_json">Generic JSON</option>
+      </hlm-native-select>
+    </div>
+    <div>
+      <label hlmLabel class="mb-1" for="channelUrl">Webhook URL</label>
+      <input
+        hlmInput
+        id="channelUrl"
+        name="channelUrl"
+        type="url"
+        [(ngModel)]="newChannelUrl"
+        placeholder="https://example.webhook.office.com/webhookb2/…"
+        required
+        class="h-8 w-96"
+      />
+    </div>
+  </div>
+
+  <fieldset>
+    <legend hlmLabel class="mb-2">Triggers</legend>
+    <div class="flex flex-wrap gap-4">
+      @for (option of channelTriggerOptions; track option.value) {
+        <div hlmField orientation="horizontal">
+          <hlm-checkbox
+            [inputId]="'trigger-' + option.value"
+            [name]="'trigger-' + option.value"
+            [(ngModel)]="channelTriggers[option.value]"
+          />
+          <label hlmFieldLabel [for]="'trigger-' + option.value">{{ option.label }}</label>
+        </div>
+      }
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend hlmLabel class="mb-1">Projects</legend>
+    <p class="mb-2 text-xs text-muted-foreground">
+      Leave all unchecked to cover <span class="font-medium">all Projects</span>.
+    </p>
+    <div class="flex flex-wrap gap-4">
+      @for (project of projectsStore.projects(); track project.id) {
+        <div hlmField orientation="horizontal">
+          <hlm-checkbox
+            [inputId]="'channel-project-' + project.id"
+            [name]="'channel-project-' + project.id"
+            [(ngModel)]="channelProjectSelected[project.id]"
+          />
+          <label hlmFieldLabel [for]="'channel-project-' + project.id">{{ project.name }}</label>
+        </div>
+      } @empty {
+        <span class="text-xs text-muted-foreground">No projects yet.</span>
+      }
+    </div>
+  </fieldset>
+
+  <div>
+    <label hlmLabel class="mb-1" for="channelEnvironments">Environments</label>
+    <input
+      hlmInput
+      id="channelEnvironments"
+      name="channelEnvironments"
+      [(ngModel)]="newChannelEnvironments"
+      placeholder="prod, staging"
+      class="h-8 w-96"
+    />
+    <p class="mt-1 text-xs text-muted-foreground">
+      Comma-separated environment names. Leave empty to cover
+      <span class="font-medium">all Environments</span>.
+    </p>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3">
+    <button hlmBtn size="sm" type="submit">
+      {{ editingChannelId() === null ? 'Create channel' : 'Save channel' }}
+    </button>
+    @if (editingChannelId() !== null) {
+      <button hlmBtn variant="outline" size="sm" type="button" (click)="cancelChannelEdit()">
+        Cancel
+      </button>
+    }
+    @if (error()) {
+      <span class="text-sm text-destructive">{{ error() }}</span>
+    }
+  </div>
+</form>
+
+<div class="overflow-hidden rounded-lg border border-border">
+  <table class="w-full text-sm">
+    <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
+      <tr>
+        <th class="px-4 py-2 font-medium">Name</th>
+        <th class="px-4 py-2 font-medium">Type</th>
+        <th class="px-4 py-2 font-medium">URL</th>
+        <th class="px-4 py-2 font-medium">Triggers</th>
+        <th class="px-4 py-2 font-medium">Scope</th>
+        <th class="px-4 py-2 font-medium">Status</th>
+        <th class="px-4 py-2 font-medium">Last delivery</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (channel of channels(); track channel.id) {
+        <tr class="border-b border-border/60 last:border-0">
+          <td class="px-4 py-2">{{ channel.name }}</td>
+          <td class="px-4 py-2 text-muted-foreground">{{ channelTypeLabel(channel.type) }}</td>
+          <td class="max-w-xs truncate px-4 py-2 font-mono text-xs" [title]="channel.url">
+            {{ channel.url }}
+          </td>
+          <td class="px-4 py-2 text-xs text-muted-foreground">
+            {{ channel.triggers.length ? '' : '—' }}
+            @for (trigger of channel.triggers; track trigger; let last = $last) {
+              {{ triggerLabel(trigger) }}{{ last ? '' : ', ' }}
+            }
+          </td>
+          <td class="px-4 py-2 text-xs text-muted-foreground">
+            {{ channelProjectsLabel(channel) }} · {{ channelEnvironmentsLabel(channel) }}
+          </td>
+          <td class="px-4 py-2">
+            @if (channel.enabled) {
+              <span [style.color]="'var(--level-success)'">Enabled</span>
+            } @else {
+              <span class="text-muted-foreground">Disabled</span>
+            }
+          </td>
+          <td class="px-4 py-2 text-xs">
+            @if (channel.last_status) {
+              <span [style.color]="deliveryStatusColor(channel.last_status)" class="font-medium">
+                {{ channel.last_status }}
+              </span>
+              <span class="ml-1 text-muted-foreground">
+                {{ channel.last_delivery_at | date: 'short' }}
+              </span>
+            } @else {
+              <span class="text-muted-foreground">Never</span>
+            }
+          </td>
+          <td class="px-4 py-2 text-right whitespace-nowrap">
+            @if (confirmDeleteChannelId() === channel.id) {
+              <span class="mr-2 text-xs text-muted-foreground">Delete this channel?</span>
+              <button hlmBtn variant="destructive" size="xs" (click)="deleteChannel(channel)">
+                Confirm
+              </button>
+              <button
+                hlmBtn
+                variant="outline"
+                size="xs"
+                class="ml-2"
+                (click)="cancelDeleteChannel()"
+              >
+                Cancel
+              </button>
+            } @else {
+              @if (testResultFor(channel.id); as result) {
+                @if (result === 'pending') {
+                  <span class="mr-2 text-xs text-muted-foreground">Testing…</span>
+                } @else if (result.status === 'sent') {
+                  <span class="mr-2 text-xs font-medium" [style.color]="'var(--level-success)'"
+                    >Test delivered</span
+                  >
+                } @else {
+                  <span
+                    class="mr-2 text-xs font-medium"
+                    [style.color]="'var(--level-error)'"
+                    [title]="result.error_detail ?? ''"
+                    >Test failed</span
+                  >
+                }
+              }
+              <button hlmBtn variant="outline" size="xs" (click)="editChannel(channel)">
+                Edit
+              </button>
+              <button
+                hlmBtn
+                variant="outline"
+                size="xs"
+                class="ml-2"
+                [disabled]="!channel.enabled || testResultFor(channel.id) === 'pending'"
+                (click)="testChannel(channel)"
+              >
+                Test
+              </button>
+              <button
+                hlmBtn
+                variant="outline"
+                size="xs"
+                class="ml-2"
+                (click)="toggleChannelHistory(channel)"
+              >
+                {{ expandedChannelId() === channel.id ? 'Hide history' : 'History' }}
+              </button>
+              <button
+                hlmBtn
+                variant="outline"
+                size="xs"
+                class="ml-2"
+                (click)="toggleChannel(channel)"
+              >
+                {{ channel.enabled ? 'Disable' : 'Enable' }}
+              </button>
+              <button
+                hlmBtn
+                variant="destructive"
+                size="xs"
+                class="ml-2"
+                (click)="requestDeleteChannel(channel.id)"
+              >
+                Delete
+              </button>
+            }
+          </td>
+        </tr>
+        @if (expandedChannelId() === channel.id) {
+          <tr class="border-b border-border/60 bg-muted/30 last:border-0">
+            <td colspan="8" class="px-4 py-3">
+              <h3 class="mb-2 text-xs font-medium text-muted-foreground">Recent deliveries</h3>
+              @if (channelHistoryLoading()) {
+                <p class="text-xs text-muted-foreground">Loading…</p>
+              } @else if (channelHistory().length === 0) {
+                <p class="text-xs text-muted-foreground">No deliveries yet.</p>
+              } @else {
+                <table class="w-full text-xs">
+                  <thead class="text-left text-muted-foreground">
+                    <tr>
+                      <th class="py-1 pr-4 font-medium">Trigger</th>
+                      <th class="py-1 pr-4 font-medium">Status</th>
+                      <th class="py-1 pr-4 font-medium">When</th>
+                      <th class="py-1 font-medium">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (entry of channelHistory(); track entry.id) {
+                      <tr class="border-t border-border/40">
+                        <td class="py-1 pr-4">{{ historyTriggerLabel(entry.trigger_type) }}</td>
+                        <td class="py-1 pr-4">
+                          <span
+                            class="font-medium"
+                            [style.color]="deliveryStatusColor(entry.status)"
+                            >{{ entry.status }}</span
+                          >
+                        </td>
+                        <td class="py-1 pr-4 text-muted-foreground">
+                          {{ entry.created_at | date: 'short' }}
+                        </td>
+                        <td class="py-1 text-muted-foreground">
+                          {{ entry.error_detail ?? '—' }}
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              }
+            </td>
+          </tr>
+        }
+      } @empty {
+        <tr>
+          <td colspan="8" class="px-4 py-6 text-center text-sm text-muted-foreground">
+            No notification channels yet.
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>

@@ -40,12 +40,14 @@
           class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
           >Uptime</a
         >
-        <a
-          routerLink="/settings"
-          routerLinkActive="bg-accent text-accent-foreground"
-          class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
-          >Settings</a
-        >
+        @if (session.isAdmin()) {
+          <a
+            routerLink="/settings"
+            routerLinkActive="bg-accent text-accent-foreground"
+            class="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+            >Settings</a
+          >
+        }
       </nav>
       <div class="ml-auto flex items-center gap-3 text-sm text-muted-foreground">
         <span>{{ session.user()?.email }}</span>

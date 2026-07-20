@@ -1,0 +1,56 @@
+<form (ngSubmit)="createUser()" class="mb-6 flex flex-wrap items-end gap-3">
+  <div>
+    <label hlmLabel class="mb-1" for="email">Email</label>
+    <input
+      hlmInput
+      id="email"
+      name="email"
+      type="email"
+      required
+      [(ngModel)]="newEmail"
+      class="h-8"
+    />
+  </div>
+  <div>
+    <label hlmLabel class="mb-1" for="password">Password</label>
+    <input
+      hlmInput
+      id="password"
+      name="password"
+      type="password"
+      required
+      minlength="8"
+      [(ngModel)]="newPassword"
+      class="h-8"
+    />
+  </div>
+  <div>
+    <label hlmLabel class="mb-1" for="role">Role</label>
+    <hlm-native-select id="role" name="role" size="sm" [(ngModel)]="newRole">
+      <option hlmNativeSelectOption value="member">member</option>
+      <option hlmNativeSelectOption value="admin">admin</option>
+    </hlm-native-select>
+  </div>
+  <button hlmBtn size="sm" type="submit">Add user</button>
+  @if (error()) {
+    <span class="text-sm text-destructive">{{ error() }}</span>
+  }
+</form>
+<div class="overflow-hidden rounded-lg border border-border">
+  <table class="w-full text-sm">
+    <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
+      <tr>
+        <th class="px-4 py-2 font-medium">Email</th>
+        <th class="px-4 py-2 font-medium">Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (user of users(); track user.id) {
+        <tr class="border-b border-border/60 last:border-0">
+          <td class="px-4 py-2">{{ user.email }}</td>
+          <td class="px-4 py-2 text-muted-foreground">{{ user.role }}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>
