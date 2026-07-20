@@ -186,7 +186,7 @@ export interface AppUser {
   created_at: string;
 }
 
-export type RetentionDays = 30 | 60 | 90;
+export type RetentionDays = 30 | 60 | 90 | 180;
 
 export interface DataRetentionSetting {
   enabled: boolean;
