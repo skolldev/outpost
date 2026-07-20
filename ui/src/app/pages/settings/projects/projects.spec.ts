@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { Project, ProjectKey } from '../../../core/models';
 import { ProjectsSettings } from './projects';
 
@@ -26,8 +27,13 @@ const KEY: ProjectKey = {
   dsn: 'https://pub-abc@outpost.example/1',
 };
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderProjects() {
-  return render(ProjectsSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(ProjectsSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('ProjectsSettings', () => {
@@ -69,6 +75,7 @@ describe('ProjectsSettings', () => {
 
     await waitFor(() => expect(screen.getByText('new-app')).toBeInTheDocument());
     expect(created).toEqual({ slug: 'new-app', name: 'new-app', platform: 'javascript-angular' });
+    expect(feedback.success).toHaveBeenCalledWith('Project created.');
   });
 
   it('surfaces an error when project creation fails', async () => {
@@ -83,7 +90,9 @@ describe('ProjectsSettings', () => {
     await user.type(screen.getByLabelText('Slug'), 'dup-slug');
     await user.click(screen.getByRole('button', { name: /create project/i }));
 
-    expect(await screen.findByText(/Could not create project/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(feedback.error).toHaveBeenCalledWith('Could not create project — check the slug.'),
+    );
   });
 
   it('expands a project to reveal its DSN keys and SDK snippets', async () => {

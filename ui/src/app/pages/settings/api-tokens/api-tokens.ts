@@ -9,6 +9,7 @@ import { HlmLabel } from '@spartan-ng/helm/label';
 import { HlmAlert, HlmAlertTitle, HlmAlertDescription } from '@spartan-ng/helm/alert';
 import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
+import { Feedback } from '../../../core/feedback';
 import { ApiToken } from '../../../core/models';
 
 /** API tokens tab: named secrets for sentry-cli source-map uploads from CI. */
@@ -29,36 +30,42 @@ import { ApiToken } from '../../../core/models';
 })
 export class ApiTokensSettings {
   private readonly api = inject(Api);
+  private readonly feedback = inject(Feedback);
 
   private readonly tokensResource = httpResource<ApiToken[]>(() => `${API_BASE}/tokens`, {
     defaultValue: [],
   });
   readonly tokens = this.tokensResource.value;
 
+  // The created-token reveal is the success confirmation for a create (it holds
+  // the one-time secret), so create emits no success toast — only an error one.
   readonly createdToken = signal<ApiToken | null>(null);
   readonly copied = signal<string | null>(null);
-  readonly error = signal<string | null>(null);
 
   newTokenName = '';
 
   async createToken(): Promise<void> {
-    this.error.set(null);
     try {
       const created = await firstValueFrom(this.api.createToken(this.newTokenName));
       this.createdToken.set(created);
       this.newTokenName = '';
       this.tokensResource.reload();
     } catch {
-      this.error.set('Could not create token.');
+      this.feedback.error('Could not create token.');
     }
   }
 
   async deleteToken(token: ApiToken): Promise<void> {
-    await firstValueFrom(this.api.deleteToken(token.id));
-    if (this.createdToken()?.id === token.id) {
-      this.createdToken.set(null);
+    try {
+      await firstValueFrom(this.api.deleteToken(token.id));
+      if (this.createdToken()?.id === token.id) {
+        this.createdToken.set(null);
+      }
+      this.tokensResource.reload();
+      this.feedback.success('Token deleted.');
+    } catch {
+      this.feedback.error('Could not delete token.');
     }
-    this.tokensResource.reload();
   }
 
   cliSnippet(token: string): string {

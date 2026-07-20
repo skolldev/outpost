@@ -132,7 +132,7 @@ _Avoid_: Alert, alert rule, webhook
 
 **Notification**:
 One message sent to one Notification Channel about one trigger occurrence, such as a new Issue or an Incident starting or resolving.
-_Avoid_: Alert, webhook call
+_Avoid_: Alert, webhook call, toast, user feedback message
 
 ### Source Reconstruction
 

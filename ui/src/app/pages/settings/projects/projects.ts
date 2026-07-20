@@ -9,6 +9,7 @@ import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-
 import { HlmCardImports } from '@spartan-ng/helm/card';
 
 import { Api } from '../../../core/api';
+import { Feedback } from '../../../core/feedback';
 import { ProjectKey } from '../../../core/models';
 import { ProjectsStore } from '../../../core/projects';
 
@@ -29,11 +30,11 @@ import { ProjectsStore } from '../../../core/projects';
 })
 export class ProjectsSettings {
   private readonly api = inject(Api);
+  private readonly feedback = inject(Feedback);
   readonly projectsStore = inject(ProjectsStore);
 
   readonly expandedProject = signal<number | null>(null);
   readonly copied = signal<string | null>(null);
-  readonly error = signal<string | null>(null);
 
   // DSN keys for every project, fetched together when the tab opens and after
   // any rotate/revoke. Installations are small (a handful of projects), so one
@@ -66,15 +67,15 @@ export class ProjectsSettings {
   }
 
   async createProject(): Promise<void> {
-    this.error.set(null);
     try {
       await firstValueFrom(
         this.api.createProject(this.newSlug, this.newSlug, this.newPlatform || null),
       );
       this.newSlug = '';
       this.projectsStore.reload();
+      this.feedback.success('Project created.');
     } catch {
-      this.error.set('Could not create project — check the slug.');
+      this.feedback.error('Could not create project — check the slug.');
     }
   }
 

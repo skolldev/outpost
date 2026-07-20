@@ -21,9 +21,6 @@
     </hlm-native-select>
   </div>
   <button hlmBtn size="sm" type="submit">Create project</button>
-  @if (error()) {
-    <span class="text-sm text-destructive">{{ error() }}</span>
-  }
 </form>
 
 @for (project of projectsStore.projects(); track project.id) {
