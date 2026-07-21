@@ -12,7 +12,6 @@ import { API_BASE } from '../../../core/api-base';
 import { Feedback } from '../../../core/feedback';
 import { ApiToken } from '../../../core/models';
 
-/** API tokens tab: named secrets for sentry-cli source-map uploads from CI. */
 @Component({
   selector: 'app-api-token-settings',
   imports: [
@@ -38,8 +37,6 @@ export class ApiTokensSettings {
   });
   readonly tokens = this.tokensResource.value;
 
-  // The created-token reveal is the success confirmation for a create (it holds
-  // the one-time secret), so create emits no success toast — only an error one.
   readonly createdToken = signal<ApiToken | null>(null);
   readonly copied = signal<string | null>(null);
 
@@ -56,10 +53,7 @@ export class ApiTokensSettings {
           try {
             const created = await firstValueFrom(this.api.createToken(this.model().name));
             this.createdToken.set(created);
-            // Clear the value, then reset touched/dirty (reset() alone leaves
-            // the value intact) so the now-empty field doesn't flash "required".
-            this.model.set({ name: '' });
-            this.tokenForm().reset();
+            this.tokenForm().reset({ name: '' });
             this.tokensResource.reload();
           } catch {
             this.feedback.error('Could not create token.');

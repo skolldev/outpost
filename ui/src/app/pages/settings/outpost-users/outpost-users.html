@@ -1,37 +1,43 @@
-<form (ngSubmit)="createUser()" class="mb-6 flex flex-wrap items-end gap-3">
-  <div>
-    <label hlmLabel class="mb-1" for="email">Email</label>
-    <input
-      hlmInput
-      id="email"
-      name="email"
-      type="email"
-      required
-      [(ngModel)]="newEmail"
-      class="h-8"
-    />
+<form [formRoot]="userForm" class="mb-6 flex flex-wrap items-start gap-3">
+  <div hlmField class="w-56">
+    <label hlmFieldLabel for="email">Email</label>
+    <input hlmInput id="email" type="email" [formField]="userForm.email" class="h-8" />
+    @for (error of userForm.email().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="password">Password</label>
-    <input
-      hlmInput
-      id="password"
-      name="password"
-      type="password"
-      required
-      minlength="8"
-      [(ngModel)]="newPassword"
-      class="h-8"
-    />
+  <div hlmField class="w-56">
+    <label hlmFieldLabel for="password">Password</label>
+    <input hlmInput id="password" type="password" [formField]="userForm.password" class="h-8" />
+    @for (error of userForm.password().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="role">Role</label>
-    <hlm-native-select id="role" name="role" size="sm" [(ngModel)]="newRole">
-      <option hlmNativeSelectOption value="member">member</option>
-      <option hlmNativeSelectOption value="admin">admin</option>
-    </hlm-native-select>
+  <div hlmField class="w-44">
+    <label hlmFieldLabel for="role">Role</label>
+    <hlm-select [formField]="userForm.role" [itemToString]="roleLabel">
+      <hlm-select-trigger buttonId="role" size="sm" class="w-full">
+        <hlm-select-value placeholder="Select a role" />
+      </hlm-select-trigger>
+      <hlm-select-content *hlmSelectPortal>
+        @for (role of roles; track role.value) {
+          <hlm-select-item [value]="role.value">{{ role.label }}</hlm-select-item>
+        }
+      </hlm-select-content>
+    </hlm-select>
+    @for (error of userForm.role().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <button hlmBtn size="sm" type="submit">Add user</button>
+  <button
+    hlmBtn
+    size="sm"
+    type="submit"
+    class="mt-6"
+    [disabled]="userForm().invalid() || userForm().submitting()"
+  >
+    Add user
+  </button>
 </form>
 <div class="overflow-hidden rounded-lg border border-border">
   <table class="w-full text-sm">
