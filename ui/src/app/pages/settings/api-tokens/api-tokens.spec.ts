@@ -5,6 +5,7 @@ import { http, HttpResponse } from 'msw';
 
 import { ApiTokensSettings } from './api-tokens';
 import { server } from '../../../../mocks/node';
+import { Feedback } from '../../../core/feedback';
 import { ApiToken } from '../../../core/models';
 
 const BASE = '*/api/internal';
@@ -16,8 +17,13 @@ const TOKEN: ApiToken = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 function renderTokens() {
-  return render(ApiTokensSettings, { providers: [provideHttpClient()] });
+  feedback = { success: vi.fn(), error: vi.fn() };
+  return render(ApiTokensSettings, {
+    providers: [provideHttpClient(), { provide: Feedback, useValue: feedback }],
+  });
 }
 
 describe('ApiTokensSettings', () => {
@@ -56,5 +62,42 @@ describe('ApiTokensSettings', () => {
     await waitFor(() =>
       expect(within(screen.getByRole('table')).getByText('ci-new')).toBeInTheDocument(),
     );
+  });
+
+  it('disables the create button until a name is entered', async () => {
+    server.use(http.get(`${BASE}/tokens`, () => HttpResponse.json([])));
+    await renderTokens();
+    const user = userEvent.setup();
+
+    expect(screen.getByRole('button', { name: 'Create token' })).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Name'), 'ci-new');
+
+    expect(screen.getByRole('button', { name: 'Create token' })).toBeEnabled();
+  });
+
+  it('shows an inline error when the name is left blank', async () => {
+    server.use(http.get(`${BASE}/tokens`, () => HttpResponse.json([])));
+    await renderTokens();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText('Name'));
+    await user.tab();
+
+    expect(await screen.findByText('Token name is required.')).toBeInTheDocument();
+  });
+
+  it('reports a create failure through the Feedback toast', async () => {
+    server.use(
+      http.get(`${BASE}/tokens`, () => HttpResponse.json([])),
+      http.post(`${BASE}/tokens`, () => new HttpResponse(null, { status: 500 })),
+    );
+    await renderTokens();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Name'), 'ci-new');
+    await user.click(screen.getByRole('button', { name: 'Create token' }));
+
+    await waitFor(() => expect(feedback.error).toHaveBeenCalledWith('Could not create token.'));
   });
 });
