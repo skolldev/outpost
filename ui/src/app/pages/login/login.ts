@@ -49,13 +49,19 @@ export class LoginPage {
       // outcome, reported through the `Feedback` toast seam (ADR 0007), never
       // mapped onto a field.
       submission: {
+      submission: {
         action: async () => {
           try {
             await this.session.login(this.model().email, this.model().password);
-            const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/issues';
-            await this.router.navigateByUrl(returnUrl);
           } catch {
             this.feedback.error('Invalid email or password.');
+            return;
+          }
+
+          const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/issues';
+          await this.router.navigateByUrl(returnUrl);
+        },
+      },
           }
         },
       },
