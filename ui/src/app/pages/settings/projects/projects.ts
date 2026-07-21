@@ -80,10 +80,7 @@ export class ProjectsSettings {
             await firstValueFrom(
               this.api.createProject(slug, slug, platform === 'other' ? null : platform),
             );
-            // Clear the values, then reset touched/dirty so the emptied fields
-            // don't immediately flash their required errors.
-            this.model.set({ slug: '', platform: '' });
-            this.projectForm().reset();
+            this.projectForm().reset({ slug: '', platform: '' });
             this.projectsStore.reload();
             this.feedback.success('Project created.');
           } catch {
