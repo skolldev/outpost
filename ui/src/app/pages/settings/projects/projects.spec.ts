@@ -54,7 +54,14 @@ describe('ProjectsSettings', () => {
     expect(await screen.findByText(/No projects yet/)).toBeInTheDocument();
   });
 
-  it('creates a project and reloads the list', async () => {
+  // The platform picker is now the rich hlm-select (combobox trigger + listbox
+  // of options), not a native <select> — drive it through its ARIA roles.
+  async function selectPlatform(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(screen.getByRole('combobox'));
+    await user.click(await screen.findByRole('option', { name }));
+  }
+
+  it('creates a project with the chosen platform and reloads the list', async () => {
     let created: { slug: string; name: string; platform: string | null } | null = null;
     const projects = [PROJECT];
     server.use(
@@ -71,11 +78,71 @@ describe('ProjectsSettings', () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText('Slug'), 'new-app');
+    await selectPlatform(user, 'Spring Boot');
     await user.click(screen.getByRole('button', { name: /create project/i }));
 
     await waitFor(() => expect(screen.getByText('new-app')).toBeInTheDocument());
-    expect(created).toEqual({ slug: 'new-app', name: 'new-app', platform: 'javascript-angular' });
+    expect(created).toEqual({ slug: 'new-app', name: 'new-app', platform: 'java-spring-boot' });
     expect(feedback.success).toHaveBeenCalledWith('Project created.');
+  });
+
+  it('maps the "Other" platform choice to a null platform', async () => {
+    let created: { platform: string | null } | null = null;
+    server.use(
+      http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
+      http.post(`${BASE}/projects`, async ({ request }) => {
+        created = (await request.json()) as typeof created;
+        return HttpResponse.json({ ...PROJECT, id: 2, slug: 'plain', name: 'plain' });
+      }),
+      http.get(`${BASE}/projects/:id/keys`, () => HttpResponse.json([])),
+    );
+    await renderProjects();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Slug'), 'plain');
+    await selectPlatform(user, 'Other');
+    await user.click(screen.getByRole('button', { name: /create project/i }));
+
+    await waitFor(() => expect(created).toEqual({ slug: 'plain', name: 'plain', platform: null }));
+  });
+
+  it('keeps the submit disabled until slug and platform are both valid', async () => {
+    server.use(http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])));
+    await renderProjects();
+    const user = userEvent.setup();
+
+    const submit = screen.getByRole('button', { name: /create project/i });
+    expect(submit).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Slug'), 'new-app');
+    expect(submit).toBeDisabled(); // platform still unselected
+
+    await selectPlatform(user, 'Angular');
+    expect(submit).toBeEnabled();
+  });
+
+  it('shows an inline error when the slug is left blank', async () => {
+    server.use(http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])));
+    await renderProjects();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText('Slug'));
+    await user.tab();
+
+    expect(await screen.findByText('Slug is required.')).toBeInTheDocument();
+  });
+
+  it('shows an inline error for a non-kebab-case slug', async () => {
+    server.use(http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])));
+    await renderProjects();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Slug'), 'Bad Slug');
+    await user.tab();
+
+    expect(
+      await screen.findByText('Lowercase letters, numbers, and dashes only.'),
+    ).toBeInTheDocument();
   });
 
   it('surfaces an error when project creation fails', async () => {
@@ -88,6 +155,7 @@ describe('ProjectsSettings', () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText('Slug'), 'dup-slug');
+    await selectPlatform(user, 'Angular');
     await user.click(screen.getByRole('button', { name: /create project/i }));
 
     await waitFor(() =>
