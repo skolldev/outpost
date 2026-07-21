@@ -1,33 +1,32 @@
 <div class="flex min-h-screen items-center justify-center bg-background">
-  <form (ngSubmit)="submit()" hlmCard class="w-full max-w-sm p-8">
+  <form [formRoot]="loginForm" hlmCard class="w-full max-w-sm p-8">
     <h1 class="mb-6 flex items-center gap-2 text-xl font-semibold text-foreground">
       <ng-icon class="text-primary text-3xl" name="lucideTowerControl" /> Outpost
     </h1>
-    <label hlmLabel class="mb-1" for="email">Email</label>
-    <input
-      hlmInput
-      id="email"
-      name="email"
-      type="email"
-      required
-      [(ngModel)]="email"
-      class="mb-4"
-    />
-    <label hlmLabel class="mb-1" for="password">Password</label>
-    <input
-      hlmInput
-      id="password"
-      name="password"
-      type="password"
-      required
-      [(ngModel)]="password"
-      class="mb-6"
-    />
-    @if (error()) {
-      <p class="mb-4 text-sm text-destructive">{{ error() }}</p>
-    }
-    <button hlmBtn type="submit" class="w-full" [disabled]="busy()">
-      {{ busy() ? 'Signing in…' : 'Sign in' }}
+
+    <div hlmField class="mb-4">
+      <label hlmFieldLabel for="email">Email</label>
+      <input hlmInput id="email" type="email" [formField]="loginForm.email" />
+      @for (error of loginForm.email().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    <div hlmField class="mb-6">
+      <label hlmFieldLabel for="password">Password</label>
+      <input hlmInput id="password" type="password" [formField]="loginForm.password" />
+      @for (error of loginForm.password().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    <button
+      hlmBtn
+      type="submit"
+      class="w-full"
+      [disabled]="loginForm().invalid() || loginForm().submitting()"
+    >
+      {{ loginForm().submitting() ? 'Signing in…' : 'Sign in' }}
     </button>
   </form>
 </div>
