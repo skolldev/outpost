@@ -1,11 +1,11 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
-import { FormsModule } from '@angular/forms';
+import { form, FormField, FormRoot, required } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmInput } from '@spartan-ng/helm/input';
-import { HlmLabel } from '@spartan-ng/helm/label';
+import { HlmFieldImports } from '@spartan-ng/helm/field';
 import { HlmAlert, HlmAlertTitle, HlmAlertDescription } from '@spartan-ng/helm/alert';
 import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
@@ -17,10 +17,11 @@ import { ApiToken } from '../../../core/models';
   selector: 'app-api-token-settings',
   imports: [
     DatePipe,
-    FormsModule,
+    FormRoot,
+    FormField,
     HlmButton,
     HlmInput,
-    HlmLabel,
+    ...HlmFieldImports,
     HlmAlert,
     HlmAlertTitle,
     HlmAlertDescription,
@@ -42,18 +43,31 @@ export class ApiTokensSettings {
   readonly createdToken = signal<ApiToken | null>(null);
   readonly copied = signal<string | null>(null);
 
-  newTokenName = '';
+  private readonly model = signal({ name: '' });
 
-  async createToken(): Promise<void> {
-    try {
-      const created = await firstValueFrom(this.api.createToken(this.newTokenName));
-      this.createdToken.set(created);
-      this.newTokenName = '';
-      this.tokensResource.reload();
-    } catch {
-      this.feedback.error('Could not create token.');
-    }
-  }
+  readonly tokenForm = form(
+    this.model,
+    (path) => {
+      required(path.name, { message: 'Token name is required.' });
+    },
+    {
+      submission: {
+        action: async () => {
+          try {
+            const created = await firstValueFrom(this.api.createToken(this.model().name));
+            this.createdToken.set(created);
+            // Clear the value, then reset touched/dirty (reset() alone leaves
+            // the value intact) so the now-empty field doesn't flash "required".
+            this.model.set({ name: '' });
+            this.tokenForm().reset();
+            this.tokensResource.reload();
+          } catch {
+            this.feedback.error('Could not create token.');
+          }
+        },
+      },
+    },
+  );
 
   async deleteToken(token: ApiToken): Promise<void> {
     try {

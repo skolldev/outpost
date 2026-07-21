@@ -2,20 +2,28 @@
   API tokens authenticate <code class="rounded bg-muted px-1">sentry-cli</code> source-map uploads
   from CI (scope <code class="rounded bg-muted px-1">artifacts:write</code>).
 </p>
-<form (ngSubmit)="createToken()" class="mb-4 flex flex-wrap items-end gap-3">
-  <div>
-    <label hlmLabel class="mb-1" for="tokenName">Name</label>
+<form [formRoot]="tokenForm" class="mb-4 flex flex-wrap items-end gap-3">
+  <div hlmField class="w-64">
+    <label hlmFieldLabel for="tokenName">Name</label>
     <input
       hlmInput
       id="tokenName"
-      name="tokenName"
-      [(ngModel)]="newTokenName"
+      [formField]="tokenForm.name"
       placeholder="ci-shop-frontend"
-      required
       class="h-8"
     />
+    @for (error of tokenForm.name().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <button hlmBtn size="sm" type="submit">Create token</button>
+  <button
+    hlmBtn
+    size="sm"
+    type="submit"
+    [disabled]="tokenForm().invalid() || tokenForm().submitting()"
+  >
+    Create token
+  </button>
 </form>
 
 @if (createdToken(); as created) {
