@@ -44,11 +44,6 @@ export class LoginPage {
       required(path.password, { message: 'Password is required.' });
     },
     {
-      // `FormRoot` runs this on submit, and only when the form is valid — so
-      // client-side errors surface inline first. A rejected login is a *server*
-      // outcome, reported through the `Feedback` toast seam (ADR 0007), never
-      // mapped onto a field.
-      submission: {
       submission: {
         action: async () => {
           try {
@@ -60,9 +55,6 @@ export class LoginPage {
 
           const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/issues';
           await this.router.navigateByUrl(returnUrl);
-        },
-      },
-          }
         },
       },
     },
