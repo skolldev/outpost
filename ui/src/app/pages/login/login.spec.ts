@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../mocks/node';
+import { Feedback } from '../../core/feedback';
 import { SessionUser } from '../../core/models';
 import { LoginPage } from './login';
 
@@ -17,9 +18,16 @@ const USER: SessionUser = { email: 'me@example.com', role: 'admin' };
 @Component({ template: 'issues' })
 class IssuesStub {}
 
+let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
 async function renderLogin() {
+  feedback = { success: vi.fn(), error: vi.fn() };
   return render(LoginPage, {
-    providers: [provideHttpClient(), provideRouter([{ path: 'issues', component: IssuesStub }])],
+    providers: [
+      provideHttpClient(),
+      provideRouter([{ path: 'issues', component: IssuesStub }]),
+      { provide: Feedback, useValue: feedback },
+    ],
   });
 }
 
@@ -42,7 +50,7 @@ describe('LoginPage', () => {
     await waitFor(() => expect(body).toEqual({ email: 'me@example.com', password: 'hunter2' }));
   });
 
-  it('surfaces an error on invalid credentials', async () => {
+  it('reports an auth failure through the Feedback toast, not inline', async () => {
     server.use(http.post(`${BASE}/auth/login`, () => new HttpResponse(null, { status: 401 })));
     await renderLogin();
     const user = userEvent.setup();
@@ -51,6 +59,29 @@ describe('LoginPage', () => {
     await user.type(screen.getByLabelText('Password'), 'wrong');
     await user.click(screen.getByRole('button', { name: /sign in/i }));
 
-    expect(await screen.findByText(/Invalid email or password/)).toBeInTheDocument();
+    await waitFor(() => expect(feedback.error).toHaveBeenCalledWith('Invalid email or password.'));
+    expect(screen.queryByText('Invalid email or password.')).not.toBeInTheDocument();
+  });
+
+  it('disables the submit button until the form is valid', async () => {
+    await renderLogin();
+    const user = userEvent.setup();
+
+    expect(screen.getByRole('button', { name: /sign in/i })).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Email'), 'me@example.com');
+    await user.type(screen.getByLabelText('Password'), 'hunter2');
+
+    expect(screen.getByRole('button', { name: /sign in/i })).toBeEnabled();
+  });
+
+  it('shows an inline error for an invalid email', async () => {
+    await renderLogin();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Email'), 'not-an-email');
+    await user.tab();
+
+    expect(await screen.findByText('Enter a valid email address.')).toBeInTheDocument();
   });
 });
