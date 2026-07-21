@@ -1,26 +1,42 @@
-<form (ngSubmit)="createProject()" class="mb-6 flex flex-wrap items-end gap-3">
-  <div>
-    <label hlmLabel class="mb-1" for="slug">Slug</label>
+<form [formRoot]="projectForm" class="mb-6 flex flex-wrap items-start gap-3">
+  <div hlmField class="w-56">
+    <label hlmFieldLabel for="slug">Slug</label>
     <input
       hlmInput
       id="slug"
-      name="slug"
-      [(ngModel)]="newSlug"
+      [formField]="projectForm.slug"
       placeholder="shop-frontend"
-      pattern="[a-z0-9][a-z0-9-]*"
-      required
       class="h-8"
     />
+    @for (error of projectForm.slug().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="platform">Platform</label>
-    <hlm-native-select id="platform" name="platform" size="sm" [(ngModel)]="newPlatform">
-      <option hlmNativeSelectOption value="javascript-angular">Angular</option>
-      <option hlmNativeSelectOption value="java-spring-boot">Spring Boot</option>
-      <option hlmNativeSelectOption value="">Other</option>
-    </hlm-native-select>
+  <div hlmField class="w-44">
+    <label hlmFieldLabel for="platform">Platform</label>
+    <hlm-select [formField]="projectForm.platform" [itemToString]="platformLabel">
+      <hlm-select-trigger buttonId="platform" size="sm" class="w-full">
+        <hlm-select-value placeholder="Select a platform" />
+      </hlm-select-trigger>
+      <hlm-select-content *hlmSelectPortal>
+        @for (platform of platforms; track platform.value) {
+          <hlm-select-item [value]="platform.value">{{ platform.label }}</hlm-select-item>
+        }
+      </hlm-select-content>
+    </hlm-select>
+    @for (error of projectForm.platform().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <button hlmBtn size="sm" type="submit">Create project</button>
+  <button
+    hlmBtn
+    size="sm"
+    type="submit"
+    class="mt-6"
+    [disabled]="projectForm().invalid() || projectForm().submitting()"
+  >
+    Create project
+  </button>
 </form>
 
 @for (project of projectsStore.projects(); track project.id) {
