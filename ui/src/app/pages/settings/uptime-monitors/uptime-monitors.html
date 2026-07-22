@@ -2,91 +2,107 @@
   Uptime monitors request the URL at the configured interval. Three consecutive failures open an
   incident on the Uptime page; the first success closes it.
 </p>
-<form (ngSubmit)="saveMonitor()" class="mb-4 flex flex-wrap items-end gap-3">
-  <div>
-    <label hlmLabel class="mb-1" for="monitorProject">Project</label>
-    <hlm-native-select
-      id="monitorProject"
-      name="monitorProject"
-      size="sm"
-      [ngModel]="newMonitorProjectId()"
-      (ngModelChange)="onMonitorProjectChange($event)"
-      required
-    >
-      <option hlmNativeSelectOption value="">Select…</option>
-      @for (project of projectsStore.projects(); track project.id) {
-        <option hlmNativeSelectOption [value]="project.id">{{ project.name }}</option>
-      }
-    </hlm-native-select>
-  </div>
-  <div>
-    <label hlmLabel class="mb-1" for="monitorEnv">Environment</label>
-    @if (monitorEnvs().length > 0) {
-      <hlm-native-select id="monitorEnv" name="monitorEnv" size="sm" [(ngModel)]="newMonitorEnv">
-        <option hlmNativeSelectOption value="">Select…</option>
-        @for (env of monitorEnvs(); track env) {
-          <option hlmNativeSelectOption [value]="env">{{ env }}</option>
+<form [formRoot]="monitorForm" class="mb-4 flex flex-wrap items-end gap-3">
+  <div hlmField class="w-44">
+    <label hlmFieldLabel for="monitorProject">Project</label>
+    <hlm-select [formField]="monitorForm.projectId" [itemToString]="projectLabel">
+      <hlm-select-trigger buttonId="monitorProject" size="sm" class="w-full">
+        <hlm-select-value placeholder="Select…" />
+      </hlm-select-trigger>
+      <hlm-select-content *hlmSelectPortal>
+        @for (project of projectOptions(); track project.value) {
+          <hlm-select-item [value]="project.value">{{ project.name }}</hlm-select-item>
         }
-      </hlm-native-select>
+      </hlm-select-content>
+    </hlm-select>
+    @for (error of monitorForm.projectId().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
+  </div>
+  <div hlmField class="w-28">
+    <label hlmFieldLabel for="monitorEnv">Environment</label>
+    @if (monitorEnvs().length > 0) {
+      <hlm-select [formField]="monitorForm.environment" [itemToString]="envLabel">
+        <hlm-select-trigger buttonId="monitorEnv" size="sm" class="w-full">
+          <hlm-select-value placeholder="Select…" />
+        </hlm-select-trigger>
+        <hlm-select-content *hlmSelectPortal>
+          @for (env of monitorEnvs(); track env) {
+            <hlm-select-item [value]="env">{{ env }}</hlm-select-item>
+          }
+        </hlm-select-content>
+      </hlm-select>
     } @else {
       <input
         hlmInput
         id="monitorEnv"
-        name="monitorEnv"
-        [(ngModel)]="newMonitorEnv"
+        [formField]="monitorForm.environment"
         placeholder="prod"
-        required
-        class="h-8 w-28"
+        class="h-8"
       />
     }
+    @for (error of monitorForm.environment().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="monitorUrl">URL</label>
+  <div hlmField class="w-80">
+    <label hlmFieldLabel for="monitorUrl">URL</label>
     <input
       hlmInput
       id="monitorUrl"
-      name="monitorUrl"
       type="url"
-      [(ngModel)]="newMonitorUrl"
+      [formField]="monitorForm.url"
       placeholder="https://shop.example.com/health"
-      required
-      class="h-8 w-80"
+      class="h-8"
     />
+    @for (error of monitorForm.url().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="monitorInterval">Interval</label>
-    <hlm-native-select
-      id="monitorInterval"
-      name="monitorInterval"
-      size="sm"
-      [(ngModel)]="newMonitorInterval"
-    >
-      <option hlmNativeSelectOption value="30">30s</option>
-      <option hlmNativeSelectOption value="60">1m</option>
-      <option hlmNativeSelectOption value="300">5m</option>
-      <option hlmNativeSelectOption value="900">15m</option>
-      <option hlmNativeSelectOption value="3600">60m</option>
-    </hlm-native-select>
+  <div hlmField class="w-24">
+    <label hlmFieldLabel for="monitorInterval">Interval</label>
+    <hlm-select [formField]="monitorForm.interval" [itemToString]="intervalLabelFor">
+      <hlm-select-trigger buttonId="monitorInterval" size="sm" class="w-full">
+        <hlm-select-value />
+      </hlm-select-trigger>
+      <hlm-select-content *hlmSelectPortal>
+        @for (option of intervals; track option.value) {
+          <hlm-select-item [value]="option.value">{{ option.label }}</hlm-select-item>
+        }
+      </hlm-select-content>
+    </hlm-select>
   </div>
-  <div>
-    <label hlmLabel class="mb-1" for="monitorTimeout">Timeout (s)</label>
+  <div hlmField class="w-20">
+    <label hlmFieldLabel for="monitorTimeout">Timeout (s)</label>
     <input
       hlmInput
       id="monitorTimeout"
-      name="monitorTimeout"
       type="number"
-      min="1"
-      max="30"
-      required
-      [(ngModel)]="newMonitorTimeout"
-      class="h-8 w-20"
+      [formField]="monitorForm.timeout"
+      class="h-8"
     />
+    @for (error of monitorForm.timeout().errors(); track error.kind) {
+      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+    }
   </div>
-  <button hlmBtn size="sm" type="submit">
+  <button
+    hlmBtn
+    size="sm"
+    type="submit"
+    class="mt-6"
+    [disabled]="monitorForm().invalid() || monitorForm().submitting()"
+  >
     {{ editingMonitorId() === null ? 'Create monitor' : 'Save monitor' }}
   </button>
   @if (editingMonitorId() !== null) {
-    <button hlmBtn variant="outline" size="sm" type="button" (click)="cancelMonitorEdit()">
+    <button
+      hlmBtn
+      variant="outline"
+      size="sm"
+      type="button"
+      class="mt-6"
+      (click)="cancelMonitorEdit()"
+    >
       Cancel
     </button>
   }
@@ -95,7 +111,8 @@
     variant="outline"
     size="sm"
     type="button"
-    [disabled]="!newMonitorUrl || testResult() === 'pending'"
+    class="mt-6"
+    [disabled]="!monitorForm.url().value() || testResult() === 'pending'"
     (click)="testMonitor()"
   >
     {{ testResult() === 'pending' ? 'Testing…' : 'Test connection' }}

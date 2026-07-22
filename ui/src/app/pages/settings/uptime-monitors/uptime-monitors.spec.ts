@@ -30,11 +30,14 @@ const MONITOR: UptimeMonitor = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
-/** hlm-native-select hides the real <select> behind a non-labellable wrapper id. */
-function nativeSelect(wrapperId: string): HTMLSelectElement {
-  const select = document.querySelector<HTMLSelectElement>(`#${wrapperId} select`);
-  if (!select) throw new Error(`no native select rendered in #${wrapperId}`);
-  return select;
+/** hlm-select renders an ARIA combobox; open it by its label, then pick an option. */
+async function pickOption(
+  user: ReturnType<typeof userEvent.setup>,
+  comboboxName: string,
+  optionName: string,
+): Promise<void> {
+  await user.click(await screen.findByRole('combobox', { name: comboboxName }));
+  await user.click(await screen.findByRole('option', { name: optionName }));
 }
 
 let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
@@ -66,16 +69,12 @@ describe('UptimeMonitorsSettings', () => {
     await renderMonitors();
     const user = userEvent.setup();
 
-    await waitFor(() =>
-      expect(within(nativeSelect('monitorProject')).getAllByRole('option')).toHaveLength(2),
-    );
-    await user.selectOptions(nativeSelect('monitorProject'), '1');
+    await pickOption(user, 'Project', 'shop-frontend');
 
-    await waitFor(() =>
-      expect(
-        within(nativeSelect('monitorEnv')).getByRole('option', { name: 'prod' }),
-      ).toBeInTheDocument(),
-    );
+    // Environment turns into a select once the project's environments load.
+    await user.click(await screen.findByRole('combobox', { name: 'Environment' }));
+    expect(await screen.findByRole('option', { name: 'prod' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'dev' })).toBeInTheDocument();
   });
 
   it('creates a monitor and reloads the list', async () => {
@@ -94,12 +93,8 @@ describe('UptimeMonitorsSettings', () => {
     await renderMonitors();
     const user = userEvent.setup();
 
-    await waitFor(() =>
-      expect(within(nativeSelect('monitorProject')).getAllByRole('option')).toHaveLength(2),
-    );
-    await user.selectOptions(nativeSelect('monitorProject'), '1');
-    await waitFor(() => expect(nativeSelect('monitorEnv')).toBeInTheDocument());
-    await user.selectOptions(nativeSelect('monitorEnv'), 'prod');
+    await pickOption(user, 'Project', 'shop-frontend');
+    await pickOption(user, 'Environment', 'prod');
     await user.type(screen.getByLabelText('URL'), 'https://shop.example.com/health');
     await user.click(screen.getByRole('button', { name: 'Create monitor' }));
 
@@ -112,7 +107,81 @@ describe('UptimeMonitorsSettings', () => {
       project_id: 1,
       environment: 'prod',
       url: 'https://shop.example.com/health',
+      interval_seconds: 60,
+      timeout_seconds: 10,
     });
     expect(feedback.success).toHaveBeenCalledWith('Monitor created.');
+  });
+
+  it('keeps the submit disabled until project, environment, and url are valid', async () => {
+    server.use(
+      http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
+      http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+      http.get(`${BASE}/projects/:id/environments`, () => HttpResponse.json(['prod'])),
+    );
+    await renderMonitors();
+    const user = userEvent.setup();
+
+    const submit = screen.getByRole('button', { name: 'Create monitor' });
+    expect(submit).toBeDisabled();
+
+    await pickOption(user, 'Project', 'shop-frontend');
+    await pickOption(user, 'Environment', 'prod');
+    expect(submit).toBeDisabled(); // url still missing
+
+    await user.type(screen.getByLabelText('URL'), 'https://shop.example.com/health');
+    expect(submit).toBeEnabled();
+  });
+
+  it('shows an inline error for an invalid url', async () => {
+    server.use(
+      http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
+      http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+    );
+    await renderMonitors();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('URL'), 'not-a-url');
+    await user.tab();
+
+    expect(await screen.findByText('Enter a valid http(s) URL.')).toBeInTheDocument();
+  });
+
+  it('shows an inline error for an out-of-range timeout', async () => {
+    server.use(
+      http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
+      http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+    );
+    await renderMonitors();
+    const user = userEvent.setup();
+
+    const timeout = screen.getByLabelText('Timeout (s)');
+    await user.clear(timeout);
+    await user.type(timeout, '99');
+    await user.tab();
+
+    expect(
+      await screen.findByText('Timeout must be between 1 and 30 seconds.'),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces an error when saving fails', async () => {
+    server.use(
+      http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])),
+      http.get(`${BASE}/uptime/monitors`, () => HttpResponse.json([])),
+      http.get(`${BASE}/projects/:id/environments`, () => HttpResponse.json(['prod'])),
+      http.post(`${BASE}/uptime/monitors`, () => new HttpResponse(null, { status: 400 })),
+    );
+    await renderMonitors();
+    const user = userEvent.setup();
+
+    await pickOption(user, 'Project', 'shop-frontend');
+    await pickOption(user, 'Environment', 'prod');
+    await user.type(screen.getByLabelText('URL'), 'https://shop.example.com/health');
+    await user.click(screen.getByRole('button', { name: 'Create monitor' }));
+
+    await waitFor(() =>
+      expect(feedback.error).toHaveBeenCalledWith('Could not save monitor — check the URL.'),
+    );
   });
 });
