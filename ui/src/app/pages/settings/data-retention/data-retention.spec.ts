@@ -9,10 +9,13 @@ import { DataRetentionSettings } from './data-retention';
 
 const BASE = '*/api/internal';
 
-function nativeSelect(wrapperId: string): HTMLSelectElement {
-  const select = document.querySelector<HTMLSelectElement>(`#${wrapperId} select`);
-  if (!select) throw new Error(`no native select rendered in #${wrapperId}`);
-  return select;
+/** hlm-select renders an ARIA combobox; open it, then pick an option by name. */
+async function pickPeriod(
+  user: ReturnType<typeof userEvent.setup>,
+  optionName: string,
+): Promise<void> {
+  await user.click(await screen.findByRole('combobox'));
+  await user.click(await screen.findByRole('option', { name: optionName }));
 }
 
 let feedback: { success: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
@@ -36,7 +39,7 @@ describe('DataRetentionSettings', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Automatically delete old data')).toBeChecked(),
     );
-    expect(nativeSelect('retentionDays')).toHaveValue('60');
+    expect(screen.getByRole('combobox')).toHaveTextContent('60 days');
   });
 
   it('saves an exact payload and confirms success', async () => {
@@ -53,9 +56,9 @@ describe('DataRetentionSettings', () => {
     await renderRetention();
     const user = userEvent.setup();
 
-    await waitFor(() => expect(nativeSelect('retentionDays')).toHaveValue('90'));
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('90 days'));
     await user.click(screen.getByLabelText('Automatically delete old data'));
-    await user.selectOptions(nativeSelect('retentionDays'), '30');
+    await pickPeriod(user, '30 days');
     await user.click(screen.getByRole('button', { name: 'Save data retention' }));
 
     await waitFor(() => expect(saved).toEqual({ enabled: true, retention_days: 30 }));
@@ -63,6 +66,54 @@ describe('DataRetentionSettings', () => {
       expect(feedback.success).toHaveBeenCalledWith(
         'Data retention settings saved. Changes take effect at the next 02:00 UTC run.',
       ),
+    );
+  });
+
+  it('keeps the submit disabled until a retention period is selected', async () => {
+    // A failed load leaves the required select empty, so the form is invalid.
+    server.use(
+      http.get(`${BASE}/settings/data-retention`, () => new HttpResponse(null, { status: 500 })),
+    );
+    await renderRetention();
+    const user = userEvent.setup();
+
+    const submit = await screen.findByRole('button', { name: 'Save data retention' });
+    expect(submit).toBeDisabled();
+
+    await pickPeriod(user, '90 days');
+    expect(submit).toBeEnabled();
+  });
+
+  it('shows an inline error when the required period is left empty', async () => {
+    server.use(
+      http.get(`${BASE}/settings/data-retention`, () => new HttpResponse(null, { status: 500 })),
+    );
+    await renderRetention();
+    const user = userEvent.setup();
+
+    // Open and dismiss the select without choosing, marking it touched.
+    await user.click(await screen.findByRole('combobox'));
+    await user.keyboard('{Escape}');
+    await user.tab();
+
+    expect(await screen.findByText('Select a retention period.')).toBeInTheDocument();
+  });
+
+  it('surfaces an error toast when saving fails', async () => {
+    server.use(
+      http.get(`${BASE}/settings/data-retention`, () =>
+        HttpResponse.json({ enabled: false, retention_days: 90 }),
+      ),
+      http.put(`${BASE}/settings/data-retention`, () => new HttpResponse(null, { status: 500 })),
+    );
+    await renderRetention();
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('90 days'));
+    await user.click(screen.getByRole('button', { name: 'Save data retention' }));
+
+    await waitFor(() =>
+      expect(feedback.error).toHaveBeenCalledWith('Could not save data retention settings.'),
     );
   });
 
