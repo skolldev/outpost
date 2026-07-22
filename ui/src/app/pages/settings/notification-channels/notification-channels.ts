@@ -1,12 +1,12 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
-import { FormsModule } from '@angular/forms';
+import { form, FormField, FormRoot, pattern, required, validateTree } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmInput } from '@spartan-ng/helm/input';
 import { HlmLabel } from '@spartan-ng/helm/label';
-import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-select';
+import { HlmSelectImports } from '@spartan-ng/helm/select';
 import { HlmCheckbox } from '@spartan-ng/helm/checkbox';
 import { HlmFieldImports } from '@spartan-ng/helm/field';
 
@@ -15,6 +15,7 @@ import { API_BASE } from '../../../core/api-base';
 import { Feedback } from '../../../core/feedback';
 import {
   NotificationChannel,
+  NotificationChannelInput,
   NotificationChannelType,
   NotificationDeliveryStatus,
   NotificationHistoryEntry,
@@ -28,12 +29,12 @@ import { ProjectsStore } from '../../../core/projects';
   selector: 'app-notification-channel-settings',
   imports: [
     DatePipe,
-    FormsModule,
+    FormRoot,
+    FormField,
     HlmButton,
     HlmInput,
     HlmLabel,
-    HlmNativeSelect,
-    HlmNativeSelectOption,
+    HlmSelectImports,
     HlmCheckbox,
     ...HlmFieldImports,
   ],
@@ -75,20 +76,119 @@ export class NotificationChannelsSettings {
     { value: 'incident_resolved', label: 'Incident resolved' },
   ];
 
-  newChannelName = '';
-  newChannelType: NotificationChannelType = 'teams';
-  newChannelUrl = '';
-  // Round-trips the enabled flag through the edit form (no visible control —
-  // enable/disable is a per-row toggle in the list). New channels start enabled.
-  newChannelEnabled = true;
-  channelTriggers: Record<NotificationTrigger, boolean> = {
-    new_issue: false,
-    incident_started: false,
-    incident_resolved: false,
-  };
-  // Keyed by project id; a truthy entry means the channel is scoped to it.
-  channelProjectSelected: Record<number, boolean> = {};
-  newChannelEnvironments = '';
+  // Typed form model. Triggers is a fixed boolean-per-trigger group and the
+  // project scope a dynamic id→boolean map — both bind checkboxes via formField
+  // and normalize to the DTO's string[]/number[] at submit. Environments stays a
+  // CSV string for its free-text input. `enabled` has no control: it round-trips
+  // the per-row list toggle so a save doesn't revert it. New channels start
+  // enabled.
+  private readonly model = signal({
+    name: '',
+    type: 'teams' as NotificationChannelType,
+    url: '',
+    enabled: true,
+    triggers: { new_issue: false, incident_started: false, incident_resolved: false } as Record<
+      NotificationTrigger,
+      boolean
+    >,
+    environments: '',
+    // Keyed by String(project id); a truthy entry means the channel is scoped to it.
+    projectSelected: {} as Record<string, boolean>,
+  });
+
+  readonly channelForm = form(
+    this.model,
+    (path) => {
+      required(path.name, { message: 'Name is required.' });
+      required(path.url, { message: 'Webhook URL is required.' });
+      pattern(path.url, /^https?:\/\/\S+$/i, { message: 'Enter a valid http(s) URL.' });
+      // At least one trigger must be selected. A tree validator on the group
+      // keeps the error attached to the fieldset rather than to any one checkbox.
+      validateTree(path.triggers, ({ value }) => {
+        const t = value();
+        return t.new_issue || t.incident_started || t.incident_resolved
+          ? null
+          : { kind: 'atLeastOneTrigger', message: 'Select at least one trigger.' };
+      });
+    },
+    {
+      submission: {
+        action: async () => {
+          const editing = this.editingChannelId();
+          try {
+            const body = this.channelBody();
+            if (editing === null) {
+              await firstValueFrom(this.api.createNotificationChannel(body));
+            } else {
+              await firstValueFrom(this.api.updateNotificationChannel(editing, body));
+            }
+            this.resetChannelForm();
+            this.channelsResource.reload();
+            this.feedback.success(editing === null ? 'Channel created.' : 'Channel updated.');
+          } catch {
+            this.feedback.error(
+              'Could not save notification channel — check the URL and pick a trigger.',
+            );
+          }
+        },
+      },
+    },
+  );
+
+  constructor() {
+    // Projects load asynchronously; give every rendered project checkbox a
+    // backing field (defaulting to unchecked) without disturbing existing
+    // selections — including ids for since-deleted projects that editChannel
+    // scoped but which have no checkbox to render.
+    effect(() => {
+      const projects = this.projectsStore.projects();
+      const current = this.model().projectSelected;
+      const missing = projects.filter((project) => !(String(project.id) in current));
+      if (missing.length === 0) return;
+      this.model.update((m) => {
+        const projectSelected = { ...m.projectSelected };
+        for (const project of missing) projectSelected[String(project.id)] = false;
+        return { ...m, projectSelected };
+      });
+    });
+  }
+
+  /** Resolves the type select's trigger label from the selected value. */
+  readonly typeLabel = (value: string): string =>
+    this.channelTypeLabel(value as NotificationChannelType);
+
+  /** A project-scope map with every currently-rendered project unchecked. */
+  private blankProjectSelection(): Record<string, boolean> {
+    const selection: Record<string, boolean> = {};
+    for (const project of this.projectsStore.projects()) {
+      selection[String(project.id)] = false;
+    }
+    return selection;
+  }
+
+  /** Builds the DTO from the form model: booleans → string[]/number[]. */
+  private channelBody(): NotificationChannelInput {
+    const m = this.model();
+    return {
+      name: m.name,
+      type: m.type,
+      url: m.url,
+      enabled: m.enabled,
+      triggers: this.channelTriggerOptions
+        .map((option) => option.value)
+        .filter((value) => m.triggers[value]),
+      // Derive from the selection map, not the loaded project list, so ids
+      // scoped to a since-deleted project (still selected, but with no checkbox
+      // to render) survive a save instead of collapsing the scope to "all".
+      project_filter: Object.entries(m.projectSelected)
+        .filter(([, selected]) => selected)
+        .map(([id]) => Number(id)),
+      environment_filter: m.environments
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
+    };
+  }
 
   channelTypeLabel(type: NotificationChannelType): string {
     return type === 'teams' ? 'Teams' : 'Generic JSON';
@@ -109,44 +209,6 @@ export class NotificationChannelsSettings {
       : channel.environment_filter.join(', ');
   }
 
-  async saveChannel(): Promise<void> {
-    const body = {
-      name: this.newChannelName,
-      type: this.newChannelType,
-      url: this.newChannelUrl,
-      enabled: this.newChannelEnabled,
-      triggers: this.channelTriggerOptions
-        .map((option) => option.value)
-        .filter((value) => this.channelTriggers[value]),
-      // Derive from the selection map, not the loaded project list, so ids
-      // scoped to a since-deleted project (still selected by editChannel, but
-      // with no checkbox to render) survive a save instead of being silently
-      // dropped — which would collapse the scope to "all projects".
-      project_filter: Object.entries(this.channelProjectSelected)
-        .filter(([, selected]) => selected)
-        .map(([id]) => Number(id)),
-      environment_filter: this.newChannelEnvironments
-        .split(',')
-        .map((name) => name.trim())
-        .filter((name) => name.length > 0),
-    };
-    const editing = this.editingChannelId();
-    try {
-      if (editing === null) {
-        await firstValueFrom(this.api.createNotificationChannel(body));
-      } else {
-        await firstValueFrom(this.api.updateNotificationChannel(editing, body));
-      }
-      this.resetChannelForm();
-      this.channelsResource.reload();
-      this.feedback.success(editing === null ? 'Channel created.' : 'Channel updated.');
-    } catch {
-      this.feedback.error(
-        'Could not save notification channel — check the URL and pick a trigger.',
-      );
-    }
-  }
-
   editChannel(channel: NotificationChannel): void {
     this.editingChannelId.set(channel.id);
     this.confirmDeleteChannelId.set(null);
@@ -155,16 +217,28 @@ export class NotificationChannelsSettings {
       delete next[channel.id];
       return next;
     });
-    this.newChannelName = channel.name;
-    this.newChannelType = channel.type;
-    this.newChannelUrl = channel.url;
-    this.newChannelEnabled = channel.enabled;
+    const triggers = {
+      new_issue: false,
+      incident_started: false,
+      incident_resolved: false,
+    } as Record<NotificationTrigger, boolean>;
     for (const option of this.channelTriggerOptions) {
-      this.channelTriggers[option.value] = channel.triggers.includes(option.value);
+      triggers[option.value] = channel.triggers.includes(option.value);
     }
-    this.channelProjectSelected = {};
-    for (const id of channel.project_filter) this.channelProjectSelected[id] = true;
-    this.newChannelEnvironments = channel.environment_filter.join(', ');
+    // Seed every current project unchecked, then check the channel's scope. Ids
+    // for since-deleted projects have no checkbox but are kept so a save
+    // preserves them (channelBody reads the whole map).
+    const projectSelected = this.blankProjectSelection();
+    for (const id of channel.project_filter) projectSelected[String(id)] = true;
+    this.channelForm().reset({
+      name: channel.name,
+      type: channel.type,
+      url: channel.url,
+      enabled: channel.enabled,
+      triggers,
+      environments: channel.environment_filter.join(', '),
+      projectSelected,
+    });
   }
 
   cancelChannelEdit(): void {
@@ -187,7 +261,7 @@ export class NotificationChannelsSettings {
       // If this channel is open in the edit form, keep the form's (invisible)
       // enabled flag in sync so a later save doesn't revert the toggle.
       if (this.editingChannelId() === channel.id) {
-        this.newChannelEnabled = !channel.enabled;
+        this.model.update((m) => ({ ...m, enabled: !channel.enabled }));
       }
       this.channelsResource.reload();
     } catch {
@@ -267,12 +341,14 @@ export class NotificationChannelsSettings {
 
   private resetChannelForm(): void {
     this.editingChannelId.set(null);
-    this.newChannelName = '';
-    this.newChannelType = 'teams';
-    this.newChannelUrl = '';
-    this.newChannelEnabled = true;
-    this.channelTriggers = { new_issue: false, incident_started: false, incident_resolved: false };
-    this.channelProjectSelected = {};
-    this.newChannelEnvironments = '';
+    this.channelForm().reset({
+      name: '',
+      type: 'teams',
+      url: '',
+      enabled: true,
+      triggers: { new_issue: false, incident_started: false, incident_resolved: false },
+      environments: '',
+      projectSelected: this.blankProjectSelection(),
+    });
   }
 }
