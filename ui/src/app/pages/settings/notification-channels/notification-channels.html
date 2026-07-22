@@ -4,39 +4,46 @@
   Admins. Nothing is delivered yet — this is destination configuration.
 </p>
 
-<form (ngSubmit)="saveChannel()" class="mb-6 flex flex-col gap-4">
+<form [formRoot]="channelForm" class="mb-6 flex flex-col gap-4">
   <div class="flex flex-wrap items-end gap-3">
-    <div>
-      <label hlmLabel class="mb-1" for="channelName">Name</label>
+    <div hlmField class="w-56">
+      <label hlmFieldLabel for="channelName">Name</label>
       <input
         hlmInput
         id="channelName"
-        name="channelName"
-        [(ngModel)]="newChannelName"
+        [formField]="channelForm.name"
         placeholder="Team alerts"
-        required
-        class="h-8 w-56"
+        class="h-8"
       />
+      @for (error of channelForm.name().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
     </div>
-    <div>
-      <label hlmLabel class="mb-1" for="channelType">Type</label>
-      <hlm-native-select id="channelType" name="channelType" size="sm" [(ngModel)]="newChannelType">
-        <option hlmNativeSelectOption value="teams">Teams</option>
-        <option hlmNativeSelectOption value="generic_json">Generic JSON</option>
-      </hlm-native-select>
+    <div hlmField class="w-44">
+      <label hlmFieldLabel for="channelType">Type</label>
+      <hlm-select [formField]="channelForm.type" [itemToString]="typeLabel">
+        <hlm-select-trigger buttonId="channelType" size="sm" class="w-full">
+          <hlm-select-value />
+        </hlm-select-trigger>
+        <hlm-select-content *hlmSelectPortal>
+          <hlm-select-item value="teams">Teams</hlm-select-item>
+          <hlm-select-item value="generic_json">Generic JSON</hlm-select-item>
+        </hlm-select-content>
+      </hlm-select>
     </div>
-    <div>
-      <label hlmLabel class="mb-1" for="channelUrl">Webhook URL</label>
+    <div hlmField class="w-96">
+      <label hlmFieldLabel for="channelUrl">Webhook URL</label>
       <input
         hlmInput
         id="channelUrl"
-        name="channelUrl"
         type="url"
-        [(ngModel)]="newChannelUrl"
+        [formField]="channelForm.url"
         placeholder="https://example.webhook.office.com/webhookb2/…"
-        required
-        class="h-8 w-96"
+        class="h-8"
       />
+      @for (error of channelForm.url().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
     </div>
   </div>
 
@@ -47,13 +54,17 @@
         <div hlmField orientation="horizontal">
           <hlm-checkbox
             [inputId]="'trigger-' + option.value"
-            [name]="'trigger-' + option.value"
-            [(ngModel)]="channelTriggers[option.value]"
+            [formField]="channelForm.triggers[option.value]"
           />
           <label hlmFieldLabel [for]="'trigger-' + option.value">{{ option.label }}</label>
         </div>
       }
     </div>
+    @if (channelForm.triggers().touched()) {
+      @for (error of channelForm.triggers().errors(); track error.kind) {
+        <hlm-field-error class="mt-1" [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    }
   </fieldset>
 
   <fieldset>
@@ -66,8 +77,7 @@
         <div hlmField orientation="horizontal">
           <hlm-checkbox
             [inputId]="'channel-project-' + project.id"
-            [name]="'channel-project-' + project.id"
-            [(ngModel)]="channelProjectSelected[project.id]"
+            [formField]="channelForm.projectSelected[project.id]"
           />
           <label hlmFieldLabel [for]="'channel-project-' + project.id">{{ project.name }}</label>
         </div>
@@ -77,15 +87,14 @@
     </div>
   </fieldset>
 
-  <div>
-    <label hlmLabel class="mb-1" for="channelEnvironments">Environments</label>
+  <div hlmField class="w-96">
+    <label hlmFieldLabel for="channelEnvironments">Environments</label>
     <input
       hlmInput
       id="channelEnvironments"
-      name="channelEnvironments"
-      [(ngModel)]="newChannelEnvironments"
+      [formField]="channelForm.environments"
       placeholder="prod, staging"
-      class="h-8 w-96"
+      class="h-8"
     />
     <p class="mt-1 text-xs text-muted-foreground">
       Comma-separated environment names. Leave empty to cover
@@ -94,7 +103,12 @@
   </div>
 
   <div class="flex flex-wrap items-center gap-3">
-    <button hlmBtn size="sm" type="submit">
+    <button
+      hlmBtn
+      size="sm"
+      type="submit"
+      [disabled]="channelForm().invalid() || channelForm().submitting()"
+    >
       {{ editingChannelId() === null ? 'Create channel' : 'Save channel' }}
     </button>
     @if (editingChannelId() !== null) {
