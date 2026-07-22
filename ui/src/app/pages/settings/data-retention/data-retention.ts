@@ -1,9 +1,9 @@
 import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
 import { httpResource } from '@angular/common/http';
-import { FormsModule } from '@angular/forms';
+import { form, FormField, FormRoot, required } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
-import { HlmNativeSelect, HlmNativeSelectOption } from '@spartan-ng/helm/native-select';
+import { HlmSelectImports } from '@spartan-ng/helm/select';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmAlert, HlmAlertTitle, HlmAlertDescription } from '@spartan-ng/helm/alert';
 import { HlmCheckbox } from '@spartan-ng/helm/checkbox';
@@ -21,10 +21,10 @@ type RetentionDaysValue = '30' | '60' | '90' | '180';
 @Component({
   selector: 'app-data-retention-settings',
   imports: [
-    FormsModule,
+    FormRoot,
+    FormField,
     HlmButton,
-    HlmNativeSelect,
-    HlmNativeSelectOption,
+    HlmSelectImports,
     ...HlmCardImports,
     HlmAlert,
     HlmAlertTitle,
@@ -40,31 +40,71 @@ export class DataRetentionSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
 
-  readonly retentionDurations: RetentionDaysValue[] = ['30', '60', '90', '180'];
+  // Retention period choices; the string value matches the select-bound model
+  // field (coerced back to a number at the DTO boundary) and the label is
+  // derived from the same list so the trigger and options never drift. The four
+  // fixed options bound the value, so `required` is the only validator needed.
+  readonly retentionOptions: { value: RetentionDaysValue; label: string }[] = [
+    { value: '30', label: '30 days' },
+    { value: '60', label: '60 days' },
+    { value: '90', label: '90 days' },
+    { value: '180', label: '180 days' },
+  ];
+  readonly retentionDaysLabel = (value: string): string =>
+    this.retentionOptions.find((option) => option.value === value)?.label ?? value;
 
-  // Read-into-form: the resource fetches the current setting, and a seeding
-  // effect copies it into the editable form fields once it arrives.
+  // Read-into-form: the resource fetches the current setting and a seeding
+  // effect copies it into the form once it arrives.
   private readonly retentionResource = httpResource<DataRetentionSetting>(
     () => `${API_BASE}/settings/data-retention`,
   );
   readonly retentionLoading = this.retentionResource.isLoading;
 
-  readonly retentionSaving = signal(false);
-  // Persistent page-state error for a failed *load*; the panel is unusable
-  // until it clears. Save outcomes go through the Feedback seam instead.
+  // Persistent page-state error for a failed *load*; the alert explains why the
+  // form is empty. Save outcomes go through the Feedback seam instead.
   readonly retentionError = signal<string | null>(null);
 
-  retentionEnabled = false;
-  retentionDays: RetentionDaysValue = '90';
+  // Typed form model. `retentionDays` is the select value as a string; it starts
+  // empty and `required`, so the form is invalid — and submit disabled — until
+  // the saved setting hydrates it (or the user picks a period).
+  private readonly model = signal<{ enabled: boolean; retentionDays: RetentionDaysValue | '' }>({
+    enabled: false,
+    retentionDays: '',
+  });
+
+  readonly retentionForm = form(
+    this.model,
+    (path) => {
+      required(path.retentionDays, { message: 'Select a retention period.' });
+    },
+    {
+      submission: {
+        action: async () => {
+          const m = this.model();
+          const body: DataRetentionSetting = {
+            enabled: m.enabled,
+            retention_days: Number(m.retentionDays) as RetentionDays,
+          };
+          try {
+            const saved = await firstValueFrom(this.api.updateDataRetention(body));
+            this.seedForm(saved);
+            this.feedback.success(
+              'Data retention settings saved. Changes take effect at the next 02:00 UTC run.',
+            );
+          } catch {
+            this.feedback.error('Could not save data retention settings.');
+          }
+        },
+      },
+    },
+  );
 
   constructor() {
     effect(() => {
       // value() throws while the resource is loading or errored; only read it
-      // once a value is actually present.
+      // once a value is present, then seed the editable form from it.
       if (this.retentionResource.hasValue()) {
-        const setting = this.retentionResource.value();
-        this.retentionEnabled = setting.enabled;
-        this.retentionDays = String(setting.retention_days) as RetentionDaysValue;
+        this.seedForm(this.retentionResource.value());
       }
     });
     effect(() => {
@@ -74,23 +114,11 @@ export class DataRetentionSettings {
     });
   }
 
-  async saveDataRetention(): Promise<void> {
-    this.retentionSaving.set(true);
-    const body: DataRetentionSetting = {
-      enabled: this.retentionEnabled,
-      retention_days: Number(this.retentionDays) as RetentionDays,
-    };
-    try {
-      const saved = await firstValueFrom(this.api.updateDataRetention(body));
-      this.retentionEnabled = saved.enabled;
-      this.retentionDays = String(saved.retention_days) as RetentionDaysValue;
-      this.feedback.success(
-        'Data retention settings saved. Changes take effect at the next 02:00 UTC run.',
-      );
-    } catch {
-      this.feedback.error('Could not save data retention settings.');
-    } finally {
-      this.retentionSaving.set(false);
-    }
+  /** Copies a saved setting into the form, restoring the DTO number as a select-value string. */
+  private seedForm(setting: DataRetentionSetting): void {
+    this.retentionForm().reset({
+      enabled: setting.enabled,
+      retentionDays: String(setting.retention_days) as RetentionDaysValue,
+    });
   }
 }

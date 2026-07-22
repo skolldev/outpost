@@ -3,7 +3,7 @@
     <h2 hlmCardTitle>Data retention</h2>
     <p hlmCardDescription>Automatically remove telemetry after a fixed retention period.</p>
   </div>
-  <form (ngSubmit)="saveDataRetention()">
+  <form [formRoot]="retentionForm">
     <div hlmCardContent class="flex flex-col gap-6">
       @if (retentionLoading()) {
         <div class="flex items-center gap-2 text-sm text-muted-foreground">
@@ -13,27 +13,25 @@
       }
 
       <div hlmField orientation="horizontal">
-        <hlm-checkbox
-          inputId="retentionEnabled"
-          name="retentionEnabled"
-          [(ngModel)]="retentionEnabled"
-          [disabled]="retentionLoading() || retentionSaving()"
-        />
+        <hlm-checkbox inputId="retentionEnabled" [formField]="retentionForm.enabled" />
         <label hlmFieldLabel for="retentionEnabled">Automatically delete old data</label>
       </div>
 
       <div hlmField>
         <label hlmFieldLabel for="retentionDays">Retention period</label>
-        <hlm-native-select
-          id="retentionDays"
-          name="retentionDays"
-          [(ngModel)]="retentionDays"
-          [disabled]="!retentionEnabled || retentionLoading() || retentionSaving()"
-        >
-          @for (days of retentionDurations; track days) {
-            <option hlmNativeSelectOption [value]="days">{{ days }} days</option>
-          }
-        </hlm-native-select>
+        <hlm-select [formField]="retentionForm.retentionDays" [itemToString]="retentionDaysLabel">
+          <hlm-select-trigger buttonId="retentionDays" class="w-full">
+            <hlm-select-value placeholder="Select a retention period" />
+          </hlm-select-trigger>
+          <hlm-select-content *hlmSelectPortal>
+            @for (option of retentionOptions; track option.value) {
+              <hlm-select-item [value]="option.value">{{ option.label }}</hlm-select-item>
+            }
+          </hlm-select-content>
+        </hlm-select>
+        @for (error of retentionForm.retentionDays().errors(); track error.kind) {
+          <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+        }
         <p hlmFieldDescription>
           Changes apply at the next daily cleanup run at 02:00 UTC. Days are exact 24-hour periods
           measured from that run.
@@ -57,11 +55,15 @@
       }
     </div>
     <div hlmCardFooter>
-      <button hlmBtn type="submit" [disabled]="retentionLoading() || retentionSaving()">
-        @if (retentionSaving()) {
+      <button
+        hlmBtn
+        type="submit"
+        [disabled]="retentionForm().invalid() || retentionForm().submitting()"
+      >
+        @if (retentionForm().submitting()) {
           <hlm-spinner aria-label="Saving data retention settings" />
         }
-        {{ retentionSaving() ? 'Saving…' : 'Save data retention' }}
+        {{ retentionForm().submitting() ? 'Saving…' : 'Save data retention' }}
       </button>
     </div>
   </form>
