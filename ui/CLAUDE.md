@@ -39,23 +39,20 @@ everywhere. spartan/ui: Brain primitives from npm, Helm components vendored in
   divs (`shared/sparkline.ts`, trace waterfall + `hlm-popover` hover pattern
   in `pages/trace-detail.html`, stripe row in `pages/uptime.html`).
 
-## Editing files while Wallaby is running
+## Wallaby and `Denied ID …?raw` errors
 
-Wallaby runs a long-lived Vite server against its own copy of the sources and
-tracks module IDs (including `?raw` template imports) by inode. Overwriting an
-existing file wholesale unlinks and recreates it (new inode), which desyncs
-Wallaby's Vite graph and makes it deny the module — symptom: `Denied ID
-…/<file>.html?raw`, zero tests collected. It does not self-heal; only a Wallaby
+Wallaby serves files it saw change mid-session from `~/.wallaby/cache/**`
+instead of their project paths. Vite's `server.fs.allow` check on `?raw` ids
+(what `templateUrl` compiles to) rejects paths outside the allow list, so a
+template edit used to wedge its specs with `Denied ID …/<file>.html?raw` until
+Wallaby was restarted. **Fixed** by `vitest.wallaby.config.ts` (wired up via
+`runnerConfig: true` in `angular.json`), which adds `~/.wallaby` to
+`server.fs.allow` — template edits with any tool are now safe while Wallaby
+runs.
+
+If the error ever reappears, those two files are the first place to look; it is
+never a code bug (`npx tsc --noEmit` and `ng build` will pass), and a Wallaby
 restart clears it.
-
-**Rule:** modify existing files with in-place edits (the `Edit` tool), never
-overwrite them wholesale (`Write`). `Write` is only for creating new files.
-This applies to every file type, but `.html` templates are the usual victim.
-
-If Wallaby does wedge with a "Denied ID" error: it is not a code bug — verify
-with `npx tsc --noEmit -p tsconfig.app.json`, `-p tsconfig.spec.json`, and
-`npx ng build --configuration development`, then restart Wallaby (the user must
-do this) to run the specs.
 
 ## Testing
 

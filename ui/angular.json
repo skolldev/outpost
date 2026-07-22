@@ -69,7 +69,8 @@
         "test": {
           "builder": "@angular/build:unit-test",
           "options": {
-            "setupFiles": ["./vitest-setup.ts"]
+            "setupFiles": ["./vitest-setup.ts"],
+            "runnerConfig": true
           }
         },
         "lint": {
