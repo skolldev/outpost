@@ -43,7 +43,7 @@ public class TraceController {
 
 	/** Trace search over root transactions (§9.4 list). */
 	@GetMapping("/traces")
-	public Map<String, Object> traces(@RequestParam(required = false) Long project,
+	public Map<String, Object> traces(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
 			@RequestParam(required = false) String release,
 			@RequestParam(required = false) String query,
@@ -99,7 +99,7 @@ public class TraceController {
 	 * the backend project still surfaces the trace. Filters apply per-transaction;
 	 * span/error counts span the whole trace.
 	 */
-	static SearchQuery buildSearchQuery(Long project, List<String> environment, String release, String query,
+	static SearchQuery buildSearchQuery(List<Long> project, List<String> environment, String release, String query,
 			Double minDuration, Double maxDuration, Boolean hasErrors, Instant from, Instant to, String cursor) {
 
 		StringBuilder inner = new StringBuilder("""
@@ -110,14 +110,8 @@ public class TraceController {
 				""");
 		List<Object> params = new ArrayList<>();
 
-		if (project != null) {
-			inner.append(" AND t.project_id = ?");
-			params.add(project);
-		}
-		if (environment != null && !environment.isEmpty()) {
-			inner.append(" AND t.environment IN (").append(QuerySupport.placeholders(environment.size())).append(")");
-			params.addAll(environment);
-		}
+		QuerySupport.appendInClause(inner, "t.project_id", project, params);
+		QuerySupport.appendInClause(inner, "t.environment", environment, params);
 		if (release != null && !release.isBlank()) {
 			inner.append(" AND t.release = ?");
 			params.add(release);

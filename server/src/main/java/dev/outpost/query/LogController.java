@@ -47,7 +47,7 @@ public class LogController {
 	}
 
 	@GetMapping("/logs")
-	public Map<String, Object> logs(@RequestParam(required = false) Long project,
+	public Map<String, Object> logs(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
 			@RequestParam(required = false) List<String> level,
 			@RequestParam(name = "trace_id", required = false) String traceId,
@@ -65,18 +65,9 @@ public class LogController {
 				""");
 		List<Object> params = new ArrayList<>();
 
-		if (project != null) {
-			sql.append(" AND project_id = ?");
-			params.add(project);
-		}
-		if (environment != null && !environment.isEmpty()) {
-			sql.append(" AND environment IN (").append(QuerySupport.placeholders(environment.size())).append(")");
-			params.addAll(environment);
-		}
-		if (level != null && !level.isEmpty()) {
-			sql.append(" AND level IN (").append(QuerySupport.placeholders(level.size())).append(")");
-			params.addAll(level);
-		}
+		QuerySupport.appendInClause(sql, "project_id", project, params);
+		QuerySupport.appendInClause(sql, "environment", environment, params);
+		QuerySupport.appendInClause(sql, "level", level, params);
 		if (traceId != null && !traceId.isBlank()) {
 			sql.append(" AND trace_id = ?");
 			params.add(traceId);
@@ -137,7 +128,7 @@ public class LogController {
 
 	/** SSE live tail (§9.3) — same filters, applied in-process to newly stored records. */
 	@GetMapping(value = "/logs", params = "live=true")
-	public SseEmitter tail(@RequestParam(required = false) Long project,
+	public SseEmitter tail(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
 			@RequestParam(required = false) List<String> level,
 			@RequestParam(name = "trace_id", required = false) String traceId,
@@ -147,7 +138,8 @@ public class LogController {
 
 		List<AttrFilter> attrFilters = parseAttrFilters(attr);
 		String bodyNeedle = query != null && !query.isBlank() ? query.toLowerCase(Locale.ROOT) : null;
-		Predicate<ProcessedLog> filter = record -> (project == null || record.projectId() == project)
+		Predicate<ProcessedLog> filter = record -> (project == null || project.isEmpty()
+				|| project.contains(record.projectId()))
 				&& (environment == null || environment.isEmpty() || environment.contains(record.environment()))
 				&& (level == null || level.isEmpty() || level.contains(record.level()))
 				&& (traceId == null || traceId.isBlank() || traceId.equals(record.traceId()))
