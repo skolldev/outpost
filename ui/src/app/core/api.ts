@@ -105,10 +105,6 @@ export class Api {
     return this.http.post<Project>(`${this.base}/projects`, { slug, name, platform });
   }
 
-  projectEnvironments(projectId: number): Observable<string[]> {
-    return this.http.get<string[]>(`${this.base}/projects/${projectId}/environments`);
-  }
-
   projectKeys(projectId: number): Observable<ProjectKey[]> {
     return this.http.get<ProjectKey[]>(`${this.base}/projects/${projectId}/keys`);
   }

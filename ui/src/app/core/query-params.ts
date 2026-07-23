@@ -6,11 +6,14 @@
 import { IssueFilters, LogFilters, TraceFilters } from './models';
 
 /** Value shape accepted by both HttpParams and httpResource's `params` field. */
-export type QueryParams = Record<string, string | number | boolean | readonly string[]>;
+export type QueryParams = Record<
+  string,
+  string | number | boolean | readonly string[] | readonly number[]
+>;
 
 export function issueParams(filters: IssueFilters & { cursor?: string }): QueryParams {
   const params: QueryParams = {};
-  if (filters.project != null) params['project'] = filters.project;
+  if (filters.project?.length) params['project'] = filters.project;
   if (filters.environment?.length) params['environment'] = filters.environment;
   if (filters.status) params['status'] = filters.status;
   if (filters.query) params['query'] = filters.query;
@@ -22,7 +25,7 @@ export function issueParams(filters: IssueFilters & { cursor?: string }): QueryP
 
 export function logParams(filters: LogFilters & { cursor?: string }): QueryParams {
   const params: QueryParams = {};
-  if (filters.project != null) params['project'] = filters.project;
+  if (filters.project?.length) params['project'] = filters.project;
   if (filters.environment?.length) params['environment'] = filters.environment;
   if (filters.level?.length) params['level'] = filters.level;
   if (filters.traceId) params['trace_id'] = filters.traceId;
@@ -35,7 +38,7 @@ export function logParams(filters: LogFilters & { cursor?: string }): QueryParam
 
 export function traceParams(filters: TraceFilters & { cursor?: string }): QueryParams {
   const params: QueryParams = {};
-  if (filters.project != null) params['project'] = filters.project;
+  if (filters.project?.length) params['project'] = filters.project;
   if (filters.environment?.length) params['environment'] = filters.environment;
   if (filters.release) params['release'] = filters.release;
   if (filters.query) params['query'] = filters.query;
