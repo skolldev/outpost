@@ -1,9 +1,9 @@
-import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { firstValueFrom } from 'rxjs';
+import { httpResource } from '@angular/common/http';
 import { HlmSelectImports } from '@spartan-ng/helm/select';
 
-import { Api } from '../../core/api';
+import { API_BASE } from '../../core/api-base';
 import { ProjectsStore } from '../../core/projects';
 import { Release, ReleaseArtifact } from '../../core/models';
 import { timeAgo } from '../../shared/ui';
@@ -24,48 +24,55 @@ import { timeAgo } from '../../shared/ui';
   templateUrl: './releases.html',
 })
 export class ReleasesPage {
-  private readonly api = inject(Api);
   readonly projectsStore = inject(ProjectsStore);
 
   readonly project = signal<number | undefined>(undefined);
 
-  readonly releases = signal<Release[]>([]);
-  readonly artifacts = signal<ReleaseArtifact[]>([]);
+  // Releases for the selected project; the fetch is skipped until one is chosen.
+  private readonly releasesResource = httpResource<Release[]>(
+    () => {
+      const project = this.project();
+      return project == null ? undefined : { url: `${API_BASE}/releases`, params: { project } };
+    },
+    { defaultValue: [] },
+  );
+  readonly releases = this.releasesResource.value;
+
+  // The expanded release's version, or null when the list is collapsed.
   readonly expanded = signal<string | null>(null);
+
+  // Artifact bundles for the expanded release; skips the fetch while collapsed.
+  // Empty while loading so switching rows never shows the prior release's
+  // bundles (httpResource retains its last value across a re-fetch).
+  private readonly artifactsResource = httpResource<ReleaseArtifact[]>(
+    () => {
+      const version = this.expanded();
+      const project = this.project();
+      return version == null || project == null
+        ? undefined
+        : {
+            url: `${API_BASE}/releases/${encodeURIComponent(version)}/artifacts`,
+            params: { project },
+          };
+    },
+    { defaultValue: [] },
+  );
+  readonly artifacts = computed(() =>
+    this.artifactsResource.isLoading() ? [] : this.artifactsResource.value(),
+  );
 
   readonly timeAgo = timeAgo;
 
   /** Resolves a project select value to its trigger label. */
   readonly projectLabel = (value: number): string => this.projectsStore.name(value);
 
-  constructor() {
-    effect(() => {
-      const project = this.project();
-      this.expanded.set(null);
-      if (project == null) {
-        this.releases.set([]);
-        return;
-      }
-      void firstValueFrom(this.api.releases(project)).then((releases) =>
-        this.releases.set(releases),
-      );
-    });
-  }
-
   onProjectChange(value: number | null | undefined): void {
     this.project.set(value ?? undefined);
+    this.expanded.set(null);
   }
 
-  async toggle(release: Release): Promise<void> {
-    if (this.expanded() === release.version) {
-      this.expanded.set(null);
-      return;
-    }
-    const project = this.project();
-    if (project == null) return;
-    this.artifacts.set([]);
-    this.expanded.set(release.version);
-    this.artifacts.set(await firstValueFrom(this.api.releaseArtifacts(release.version, project)));
+  toggle(release: Release): void {
+    this.expanded.update((version) => (version === release.version ? null : release.version));
   }
 
   size(bytes: number): string {
