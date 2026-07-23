@@ -1,15 +1,21 @@
 import { provideHttpClient } from '@angular/common/http';
-import { signal } from '@angular/core';
 import { render, screen } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../mocks/node';
-import { GlobalFilters } from '../../core/filters';
-import { Release, ReleaseArtifact } from '../../core/models';
+import { Project, Release, ReleaseArtifact } from '../../core/models';
 import { ReleasesPage } from './releases';
 
 const BASE = '*/api/internal';
+
+const PROJECT: Project = {
+  id: 1,
+  slug: 'shop',
+  name: 'shop',
+  platform: 'javascript',
+  created_at: '2026-01-01T00:00:00Z',
+};
 
 const RELEASE: Release = {
   id: 1,
@@ -30,34 +36,42 @@ const ARTIFACT: ReleaseArtifact = {
   uploaded_at: '2026-07-01T00:00:00Z',
 };
 
-/** GlobalFilters stand-in with a fixed project; releases only reads project(). */
-function fakeFilters(project: number | undefined): GlobalFilters {
-  return { project: signal<number | undefined>(project) } as unknown as GlobalFilters;
+async function renderReleases() {
+  server.use(http.get(`${BASE}/projects`, () => HttpResponse.json([PROJECT])));
+  return render(ReleasesPage, {
+    providers: [provideHttpClient()],
+  });
 }
 
-async function renderReleases(project: number | undefined) {
-  return render(ReleasesPage, {
-    providers: [provideHttpClient(), { provide: GlobalFilters, useValue: fakeFilters(project) }],
-  });
+/** Pick the sole project from the page-local selector. */
+async function selectProject(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole('combobox'));
+  await user.click(await screen.findByRole('option', { name: 'shop' }));
 }
 
 describe('ReleasesPage', () => {
   it('prompts to pick a project when none is selected', async () => {
-    await renderReleases(undefined);
+    await renderReleases();
 
-    expect(screen.getByText(/Select a project in the header/)).toBeInTheDocument();
+    expect(screen.getByText(/Select a project to see its releases/)).toBeInTheDocument();
   });
 
   it('lists releases for the selected project', async () => {
     server.use(http.get(`${BASE}/releases`, () => HttpResponse.json([RELEASE])));
-    await renderReleases(1);
+    await renderReleases();
+    const user = userEvent.setup();
+
+    await selectProject(user);
 
     expect(await screen.findByText('shop@1.0.0')).toBeInTheDocument();
   });
 
   it('shows the empty state when the project has no releases', async () => {
     server.use(http.get(`${BASE}/releases`, () => HttpResponse.json([])));
-    await renderReleases(1);
+    await renderReleases();
+    const user = userEvent.setup();
+
+    await selectProject(user);
 
     expect(await screen.findByText(/No releases yet/)).toBeInTheDocument();
   });
@@ -67,9 +81,10 @@ describe('ReleasesPage', () => {
       http.get(`${BASE}/releases`, () => HttpResponse.json([RELEASE])),
       http.get(`${BASE}/releases/:version/artifacts`, () => HttpResponse.json([ARTIFACT])),
     );
-    await renderReleases(1);
+    await renderReleases();
     const user = userEvent.setup();
 
+    await selectProject(user);
     await user.click(await screen.findByText('shop@1.0.0'));
 
     expect(await screen.findByText('dist/main.js.map')).toBeInTheDocument();
@@ -81,9 +96,10 @@ describe('ReleasesPage', () => {
       http.get(`${BASE}/releases`, () => HttpResponse.json([{ ...RELEASE, artifact_count: 0 }])),
       http.get(`${BASE}/releases/:version/artifacts`, () => HttpResponse.json([])),
     );
-    await renderReleases(1);
+    await renderReleases();
     const user = userEvent.setup();
 
+    await selectProject(user);
     await user.click(await screen.findByText('shop@1.0.0'));
 
     expect(await screen.findByText(/No artifact bundles uploaded/)).toBeInTheDocument();

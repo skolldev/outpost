@@ -20,8 +20,6 @@ import {
   NotificationTestResult,
   Project,
   ProjectKey,
-  Release,
-  ReleaseArtifact,
   SessionUser,
   TraceDetail,
   TraceFilters,
@@ -123,19 +121,6 @@ export class Api {
     return this.http.patch<ProjectKey>(`${this.base}/projects/${projectId}/keys/${keyId}`, {
       is_active: isActive,
     });
-  }
-
-  releases(projectId: number): Observable<Release[]> {
-    const params = new HttpParams().set('project', projectId);
-    return this.http.get<Release[]>(`${this.base}/releases`, { params });
-  }
-
-  releaseArtifacts(version: string, projectId: number): Observable<ReleaseArtifact[]> {
-    const params = new HttpParams().set('project', projectId);
-    return this.http.get<ReleaseArtifact[]>(
-      `${this.base}/releases/${encodeURIComponent(version)}/artifacts`,
-      { params },
-    );
   }
 
   // API tokens (sentry-cli)
