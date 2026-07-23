@@ -1,9 +1,26 @@
-@if (filters.project() === undefined) {
+<div class="mb-4 flex items-center gap-3">
+  <h1 class="text-lg font-semibold text-foreground">Releases</h1>
+  <hlm-select
+    [value]="project()"
+    [itemToString]="projectLabel"
+    (valueChange)="onProjectChange($event)"
+  >
+    <hlm-select-trigger size="sm" class="w-44">
+      <hlm-select-value placeholder="Select a project" />
+    </hlm-select-trigger>
+    <hlm-select-content *hlmSelectPortal>
+      @for (project of projectsStore.projects(); track project.id) {
+        <hlm-select-item [value]="project.id">{{ project.name }}</hlm-select-item>
+      }
+    </hlm-select-content>
+  </hlm-select>
+</div>
+
+@if (project() === undefined) {
   <p class="py-12 text-center text-sm text-muted-foreground">
-    Select a project in the header to see its releases.
+    Select a project to see its releases.
   </p>
 } @else {
-  <h1 class="mb-4 text-lg font-semibold text-foreground">Releases</h1>
   <div class="overflow-hidden rounded-lg border border-border">
     <table class="w-full text-sm">
       <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
