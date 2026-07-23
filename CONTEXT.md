@@ -22,6 +22,10 @@ _Avoid_: Uptime check
 A named deployment context within a Project from which telemetry originates, such as production, staging, or development.
 _Avoid_: Stage
 
+**Environment Name**:
+The shared identity by which Environments in different Projects that carry the same name are grouped for cross-project filtering. The global environment filter selects Environment Names, not individual Environments, so choosing `production` matches every Project's `production` Environment at once.
+_Avoid_: Environment (when referring to the cross-project name)
+
 **Release**:
 A named version of one Project, used to associate telemetry and debugging artifacts with the code that produced them.
 _Avoid_: Deployment
