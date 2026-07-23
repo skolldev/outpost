@@ -55,7 +55,7 @@ public class IssueController {
 	// ------------------------------------------------------------------ issues
 
 	@GetMapping("/issues")
-	public Map<String, Object> issues(@RequestParam(required = false) Long project,
+	public Map<String, Object> issues(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
 			@RequestParam(required = false) String status,
 			@RequestParam(required = false) String release,
@@ -71,10 +71,7 @@ public class IssueController {
 				""");
 		List<Object> params = new ArrayList<>();
 
-		if (project != null) {
-			sql.append(" AND project_id = ?");
-			params.add(project);
-		}
+		QuerySupport.appendInClause(sql, "project_id", project, params);
 		if (status != null && !status.isBlank()) {
 			sql.append(" AND status = ?");
 			params.add(status);

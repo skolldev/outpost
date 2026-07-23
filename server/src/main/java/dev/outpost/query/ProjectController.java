@@ -5,6 +5,7 @@ import dev.outpost.pipeline.EventIssueLock;
 import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Project + DSN key management (§8). Mutations are admin-only. */
@@ -116,6 +118,33 @@ public class ProjectController {
 			.param(id)
 			.query(String.class)
 			.list();
+	}
+
+	/**
+	 * Intersection of Environment Names across the in-scope Projects,
+	 * alphabetically sorted (ADR 0009). In-scope = the given {@code project} ids, or every Project
+	 * when none are given. A Project with no {@code environment} rows is <em>no evidence</em>, not
+	 * <em>evidence of absence</em>: it is excluded from the denominator rather than emptying the
+	 * result, so a brand-new Project can't blank the bar.
+	 */
+	@GetMapping("/environments")
+	public List<String> environmentIntersection(@RequestParam(required = false) List<Long> project) {
+		if (project == null || project.isEmpty()) {
+			return jdbc.sql("""
+					SELECT name FROM environment GROUP BY name
+					HAVING count(DISTINCT project_id) = (SELECT count(DISTINCT project_id) FROM environment)
+					ORDER BY name
+					""").query(String.class).list();
+		}
+		String ids = QuerySupport.placeholders(project.size());
+		List<Object> params = new ArrayList<>(project);
+		params.addAll(project); // bound twice: once in the outer scope, once in the denominator subquery
+		return jdbc.sql("""
+				SELECT name FROM environment WHERE project_id IN (%s) GROUP BY name
+				HAVING count(DISTINCT project_id) =
+				       (SELECT count(DISTINCT project_id) FROM environment WHERE project_id IN (%s))
+				ORDER BY name
+				""".formatted(ids, ids)).params(params).query(String.class).list();
 	}
 
 	@GetMapping("/{id}/keys")
