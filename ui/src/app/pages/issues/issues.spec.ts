@@ -37,7 +37,7 @@ function page(issues: Issue[], next: string | null = null): IssuePage {
  */
 function fakeFilters(): GlobalFilters {
   return {
-    project: signal<number | undefined>(undefined),
+    project: signal<number[]>([]),
     environments: signal<string[]>([]),
     from: signal<string | undefined>(undefined),
   } as unknown as GlobalFilters;

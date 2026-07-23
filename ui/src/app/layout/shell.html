@@ -55,21 +55,29 @@
       </div>
     </div>
     <div class="mx-auto flex max-w-[96rem] flex-wrap items-center gap-3 px-4 pb-3">
-      <hlm-select
-        [value]="projectValue()"
+      <hlm-combobox-multiple
+        [value]="filters.project()"
         [itemToString]="projectLabel"
-        (valueChange)="onProjectChange($event)"
+        (valueChange)="onProjectsChange($event)"
       >
-        <hlm-select-trigger size="sm" class="w-44">
-          <hlm-select-value />
-        </hlm-select-trigger>
-        <hlm-select-content *hlmSelectPortal>
-          <hlm-select-item value="all">All projects</hlm-select-item>
-          @for (project of projectsStore.projects(); track project.id) {
-            <hlm-select-item [value]="project.id">{{ project.name }}</hlm-select-item>
+        <hlm-combobox-chips class="min-w-56">
+          @for (id of filters.project(); track id) {
+            <hlm-combobox-chip [value]="id">{{ projectsStore.name(id) }}</hlm-combobox-chip>
           }
-        </hlm-select-content>
-      </hlm-select>
+          <input
+            hlmComboboxChipInput
+            [placeholder]="filters.project().length ? 'Add project…' : 'All projects'"
+          />
+        </hlm-combobox-chips>
+        <hlm-combobox-content *hlmComboboxPortal>
+          <hlm-combobox-empty>No projects found.</hlm-combobox-empty>
+          <div hlmComboboxList>
+            @for (project of projectsStore.projects(); track project.id) {
+              <hlm-combobox-item [value]="project.id">{{ project.name }}</hlm-combobox-item>
+            }
+          </div>
+        </hlm-combobox-content>
+      </hlm-combobox-multiple>
 
       @if (environments().length > 0) {
         <div class="flex items-center gap-1.5">

@@ -1,18 +1,12 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  computed,
-  effect,
-  inject,
-  signal,
-} from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject, untracked } from '@angular/core';
+import { httpResource } from '@angular/common/http';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmSelectImports } from '@spartan-ng/helm/select';
+import { HlmComboboxImports } from '@spartan-ng/helm/combobox';
 
-import { Api } from '../core/api';
+import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
 import { ProjectsStore } from '../core/projects';
 import { Session } from '../core/session';
@@ -20,9 +14,9 @@ import { NgIconComponent, provideIcons } from '@ng-icons/core';
 import { lucideTowerControl } from '@ng-icons/lucide';
 
 /**
- * App shell (§9): global header with project selector, environment
- * multi-select and time-range picker. Filter state lives in the URL so every
- * view is shareable.
+ * App shell (§9): global header with a multi-select project filter, a
+ * cross-project environment-intersection bar and a time-range picker. Filter
+ * state lives in the URL so every view is shareable.
  */
 @Component({
   selector: 'app-shell',
@@ -33,6 +27,7 @@ import { lucideTowerControl } from '@ng-icons/lucide';
     HlmButton,
     HlmBadge,
     HlmSelectImports,
+    HlmComboboxImports,
     NgIconComponent,
   ],
   providers: [provideIcons({ lucideTowerControl })],
@@ -40,26 +35,31 @@ import { lucideTowerControl } from '@ng-icons/lucide';
   templateUrl: './shell.html',
 })
 export class Shell {
-  private readonly api = inject(Api);
   readonly session = inject(Session);
   readonly filters = inject(GlobalFilters);
   readonly projectsStore = inject(ProjectsStore);
 
-  readonly environments = signal<string[]>([]);
-
   /**
-   * Select value for the project picker. brn-select needs a non-null value to
-   * render a selected label, so "all projects" is the `'all'` sentinel rather
-   * than undefined. The trigger derives its label from this value via
-   * `projectLabel` — not from which <option> the DOM happens to hold — so a
-   * project id restored from the URL shows correctly even before the async
-   * project list arrives (#58).
+   * The environment bar shows the intersection of Environment Names across the
+   * in-scope Projects (ADR 0009) — the selected set, or all Projects when the
+   * selection is empty (the `project` param is then omitted). Usually empty on
+   * the default all-Projects view; that is intended.
    */
-  readonly projectValue = computed<number | 'all'>(() => this.filters.project() ?? 'all');
+  private readonly environmentsResource = httpResource<string[]>(
+    () => ({
+      url: `${API_BASE}/projects/environments`,
+      params: { project: this.filters.project() },
+    }),
+    { defaultValue: [] },
+  );
 
-  /** Resolves a project select value to its trigger label. */
-  readonly projectLabel = (value: number | 'all'): string =>
-    value === 'all' ? 'All projects' : this.projectsStore.name(value);
+  readonly environments = this.environmentsResource.value;
+
+  /** Whether the intersection has settled once, so the first load doesn't prune. */
+  private settled = false;
+
+  /** Resolves a project id to its chip/option label (falls back while loading). */
+  readonly projectLabel = (id: number): string => this.projectsStore.name(id);
 
   /** Time-range options; the single source for both the menu and trigger label. */
   readonly ranges: readonly { value: string; label: string }[] = [
@@ -76,20 +76,30 @@ export class Shell {
     this.ranges.find((r) => r.value === value)?.label ?? value;
 
   constructor() {
+    // When the in-scope Projects change, prune the active environment filter to
+    // the names still present in the new intersection rather than clearing it,
+    // preserving intent whenever it stays valid (ADR 0009). Only a *resolved*
+    // intersection prunes — a loading/reloading value is stale and an errored one
+    // falls back to [], either of which would wrongly blank a valid filter. The
+    // first settle is skipped so a shared/reloaded URL's environment filter is
+    // preserved (it reflects the URL, not a selection change).
     effect(() => {
-      const project = this.filters.project();
-      if (project == null) {
-        this.environments.set([]);
-        return;
-      }
-      void firstValueFrom(this.api.projectEnvironments(project)).then((envs) =>
-        this.environments.set(envs),
-      );
+      if (this.environmentsResource.status() !== 'resolved') return;
+      const intersection = this.environmentsResource.value();
+      untracked(() => {
+        if (!this.settled) {
+          this.settled = true;
+          return;
+        }
+        const current = this.filters.environments();
+        const pruned = current.filter((env) => intersection.includes(env));
+        if (pruned.length !== current.length) this.filters.setEnvironments(pruned);
+      });
     });
   }
 
-  onProjectChange(value: number | 'all' | null | undefined): void {
-    this.filters.setProject(value == null || value === 'all' ? undefined : value);
+  onProjectsChange(ids: number[] | null | undefined): void {
+    this.filters.setProjects(ids ?? []);
   }
 
   onRangeChange(value: string | null | undefined): void {
