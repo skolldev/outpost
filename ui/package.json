@@ -23,7 +23,7 @@
     "@angular/router": "22.0.7",
     "@ng-icons/core": "32.2.0",
     "@ng-icons/lucide": "33.4.0",
-    "@spartan-ng/brain": "1.0.4",
+    "@spartan-ng/brain": "1.1.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "embla-carousel": ">=8.0.0 <9.0.0",
