@@ -1,5 +1,5 @@
 import { provideHttpClient } from '@angular/common/http';
-import { signal, WritableSignal } from '@angular/core';
+import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { render, screen, waitFor } from '@testing-library/angular';
 import { http, HttpResponse } from 'msw';
@@ -34,14 +34,19 @@ function fakeSession(): Session {
   return { user, isAdmin: () => true, logout: () => Promise.resolve() } as unknown as Session;
 }
 
-/** GlobalFilters stand-in: the shell reads the signals and calls the setters. */
+/**
+ * GlobalFilters stand-in: the shell reads the signals and calls the setters.
+ * `setProjects` writes back to the `project` signal the way the real
+ * URL round-trip does, so driving the shell's own handler refetches the bar.
+ */
 function fakeFilters(project: number[], environments: string[] = []) {
+  const projects = signal<number[]>(project);
   return {
-    project: signal<number[]>(project),
+    project: projects,
     environments: signal<string[]>(environments),
     range: signal<string>('14d'),
     from: signal<string | undefined>(undefined),
-    setProjects: vi.fn(),
+    setProjects: vi.fn((ids: number[]) => projects.set(ids)),
     setEnvironments: vi.fn(),
     setRange: vi.fn(),
   };
@@ -50,17 +55,17 @@ function fakeFilters(project: number[], environments: string[] = []) {
 /**
  * Renders the shell against a fake GlobalFilters and an environment-intersection
  * endpoint that echoes an intersection keyed on the in-scope `project` params, so
- * changing the project signal drives a realistic refetch.
+ * driving `onProjectsChange` triggers a realistic refetch.
  */
 async function renderShell(
   filters: ReturnType<typeof fakeFilters>,
-  intersectionFor: (projectIds: string[]) => string[] | 'error',
+  intersectionFor: (projectIds: string[]) => string[] | 'error' | Promise<string[] | 'error'>,
 ) {
   server.use(
     http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)),
-    http.get(`${BASE}/projects/environments`, ({ request }) => {
+    http.get(`${BASE}/projects/environments`, async ({ request }) => {
       const ids = new URL(request.url).searchParams.getAll('project');
-      const result = intersectionFor(ids);
+      const result = await intersectionFor(ids);
       return result === 'error'
         ? new HttpResponse(null, { status: 500 })
         : HttpResponse.json(result);
@@ -107,7 +112,7 @@ describe('Shell environment pruning', () => {
     // Project 1 alone intersects to {local,dev,qa}; adding project 2 narrows it to
     // {dev,qa}, so an active {local,dev} filter should prune to {dev} — not clear.
     const filters = fakeFilters([1], ['local', 'dev']);
-    await renderShell(filters, (ids) =>
+    const { fixture } = await renderShell(filters, (ids) =>
       ids.includes('2') ? ['dev', 'qa'] : ['local', 'dev', 'qa'],
     );
 
@@ -116,19 +121,56 @@ describe('Shell environment pruning', () => {
     expect(filters.setEnvironments).not.toHaveBeenCalled();
 
     // Widen the selection; the bar refetches and 'local' drops out of the intersection.
-    (filters.project as WritableSignal<number[]>).set([1, 2]);
+    fixture.componentInstance.onProjectsChange([1, 2]);
+
+    await waitFor(() => expect(filters.setEnvironments).toHaveBeenCalledWith(['dev']));
+  });
+
+  it('prunes a selection change made before the first intersection lands', async () => {
+    // The initial request is still in flight when the user widens the selection,
+    // so it is superseded and never resolves: the *second* response is the first
+    // to settle. It still reflects a selection change, so it must prune — gating
+    // on "first response" instead of "user changed the selection" would skip it.
+    const filters = fakeFilters([1], ['local', 'dev']);
+    let releaseInitial!: () => void;
+    const initialInFlight = new Promise<void>((resolve) => (releaseInitial = resolve));
+
+    const { fixture } = await renderShell(filters, async (ids) => {
+      if (ids.includes('2')) return ['dev', 'qa'];
+      await initialInFlight;
+      return ['local', 'dev', 'qa'];
+    });
+
+    fixture.componentInstance.onProjectsChange([1, 2]);
+    releaseInitial();
+
+    await waitFor(() => expect(filters.setEnvironments).toHaveBeenCalledWith(['dev']));
+  });
+
+  it('prunes a selection change after the initial intersection request failed', async () => {
+    // A failed first load never reaches 'resolved', so the next selection change
+    // brings the first settled intersection — which must still prune.
+    const filters = fakeFilters([1], ['local', 'dev']);
+    const { fixture } = await renderShell(filters, (ids) =>
+      ids.includes('2') ? ['dev', 'qa'] : 'error',
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'dev' })).not.toBeInTheDocument(),
+    );
+    fixture.componentInstance.onProjectsChange([1, 2]);
 
     await waitFor(() => expect(filters.setEnvironments).toHaveBeenCalledWith(['dev']));
   });
 
   it('leaves the environment filter untouched when every active name survives', async () => {
     const filters = fakeFilters([1], ['dev']);
-    await renderShell(filters, (ids) =>
+    const { fixture } = await renderShell(filters, (ids) =>
       ids.includes('2') ? ['dev', 'qa'] : ['local', 'dev', 'qa'],
     );
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'dev' })).toBeInTheDocument());
-    (filters.project as WritableSignal<number[]>).set([1, 2]);
+    fixture.componentInstance.onProjectsChange([1, 2]);
 
     // 'dev' is still in {dev,qa}; give the refetch room to land, then assert no prune.
     await waitFor(() => expect(screen.getByRole('button', { name: 'qa' })).toBeInTheDocument());
@@ -151,10 +193,12 @@ describe('Shell environment pruning', () => {
     // as an intersection would wrongly clear a valid filter, so a failed refetch
     // must leave the environment filter alone (AC5: prune, never clear).
     const filters = fakeFilters([1], ['local', 'dev']);
-    await renderShell(filters, (ids) => (ids.includes('2') ? 'error' : ['local', 'dev', 'qa']));
+    const { fixture } = await renderShell(filters, (ids) =>
+      ids.includes('2') ? 'error' : ['local', 'dev', 'qa'],
+    );
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'dev' })).toBeInTheDocument());
-    (filters.project as WritableSignal<number[]>).set([1, 2]);
+    fixture.componentInstance.onProjectsChange([1, 2]);
 
     // The errored refetch clears the bar (empty default) but must not prune.
     await waitFor(() =>

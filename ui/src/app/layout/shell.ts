@@ -55,8 +55,11 @@ export class Shell {
 
   readonly environments = this.environmentsResource.value;
 
-  /** Whether the intersection has settled once, so the first load doesn't prune. */
-  private settled = false;
+  /**
+   * Whether the user has changed the in-scope Projects. Until then the active
+   * environment filter reflects the URL, not a selection, and must not prune.
+   */
+  private selectionChanged = false;
 
   /** Resolves a project id to its chip/option label (falls back while loading). */
   readonly projectLabel = (id: number): string => this.projectsStore.name(id);
@@ -80,17 +83,15 @@ export class Shell {
     // the names still present in the new intersection rather than clearing it,
     // preserving intent whenever it stays valid (ADR 0009). Only a *resolved*
     // intersection prunes — a loading/reloading value is stale and an errored one
-    // falls back to [], either of which would wrongly blank a valid filter. The
-    // first settle is skipped so a shared/reloaded URL's environment filter is
-    // preserved (it reflects the URL, not a selection change).
+    // falls back to [], either of which would wrongly blank a valid filter.
+    // Pruning is gated on a user selection change rather than on the first
+    // response, so a shared/reloaded URL's environment filter is preserved while
+    // a change made before (or instead of) that first response still prunes.
     effect(() => {
       if (this.environmentsResource.status() !== 'resolved') return;
       const intersection = this.environmentsResource.value();
       untracked(() => {
-        if (!this.settled) {
-          this.settled = true;
-          return;
-        }
+        if (!this.selectionChanged) return;
         const current = this.filters.environments();
         const pruned = current.filter((env) => intersection.includes(env));
         if (pruned.length !== current.length) this.filters.setEnvironments(pruned);
@@ -99,6 +100,7 @@ export class Shell {
   }
 
   onProjectsChange(ids: number[] | null | undefined): void {
+    this.selectionChanged = true;
     this.filters.setProjects(ids ?? []);
   }
 
