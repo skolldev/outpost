@@ -219,7 +219,7 @@ export class IssueDetailPage {
     const filters = event.trace_id
       ? { traceId: event.trace_id }
       : {
-          project: event.project_id,
+          project: [event.project_id],
           from: new Date(new Date(event.timestamp).getTime() - 60_000).toISOString(),
           to: new Date(new Date(event.timestamp).getTime() + 60_000).toISOString(),
         };

@@ -141,7 +141,7 @@ export interface LogPage {
 }
 
 export interface LogFilters {
-  project?: number;
+  project?: number[];
   environment?: string[];
   level?: string[];
   traceId?: string;
@@ -194,7 +194,7 @@ export interface DataRetentionSetting {
 }
 
 export interface IssueFilters {
-  project?: number;
+  project?: number[];
   environment?: string[];
   status?: string;
   query?: string;
@@ -228,7 +228,7 @@ export interface TracePage {
 }
 
 export interface TraceFilters {
-  project?: number;
+  project?: number[];
   environment?: string[];
   release?: string;
   query?: string;

@@ -11,9 +11,12 @@ export class GlobalFilters {
 
   private readonly queryParams = toSignal(this.route.queryParams, { initialValue: {} as Params });
 
-  readonly project = computed<number | undefined>(() => {
+  /** In-scope Project ids; empty = all Projects (the `project` param is omitted). */
+  readonly project = computed<number[]>(() => {
     const raw = this.queryParams()['project'];
-    return raw != null && raw !== '' ? Number(raw) : undefined;
+    if (raw == null || raw === '') return [];
+    const list = Array.isArray(raw) ? raw : [raw];
+    return list.map(Number).filter((id) => !Number.isNaN(id));
   });
 
   readonly environments = computed<string[]>(() => {
@@ -32,8 +35,10 @@ export class GlobalFilters {
     return h ? new Date(Date.now() - h * 3600_000).toISOString() : undefined;
   });
 
-  setProject(project: number | undefined): void {
-    this.merge({ project: project ?? null, environment: null }); // envs are per-project
+  setProjects(projects: number[]): void {
+    // Environment Names are cross-project (ADR 0009): the environment filter is
+    // pruned to the new intersection by the shell, not cleared here.
+    this.merge({ project: projects.length ? projects.map(String) : null });
   }
 
   setEnvironments(environments: string[]): void {

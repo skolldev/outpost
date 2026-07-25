@@ -44,7 +44,7 @@ function page(traces: TraceSummary[], next: string | null = null): TracePage {
 
 function fakeFilters(): GlobalFilters {
   return {
-    project: signal<number | undefined>(undefined),
+    project: signal<number[]>([]),
     environments: signal<string[]>([]),
     from: signal<string | undefined>(undefined),
   } as unknown as GlobalFilters;
