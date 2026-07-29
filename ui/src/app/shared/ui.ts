@@ -15,10 +15,10 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * Deterministic oklch color for a project, used to color-code trace spans by
- * project (§9.4). The hue is derived from the project id via the golden-angle
- * so adjacent ids stay visually distinct; lightness/chroma are fixed so the
- * palette reads as one system in both themes (cf. the `--level-*` tokens).
+ * Deterministic oklch color for a project. The hue comes from the project id via
+ * the golden angle so adjacent ids stay visually distinct; lightness and chroma
+ * are fixed so the palette reads as one system in both themes (like the
+ * `--level-*` tokens).
  */
 export function projectColor(projectId: number): string {
   const hue = (projectId * 137.508) % 360;

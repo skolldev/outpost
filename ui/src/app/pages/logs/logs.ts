@@ -38,7 +38,7 @@ import { LevelBadge } from '../../shared/level-badge';
 const BASE = API_BASE;
 const LIVE_BUFFER = 500;
 
-/** Logs page (§9 page 3): Kibana-lite filterable stream with SSE live tail. */
+/** Logs page: Kibana-lite filterable stream with SSE live tail. */
 @Component({
   selector: 'app-logs',
   imports: [
@@ -125,7 +125,7 @@ export class LogsPage {
       untracked(() => this.logs.set(this.cursor() ? [...this.logs(), ...page.logs] : page.logs));
     });
 
-    // SSE live tail (§9.3): while live, prepend new records, filters and all.
+    // SSE live tail: while live, prepend new records, filters and all.
     effect((onCleanup) => {
       if (!this.live()) return;
       this.filterKey(); // reconnect when filters change

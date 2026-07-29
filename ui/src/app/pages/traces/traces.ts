@@ -37,7 +37,7 @@ import { formatDuration, projectColor } from '../../shared/ui';
 
 const BASE = API_BASE;
 
-/** Traces page (§9 page 4): searchable list of distributed traces. */
+/** Traces page: searchable list of distributed traces. */
 @Component({
   selector: 'app-traces',
   imports: [

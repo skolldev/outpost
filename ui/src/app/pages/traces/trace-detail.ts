@@ -53,11 +53,10 @@ interface LogMarker {
 }
 
 /**
- * Trace waterfall (§9.4): nested spans across both services color-coded by
- * project, ordered by start_ts and nested by parent_span_id, with error events
- * pinned on their spans, a collapsible log lane, and a span detail side panel.
- * This is the G3 payoff — browser pageload → fetch span → backend txn → JDBC
- * spans in one view.
+ * Trace waterfall: spans color-coded by project, ordered by start_ts and nested
+ * by parent_span_id, with error events pinned on their spans, a collapsible log
+ * lane, and a span detail side panel — browser pageload → fetch span → backend
+ * txn → JDBC spans in one view.
  */
 @Component({
   selector: 'app-trace-detail',

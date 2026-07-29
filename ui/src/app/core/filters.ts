@@ -3,7 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Params, Router } from '@angular/router';
 import { computed } from '@angular/core';
 
-/** Global filter context (§9: project + environments + time range), URL-addressable. */
+/** Global filter context (project + environments + time range), URL-addressable. */
 @Injectable({ providedIn: 'root' })
 export class GlobalFilters {
   private readonly router = inject(Router);

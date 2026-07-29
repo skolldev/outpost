@@ -9,12 +9,12 @@ import { Release, ReleaseArtifact } from '../../core/models';
 import { timeAgo } from '../../shared/ui';
 
 /**
- * Releases (§9 page 5): versions per project with received artifact bundles —
- * primarily a "why isn't my stack trace symbolicated" debugging aid.
+ * Releases: versions per project with received artifact bundles — primarily a
+ * "why isn't my stack trace symbolicated" debugging aid.
  *
  * A Release and its Artifact Bundles belong to exactly one Project+version, so
  * the page owns a page-local single-Project selector rather than reading the
- * global header filter (#81) — this stays correct once the global filter goes
+ * global header filter (#81) — which stays correct now that the global filter is
  * multi-select (#76).
  */
 @Component({

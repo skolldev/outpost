@@ -37,7 +37,7 @@ import { timeAgo } from '../../shared/ui';
 
 const BASE = API_BASE;
 
-/** Issues list (§9 page 1): the home page. */
+/** Issues list: the home page. */
 @Component({
   selector: 'app-issues',
   imports: [
