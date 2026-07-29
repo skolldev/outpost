@@ -3,6 +3,7 @@ package dev.outpost.pipeline;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
+import dev.outpost.ingest.IngestMetrics;
 import java.sql.Timestamp;
 import java.util.List;
 import org.slf4j.Logger;
@@ -34,14 +35,16 @@ public class LogStore {
 	private final PartitionManager partitions;
 	private final LogTail tail;
 	private final ObjectMapper mapper;
+	private final IngestMetrics metrics;
 
 	public LogStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			LogTail tail, ObjectMapper mapper) {
+			LogTail tail, ObjectMapper mapper, IngestMetrics metrics) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.tail = tail;
 		this.mapper = mapper;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -63,6 +66,7 @@ public class LogStore {
 		}
 		catch (RuntimeException e) {
 			if (batch.size() == 1) {
+				metrics.dropped(IngestMetrics.DropStage.STORE);
 				log.warn("dropping unstorable log record {}: {}", batch.get(0).id(), e.toString());
 				return;
 			}

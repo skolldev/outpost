@@ -24,10 +24,18 @@ outpost:
     password: ${OUTPOST_ADMIN_PASSWORD:}
 
 management:
+  server:
+    # Actuator moves off the public port: SecurityConfig ends in permitAll, so
+    # /actuator/** on 8080 would be world-readable. docker-compose does not
+    # publish this port. The liveness/readiness groups below pin themselves back
+    # to the main port via `additional-path: server:`, so probes are unaffected.
+    # 9090 rather than the conventional 8081, which docker-compose already binds
+    # to demo-backend — bootRun with the demo profile up would fail to start.
+    port: ${OUTPOST_MANAGEMENT_PORT:9090}
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,metrics,prometheus
   endpoint:
     health:
       probes:

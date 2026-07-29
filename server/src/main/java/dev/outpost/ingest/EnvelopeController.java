@@ -41,14 +41,16 @@ public class EnvelopeController {
 	private final IngestQueue queue;
 	private final ClientReportCounters clientReports;
 	private final ObjectMapper mapper;
+	private final IngestMetrics metrics;
 
 	public EnvelopeController(EnvelopeParser parser, IngestAuthenticator authenticator, IngestQueue queue,
-			ClientReportCounters clientReports, ObjectMapper mapper) {
+			ClientReportCounters clientReports, ObjectMapper mapper, IngestMetrics metrics) {
 		this.parser = parser;
 		this.authenticator = authenticator;
 		this.queue = queue;
 		this.clientReports = clientReports;
 		this.mapper = mapper;
+		this.metrics = metrics;
 	}
 
 	@PostMapping(path = "/envelope/", consumes = { "application/x-sentry-envelope", "text/plain", "*/*" })
@@ -60,6 +62,7 @@ public class EnvelopeController {
 
 		String key = authenticator.extractKey(request.getHeader("X-Sentry-Auth"), sentryKeyParam, envelope.header());
 		if (!authenticator.isValidKey(projectId, key)) {
+			metrics.envelope(IngestMetrics.Outcome.FORBIDDEN);
 			return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("detail", "invalid or inactive DSN key"));
 		}
 
@@ -117,14 +120,19 @@ public class EnvelopeController {
 			queued.add(new IngestItem.TransactionEvent(projectId, receivedAt, transaction));
 		}
 		for (IngestItem item : queued) {
+			IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
 			if (!queue.offer(item)) {
+				metrics.itemRejected(signal);
+				metrics.envelope(IngestMetrics.Outcome.REJECTED);
 				return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
 					.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS))
 					.header("X-Sentry-Rate-Limits", RETRY_AFTER_SECONDS + ":all:organization")
 					.body(Map.of("detail", "ingest buffer full"));
 			}
+			metrics.itemQueued(signal);
 		}
 
+		metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
 		return ResponseEntity.ok(Map.of("id", eventId(envelope, events)));
 	}
 
@@ -175,11 +183,13 @@ public class EnvelopeController {
 
 	@ExceptionHandler(EnvelopeParser.MalformedEnvelopeException.class)
 	public ResponseEntity<Map<String, String>> malformed(EnvelopeParser.MalformedEnvelopeException e) {
+		metrics.envelope(IngestMetrics.Outcome.MALFORMED);
 		return ResponseEntity.badRequest().body(Map.of("detail", e.getMessage()));
 	}
 
 	@ExceptionHandler(EnvelopeParser.OversizeException.class)
 	public ResponseEntity<Map<String, String>> oversize(EnvelopeParser.OversizeException e) {
+		metrics.envelope(IngestMetrics.Outcome.OVERSIZE);
 		return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of("detail", e.getMessage()));
 	}
 }

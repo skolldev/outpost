@@ -3,6 +3,7 @@ package dev.outpost.pipeline;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
+import dev.outpost.ingest.IngestMetrics;
 import dev.outpost.notifications.NotificationOccurrence;
 import dev.outpost.notifications.NotificationPublisher;
 import java.sql.Timestamp;
@@ -66,15 +67,18 @@ public class EventStore {
 	private final ObjectMapper mapper;
 	private final EventIssueLock eventIssueLock;
 	private final NotificationPublisher notifications;
+	private final IngestMetrics metrics;
 
 	public EventStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			ObjectMapper mapper, EventIssueLock eventIssueLock, NotificationPublisher notifications) {
+			ObjectMapper mapper, EventIssueLock eventIssueLock, NotificationPublisher notifications,
+			IngestMetrics metrics) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
 		this.eventIssueLock = eventIssueLock;
 		this.notifications = notifications;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -103,6 +107,7 @@ public class EventStore {
 		}
 		catch (RuntimeException e) {
 			if (batch.size() == 1) {
+				metrics.dropped(IngestMetrics.DropStage.STORE);
 				log.warn("dropping unstorable event {}: {}", batch.get(0).id(), e.toString());
 				return;
 			}

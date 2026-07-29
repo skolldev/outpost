@@ -18,8 +18,17 @@ public class IngestQueue {
 
 	private final BlockingQueue<IngestItem> queue;
 
-	public IngestQueue(@Value("${outpost.ingest.queue-capacity:10000}") int capacity) {
+	private final int capacity;
+
+	public IngestQueue(@Value("${outpost.ingest.queue-capacity:10000}") int capacity, IngestMetrics metrics) {
 		this.queue = new ArrayBlockingQueue<>(capacity);
+		this.capacity = capacity;
+		// Depth against capacity is the leading indicator of a 429: by the time
+		// the endpoint starts rejecting, depth has been pinned at capacity for a
+		// while. Gauged rather than counted so a scrape sees the current buffer.
+		metrics.gauge("outpost.ingest.queue.depth", "Items currently buffered", this, IngestQueue::size);
+		metrics.gauge("outpost.ingest.queue.capacity", "Maximum items the buffer holds", this,
+				IngestQueue::capacity);
 	}
 
 	/** Non-blocking; false when the buffer is full (backpressure path). */
@@ -44,5 +53,9 @@ public class IngestQueue {
 
 	public int size() {
 		return queue.size();
+	}
+
+	public int capacity() {
+		return capacity;
 	}
 }
