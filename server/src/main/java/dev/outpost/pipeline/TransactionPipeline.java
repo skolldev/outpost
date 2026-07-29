@@ -92,10 +92,9 @@ public class TransactionPipeline {
 			"description", "status", "timestamp", "start_timestamp");
 
 	/**
-	 * The child spans are stored as their own rows, so re-embedding the whole
-	 * {@code spans[]} array in the transaction payload doubles storage (and, on a
-	 * browser pageload, is the bulk of a 200 KB transaction). Drop it; keep the
-	 * rest of the payload (contexts, measurements, request, user…).
+	 * Child spans are stored as their own rows, so re-embedding {@code spans[]} here
+	 * doubles storage — on a browser pageload it is the bulk of a 200 KB
+	 * transaction. The rest of the payload (contexts, measurements, request…) stays.
 	 */
 	private JsonNode trimTxn(JsonNode payload) {
 		if (!payload.isObject()) {
@@ -107,9 +106,8 @@ public class TransactionPipeline {
 	}
 
 	/**
-	 * Everything in {@link #SPAN_PROMOTED} already lives in a column, so strip it
-	 * from the stored span payload. What's left is the useful part: the OTel
-	 * attribute bag under {@code data} plus {@code origin}.
+	 * Strips {@link #SPAN_PROMOTED}, leaving the part that has no column of its own:
+	 * the OTel attribute bag under {@code data}, plus {@code origin}.
 	 */
 	private JsonNode trimSpan(JsonNode span) {
 		if (!span.isObject()) {

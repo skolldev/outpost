@@ -40,9 +40,8 @@ public class UptimeScheduler implements SmartLifecycle {
 	private final UptimeCheckService checkService;
 	private final long tickMillis;
 
-	// Recreated on each start() so the bean survives a SmartLifecycle
-	// stop()/start() cycle (e.g. Spring's test-context pause/restart): stop()
-	// shuts these down for good, so a restart needs fresh executors.
+	// Recreated on each start(): stop() shuts these down for good, so surviving a
+	// SmartLifecycle stop()/start() cycle needs fresh executors.
 	private ScheduledExecutorService coordinator;
 	private ExecutorService probes;
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
@@ -62,9 +61,8 @@ public class UptimeScheduler implements SmartLifecycle {
 			return;
 		}
 		running = true;
-		// Reset coordination state alongside the executors: stop() can drop a
-		// queued probe before check()'s finally clears its id, so on a restart
-		// inFlight may hold stale ids that would make tick() skip those monitors
+		// stop() can drop a queued probe before check()'s finally clears its id, so
+		// a restart may inherit stale ids that would make tick() skip those monitors
 		// forever. A fresh start owns no in-flight probes.
 		inFlight.clear();
 		coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -109,9 +107,9 @@ public class UptimeScheduler implements SmartLifecycle {
 				// One in-flight probe per monitor; parallel across monitors.
 				if (inFlight.add(monitor.id())) {
 					try {
-						// Claim before making the outbound request. recordResult normally
-						// moves this to one interval after completion; this provisional
-						// schedule is retained if recording the result rolls back.
+						// Claim before the outbound request: recordResult normally re-arms
+						// from completion, but this provisional schedule is what survives if
+						// recording the result rolls back.
 						int claimed = jdbc.sql("""
 								UPDATE uptime_monitor
 								SET next_check_at = now() + make_interval(secs => ?)

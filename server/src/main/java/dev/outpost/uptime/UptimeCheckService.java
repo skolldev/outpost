@@ -12,20 +12,16 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Records a completed probe and drives incident transitions: the 3rd
- * consecutive failure opens an incident (idempotent via the partial unique
- * index on open incidents), the first success closes it. Per-monitor
- * serialization is guaranteed by {@link UptimeScheduler}'s in-flight set, so
- * the counter arithmetic here never races with itself.
+ * Records a completed probe and drives incident transitions: the 3rd consecutive
+ * failure opens an incident (idempotent via the partial unique index on open
+ * incidents), the first success closes it. The counter arithmetic never races
+ * with itself because {@link UptimeScheduler}'s in-flight set already serializes
+ * per monitor.
  *
- * <p>Incident transitions cross the notifications publisher seam (#45): an
- * {@code incident_started} occurrence is published exactly when the incident
- * row is actually inserted (not on the 4th+ failure, which only refreshes
- * {@code last_error}, and not when an edit re-arms the counter), and an
- * {@code incident_resolved} occurrence exactly when a success actually closes an
- * open incident. Publishing happens after the transaction commits, so a
- * rolled-back transition never notifies; the seam is fire-and-forget (ADR 0005),
- * so a notification hiccup can never fail a recorded check.
+ * <p>Transitions cross the notifications publisher seam (#45), and publishing
+ * happens only after the transaction commits so a rolled-back transition never
+ * notifies. The seam is fire-and-forget (ADR 0005), so a notification hiccup can
+ * never fail a recorded check.
  */
 @Service
 public class UptimeCheckService {
@@ -78,8 +74,8 @@ public class UptimeCheckService {
 		});
 		NotificationOccurrence pending = occurrence.get();
 		if (pending != null) {
-			// Seam is fire-and-forget and never throws (ADR 0005), but guard anyway
-			// so a notification hiccup can't fail an already-recorded check.
+			// The seam never throws, but guard anyway so a notification hiccup can't
+			// fail an already-recorded check.
 			try {
 				notifications.publish(pending);
 			}
@@ -91,10 +87,9 @@ public class UptimeCheckService {
 
 	/**
 	 * Opens (or, on the 4th+ failure, refreshes) the monitor's incident. Returns an
-	 * {@code incident_started} occurrence only when the row was actually inserted —
-	 * {@code xmax = 0} is true exactly for the tuple this statement inserted, false
-	 * for the {@code DO UPDATE} path — so notifications fire once per incident, not
-	 * per failed check.
+	 * occurrence only when the row was actually inserted, so notifications fire once
+	 * per incident rather than per failed check: {@code xmax = 0} is true exactly
+	 * for the tuple this statement inserted, false for the {@code DO UPDATE} path.
 	 */
 	private NotificationOccurrence openIncident(long monitorId, String failureReason) {
 		Incident incident = jdbc.sql("""
@@ -119,10 +114,9 @@ public class UptimeCheckService {
 	}
 
 	/**
-	 * Closes the monitor's open incident, if any. The {@code RETURNING} yields a row
-	 * only when this UPDATE actually transitioned an open incident to closed, so an
-	 * {@code incident_resolved} occurrence is produced once per recovery — never on
-	 * a success while the monitor was already healthy.
+	 * Closes the monitor's open incident, if any. {@code RETURNING} yields a row only
+	 * when this UPDATE actually transitioned an open incident, so an occurrence is
+	 * produced once per recovery — never on a success while already healthy.
 	 */
 	private NotificationOccurrence closeIncident(long monitorId) {
 		Incident incident = jdbc.sql("""
@@ -147,7 +141,7 @@ public class UptimeCheckService {
 				monitor.environment(), incident.openedAt(), incident.closedAt(), downtime);
 	}
 
-	/** The monitor fields the incident payload needs, or null if it is gone. */
+	/** Null if the monitor is gone. */
 	private Monitor loadMonitor(long monitorId) {
 		return jdbc.sql("SELECT project_id, url, environment FROM uptime_monitor WHERE id = ?")
 			.param(monitorId)

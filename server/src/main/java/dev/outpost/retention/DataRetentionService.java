@@ -109,13 +109,10 @@ public class DataRetentionService {
 			}
 		}
 
-		// With no deferrals, every event below the cutoff was deleted and its issue
-		// aggregates rebuilt, so fully-expired event weeks are empty and can be
-		// dropped. A deferred project may still own rows in them; leave the
-		// partitions for the next run in that case. The drop is only-if-empty:
-		// ingestion can commit a stale-timestamped event into an expired week
-		// after the per-project pass, and dropping it here would bypass the event
-		// lock and strand its just-incremented issue aggregates.
+		// Only safe with no deferrals: a deferred project may still own rows in those
+		// weeks. Still only-if-empty, because ingestion can commit a stale-timestamped
+		// event into an expired week after the per-project pass, and dropping that
+		// would bypass the event lock and strand its just-incremented aggregates.
 		int droppedEventPartitions = deferredProjects == 0
 				? runStep("event partition drop", 0,
 						() -> partitions.dropExpiredPartitions(PartitionManager.EVENT, cutoff, chunkTimeoutSeconds, true))
@@ -203,12 +200,11 @@ public class DataRetentionService {
 	}
 
 	/**
-	 * Retires expired telemetry. The partitioned tables (log_record, txn, span)
-	 * shed whole expired weeks by dropping partitions — reclaiming disk instantly
-	 * instead of row-deleting — and row-delete only the single boundary partition
-	 * straddling the cutoff, so the effective cutoff stays exact. Each step runs
-	 * in its own timed transaction, so none pins the vacuum horizon and a timeout
-	 * defers that step to the next run rather than failing the whole cleanup.
+	 * Retires expired telemetry. Partitioned tables shed whole expired weeks by
+	 * dropping partitions and row-delete only the boundary partition straddling the
+	 * cutoff, so the effective cutoff stays exact without row-deleting everything.
+	 * Each step runs in its own timed transaction, so none pins the vacuum horizon
+	 * and a timeout defers that step rather than failing the whole cleanup.
 	 */
 	private TelemetryCleanup cleanupTelemetry(Instant cutoff, Timestamp timestamp) {
 		int droppedPartitions = dropExpiredPartitions(PartitionManager.LOG_RECORD, cutoff)
@@ -228,10 +224,9 @@ public class DataRetentionService {
 	}
 
 	/**
-	 * Prunes uptime checks and closed incidents older than {@code cutoff}. Also
-	 * runs standalone when retention is disabled: uptime history has always been
-	 * capped (formerly by an hourly sweep in {@code UptimeScheduler}), so it is
-	 * not subject to the opt-in policy.
+	 * Prunes uptime checks and closed incidents. Also runs standalone when retention
+	 * is disabled — uptime history is capped unconditionally, not subject to the
+	 * opt-in policy.
 	 */
 	public UptimeCleanup cleanupUptime(Instant cutoff) {
 		Timestamp timestamp = Timestamp.from(cutoff);
@@ -243,12 +238,10 @@ public class DataRetentionService {
 	}
 
 	/**
-	 * Prunes notification history rows older than {@code cutoff} (#47). Runs on
-	 * every daily sweep regardless of the Data Retention Policy — that policy is
-	 * telemetry-only, whereas notification history is capped unconditionally at a
-	 * fixed ~30-day window so it never grows unbounded (mirrors how uptime history
-	 * is always capped). A plain single-transaction delete: the table is low
-	 * volume, and channel deletion already cascades its rows away.
+	 * Prunes notification history rows (#47). Runs on every daily sweep regardless of
+	 * the Data Retention Policy, which is telemetry-only — notification history is
+	 * capped unconditionally so it never grows unbounded. A plain single-transaction
+	 * delete suffices: the table is low volume and channel deletion already cascades.
 	 */
 	public int cleanupNotificationHistory(Instant cutoff) {
 		return runStep("notification_history delete", 0,
@@ -265,14 +258,13 @@ public class DataRetentionService {
 	}
 
 	/**
-	 * Prunes the boundary partition's expired txns and spans. A span can outlive
-	 * its transaction across the cutoff — whether the txn was removed by the
-	 * boundary delete below or vanished with a dropped partition — so retained
-	 * spans in the boundary week whose txn no longer exists are deleted via the
-	 * txn index. Scoping to the boundary week keeps this a single-partition
-	 * indexed anti-join rather than the whole-table scan the old {@code NOT
-	 * EXISTS} predicate forced: a span starts within its transaction's window, so
-	 * an orphan is at most one week boundary away from its now-gone txn.
+	 * Prunes the boundary partition's expired txns and spans. A span can outlive its
+	 * transaction across the cutoff — the txn either went in the boundary delete or
+	 * vanished with a dropped partition — so orphaned spans are cleaned via the txn
+	 * index. Scoping to the boundary week keeps this a single-partition indexed
+	 * anti-join instead of the whole-table scan an unscoped {@code NOT EXISTS}
+	 * forces; that is sound because a span starts within its transaction's window, so
+	 * an orphan is at most one week boundary from its now-gone txn.
 	 */
 	private TxnSpanCleanup cleanupBoundaryTxnAndSpans(Timestamp cutoff, Timestamp boundaryWeekEnd) {
 		int transactions = jdbc.sql("DELETE FROM txn WHERE start_ts < ?").param(cutoff).update();
@@ -285,7 +277,7 @@ public class DataRetentionService {
 		return new TxnSpanCleanup(transactions, expiredSpans + orphanSpans);
 	}
 
-	/** First instant of the week after the one holding {@code cutoff}, on the same Monday-UTC boundaries as PartitionManager. */
+	/** Must use the same Monday-UTC boundaries as {@link PartitionManager}. */
 	private static Timestamp weekAfter(Instant cutoff) {
 		LocalDate weekStart = cutoff.atZone(ZoneOffset.UTC).toLocalDate().with(DayOfWeek.MONDAY);
 		return Timestamp.from(weekStart.plusWeeks(1).atStartOfDay(ZoneOffset.UTC).toInstant());

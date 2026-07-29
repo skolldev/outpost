@@ -12,11 +12,9 @@ import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /**
- * Ingest-time JS symbolication, synchronous within the worker.
- * Mutates the event's exception stacktraces in place: original frames are
- * preserved as {@code raw_stacktrace} (like Sentry), mapped frames get
- * original file/line/column, source context from {@code sourcesContent},
- * and the in_app heuristic. Lookup misses are recorded under
+ * Ingest-time JS symbolication, synchronous within the worker. Mutates the
+ * event's exception stacktraces in place, preserving the originals as
+ * {@code raw_stacktrace} the way Sentry does. Lookup misses are recorded under
  * {@code _outpost_symbolication.missing} for the UI warning banner.
  */
 @Component
