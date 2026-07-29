@@ -9,7 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * The entire "message queue" (§6.1): a bounded in-memory buffer between the
+ * The entire "message queue": a bounded in-memory buffer between the
  * envelope endpoint and the batch-insert workers. Full queue → caller responds
  * 429 and the SDKs back off.
  */

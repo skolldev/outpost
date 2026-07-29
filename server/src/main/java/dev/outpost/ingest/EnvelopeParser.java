@@ -9,7 +9,7 @@ import java.util.List;
 import org.springframework.stereotype.Component;
 
 /**
- * Parses the newline-delimited Sentry envelope format (§4.2): one JSON envelope
+ * Parses the newline-delimited Sentry envelope format: one JSON envelope
  * header line, then per item one JSON item-header line followed by the payload —
  * either exactly {@code length} bytes, or up to the next newline when no length
  * is given.
@@ -56,7 +56,7 @@ public class EnvelopeParser {
 					throw new MalformedEnvelopeException("item length out of bounds");
 				}
 				if (len > MAX_ITEM_BYTES) {
-					// Oversize attachments are dropped per §4.2; anything else is a client error.
+					// Oversize attachments are dropped; anything else is a client error.
 					if (!"attachment".equals(itemHeader.path("type").asText())) {
 						throw new OversizeException("item exceeds " + MAX_ITEM_BYTES + " bytes");
 					}

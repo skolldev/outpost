@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Turns a {@code transaction} envelope item (§6.4) into one
+ * Turns a {@code transaction} envelope item into one
  * {@link ProcessedTransaction} (the root span + transaction metadata) plus one
  * {@link ProcessedSpan} per entry in {@code spans[]}. Trace identity is read
  * from {@code contexts.trace}; the transaction name from the top-level

@@ -18,7 +18,7 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 /**
- * The ingest worker pool (§6.1): drains the queue in batches (≤ 500 items or
+ * The ingest worker pool: drains the queue in batches (≤ 500 items or
  * 1 s linger), runs the per-signal pipeline, and hands batches to the stores.
  * A failing item is logged and dropped — ingest must never wedge on bad input.
  */

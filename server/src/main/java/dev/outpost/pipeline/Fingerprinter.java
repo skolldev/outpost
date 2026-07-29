@@ -9,7 +9,7 @@ import java.util.HexFormat;
 import java.util.List;
 
 /**
- * Computes the grouping fingerprint of an error event (§6.2), in priority order:
+ * Computes the grouping fingerprint of an error event, in priority order:
  * SDK-provided {@code fingerprint} array (with {@code {{ default }}}
  * substitution), exception-based (in-app frames + type, message excluded),
  * message fallback with variable data replaced by placeholders.

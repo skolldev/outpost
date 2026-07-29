@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.LongAdder;
 import org.springframework.stereotype.Component;
 
 /**
- * In-memory counters for SDK client reports (§4.2): what the SDKs dropped
+ * In-memory counters for SDK client reports: what the SDKs dropped
  * client-side, keyed by {@code reason:category}. Persistence and the stats UI
  * arrive in Phase 5.
  */

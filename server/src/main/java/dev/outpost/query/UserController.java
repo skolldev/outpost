@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** User administration (§8): list + create, admin-only. */
+/** User administration: list + create, admin-only. */
 @RestController
 @RequestMapping("/api/internal/users")
 @PreAuthorize("hasRole('ADMIN')")

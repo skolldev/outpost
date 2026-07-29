@@ -8,7 +8,7 @@ import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-/** Local accounts (§10): argon2id-hashed passwords, roles admin | member. */
+/** Local accounts: argon2id-hashed passwords, roles admin | member. */
 @Service
 public class UserService {
 

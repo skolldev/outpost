@@ -12,7 +12,7 @@ import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /**
- * Ingest-time JS symbolication (§6.2), synchronous within the worker.
+ * Ingest-time JS symbolication, synchronous within the worker.
  * Mutates the event's exception stacktraces in place: original frames are
  * preserved as {@code raw_stacktrace} (like Sentry), mapped frames get
  * original file/line/column, source context from {@code sourcesContent},
@@ -165,7 +165,7 @@ public class Symbolicator {
 		}
 	}
 
-	/** code_file → debug_id from debug_meta.images[] of type sourcemap (§6.2). */
+	/** code_file → debug_id from debug_meta.images[] of type sourcemap. */
 	private Map<String, String> debugImages(JsonNode event) {
 		Map<String, String> byFile = new HashMap<>();
 		for (JsonNode image : event.path("debug_meta").path("images")) {
@@ -193,7 +193,7 @@ public class Symbolicator {
 	}
 
 	/**
-	 * §6.2 heuristic: node_modules is never in-app; application sources are
+	 * Heuristic: node_modules is never in-app; application sources are
 	 * {@code src/…} — plain for Angular's esbuild output, {@code webpack://…}
 	 * prefixes already stripped by {@link #normalizeSourcePath}.
 	 */

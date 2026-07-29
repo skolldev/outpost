@@ -8,7 +8,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 /**
- * First-run bootstrap (§10): seeds the initial admin from
+ * First-run bootstrap: seeds the initial admin from
  * {@code OUTPOST_ADMIN_EMAIL}/{@code OUTPOST_ADMIN_PASSWORD} when no users
  * exist yet. Never touches an already-populated user table.
  */

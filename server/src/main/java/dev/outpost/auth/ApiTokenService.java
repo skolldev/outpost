@@ -12,7 +12,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * Opaque bearer tokens for sentry-cli / CI (§10): shown once at creation,
+ * Opaque bearer tokens for sentry-cli / CI: shown once at creation,
  * SHA-256-hashed at rest (the tokens are 192-bit random, so a fast hash is
  * fine — unlike passwords), scoped (v1: {@code artifacts:write}).
  */

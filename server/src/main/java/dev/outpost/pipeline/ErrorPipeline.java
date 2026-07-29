@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Turns a raw event item into a {@link ProcessedEvent}: symbolicates JS
- * stacktraces (§6.2), extracts the indexed columns, computes the grouping
+ * stacktraces, extracts the indexed columns, computes the grouping
  * fingerprint and issue title, clamps wildly skewed timestamps, and keeps the
  * gzipped original for later re-processing.
  */

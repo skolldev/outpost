@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Notification Channel management (§ issue #42, parent #41): admin-configured
+ * Notification Channel management (#42, parent #41): admin-configured
  * webhook destinations. This slice is configuration only — no delivery yet.
  * <p>
  * The whole surface is Admin-only, unlike uptime reads: a channel's URL is a

@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 /**
- * Background re-symbolication (§6.2): after a bundle is assembled, events of
+ * Background re-symbolication: after a bundle is assembled, events of
  * the matching release still flagged missing/partial are re-run from their
  * raw payload and updated in place. Grouping is intentionally not revisited —
  * the event keeps its issue; only the stored frames and status change.

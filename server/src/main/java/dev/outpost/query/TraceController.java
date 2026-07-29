@@ -16,11 +16,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Trace query API (§8). {@code GET /traces} searches root transactions with the
+ * Trace query API. {@code GET /traces} searches root transactions with the
  * common filter layer plus duration range and "has errors"; {@code GET
  * /traces/{trace_id}} fans out across txn / span / event / log_record by
  * {@code trace_id} — a cross-project join done at query time, since nothing is
- * linked at ingest (§6.4). The detail payload is waterfall-ready: the UI nests
+ * linked at ingest. The detail payload is waterfall-ready: the UI nests
  * spans by {@code parent_span_id} and orders by {@code start_ts}.
  */
 @RestController
@@ -41,7 +41,7 @@ public class TraceController {
 		this.mapper = mapper;
 	}
 
-	/** Trace search over root transactions (§9.4 list). */
+	/** Trace search over root transactions. */
 	@GetMapping("/traces")
 	public Map<String, Object> traces(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
@@ -87,7 +87,7 @@ public class TraceController {
 	}
 
 	/**
-	 * Builds the trace-search SQL (§9.4 list) and its bind parameters. Extracted
+	 * Builds the trace-search SQL and its bind parameters. Extracted
 	 * so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact query
 	 * the controller runs — a regression guard that copied the SQL would keep
 	 * passing if the real query regressed.
@@ -163,7 +163,7 @@ public class TraceController {
 
 	/**
 	 * Everything sharing a trace_id across all projects, in one payload:
-	 * transactions + spans (waterfall-ready), error events, log records (§8).
+	 * transactions + spans (waterfall-ready), error events, log records.
 	 * Fan-out by trace_id — cheaper and simpler than one mega-join, and each
 	 * table already has a trace_id index.
 	 */

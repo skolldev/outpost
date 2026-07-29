@@ -5,8 +5,7 @@ Validation**; SQL is written inline with `JdbcClient`.
 
 ## Code style
 
-- Tabs for indentation. Records over classes. Javadoc references the design
-  spec by section (`§9.3`) where applicable.
+- Tabs for indentation. Records over classes.
 - DTOs are `record`s declared inside the controller that uses them.
 
 ## Database

@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The Sentry-compatible telemetry ingest endpoint (§4.2). Parses + buffers,
+ * The Sentry-compatible telemetry ingest endpoint. Parses + buffers,
  * responds immediately; processing is async in the ingest workers. Unknown item
  * types are skipped silently — that is the compatibility contract that keeps
  * newer SDKs from breaking ingest.

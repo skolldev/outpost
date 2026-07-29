@@ -19,7 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
 
 /**
- * sentry-cli chunk upload (§4.4): capability discovery + chunk staging.
+ * sentry-cli chunk upload: capability discovery + chunk staging.
  * {@code {org}} is accepted but ignored (single tenant). The CLI hashes each
  * chunk with SHA-1 (part filename), optionally gzips the part body (part name
  * {@code file_gzip} instead of {@code file}), and re-uploads anything the

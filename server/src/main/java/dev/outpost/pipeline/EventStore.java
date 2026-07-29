@@ -19,7 +19,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Persists processed error events (§6.2): environment/release auto-upsert,
+ * Persists processed error events: environment/release auto-upsert,
  * issue upsert with regression handling, per-environment stats, then a JDBC
  * batch insert of the event rows.
  *
