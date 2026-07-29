@@ -28,7 +28,6 @@ final class FrameNormalizer {
 		return m;
 	}
 
-	/** Normalizes a function name for fingerprinting. */
 	static String normalizeFunction(String function) {
 		if (function == null) {
 			return "";

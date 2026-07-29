@@ -13,9 +13,6 @@ import tools.jackson.databind.node.ObjectNode;
  * "application/vnd.microsoft.card.adaptive","content":<card>}]}}). Posting a bare
  * card, or the legacy MessageCard {@code {"text":...}}, gets a 400 from a
  * Workflows webhook.
- *
- * <p>Card layout is presentation, not a versioned contract like the Generic JSON
- * payload — this shape may change freely without a version bump.
  */
 @Component
 public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
@@ -149,7 +146,6 @@ public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
 		return actions;
 	}
 
-	/** Wraps the card in the Teams Workflows message/attachments envelope. */
 	private ObjectNode envelope(ObjectNode card) {
 		ObjectNode root = mapper.createObjectNode();
 		root.put("type", "message");

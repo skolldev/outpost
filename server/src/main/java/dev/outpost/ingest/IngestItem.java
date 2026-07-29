@@ -29,8 +29,7 @@ public sealed interface IngestItem {
 
 	/**
 	 * A {@code transaction} envelope item: the trace's root span plus a
-	 * {@code spans[]} array of children. Stored as one txn row + one span row per
-	 * entry — no grouping, no ingest-time trace linking.
+	 * {@code spans[]} array of children.
 	 */
 	record TransactionEvent(long projectId, Instant receivedAt, JsonNode payload) implements IngestItem {
 	}
