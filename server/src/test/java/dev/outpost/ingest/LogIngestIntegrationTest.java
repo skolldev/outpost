@@ -32,10 +32,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Phase 3 exit check (§12 P3): log envelope items from both SDK shapes go
- * through ingest → pipeline → storage and come back out of {@code GET /logs}
- * filterable; event↔log correlation works with and without a trace_id; the
- * SSE live tail streams newly stored records.
+ * Log envelope items from both SDK shapes go through ingest → pipeline → storage
+ * and come back out of {@code GET /logs} filterable; event↔log correlation works
+ * with and without a trace_id; the SSE live tail streams newly stored records.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",

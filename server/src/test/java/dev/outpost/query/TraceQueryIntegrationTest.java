@@ -23,15 +23,15 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Phase 4 exit check (§12 P4, G3): a trace started in the browser
- * (pageload transaction + fetch span) continues into Spring Boot (request
- * transaction whose parent_span_id is the browser fetch span) with an error and
- * a log on the same trace_id. {@code GET /traces/{id}} returns all four signals
- * in one cross-project payload; {@code GET /traces} search honors the common
- * filters, duration range, "has errors", and keyset cursor.
+ * A trace started in the browser (pageload transaction + fetch span) continues
+ * into Spring Boot (request transaction whose parent_span_id is the browser fetch
+ * span) with an error and a log on the same trace_id. {@code GET /traces/{id}}
+ * returns all four signals in one cross-project payload; {@code GET /traces}
+ * search honors the common filters, duration range, "has errors", and keyset
+ * cursor.
  *
- * <p>Interim, like P1–P3: SDK-<b>shaped</b> transaction envelopes, both
- * families; swap for real demo apps once they exist.
+ * <p>Interim: SDK-<b>shaped</b> transaction envelopes, not real ones. Swap for
+ * real demo apps once they exist.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",

@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance regression guard for trace search (§9.4). The original query
+ * Performance regression guard for trace search. The original query
  * computed {@code span_count} / {@code error_count} as correlated subqueries
  * inside the {@code DISTINCT ON} scan, so both ran once per candidate
  * transaction (thousands) and were then discarded by dedup + LIMIT — ~2.4s and

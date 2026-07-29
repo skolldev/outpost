@@ -40,11 +40,10 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Phase 2 exit check (§12 P2), CLI side simulated wire-exactly: bearer-token
- * chunk upload → assemble → a minified event ingests into an original-source
- * stack trace. Uses the same real Angular build fixtures as
- * {@code SourceMapConsumerTest}, so the expected positions come from Node's
- * reference implementation, not from our own decoder.
+ * CLI side simulated wire-exactly: bearer-token chunk upload → assemble → a
+ * minified event ingests into an original-source stack trace. Uses the same real
+ * Angular build fixtures as {@code SourceMapConsumerTest}, so the expected
+ * positions come from Node's reference implementation, not our own decoder.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -113,7 +112,7 @@ class SourceMapUploadIntegrationTest {
 		// Idempotent re-assemble (CLI retries, re-runs of the same CI job).
 		assertThat(assemble(checksum, RELEASE).get("state")).isEqualTo("ok");
 
-		// A minified error event now comes out with original TS source (§12 P2 exit).
+		// A minified error event now comes out with original TS source.
 		JsonNode probe = namedProbe();
 		postEnvelope(jsEventEnvelope(DEBUG_ID, probe.get("generatedLine").asInt() + 1,
 				probe.get("generatedColumn").asInt() + 1));
