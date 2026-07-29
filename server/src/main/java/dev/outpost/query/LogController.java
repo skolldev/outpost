@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * Log query API (§8): keyset-paginated descending stream with level / env /
+ * Log query API: keyset-paginated descending stream with level / env /
  * trace / attribute / body-substring filters; {@code ?live=true} upgrades to
  * an SSE tail fed by the ingest pipeline with the same filters applied.
  * Attribute filters come as {@code attr=key=value} (value optional — bare
@@ -126,7 +126,7 @@ public class LogController {
 		return body;
 	}
 
-	/** SSE live tail (§9.3) — same filters, applied in-process to newly stored records. */
+	/** SSE live tail — same filters, applied in-process to newly stored records. */
 	@GetMapping(value = "/logs", params = "live=true")
 	public SseEmitter tail(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,

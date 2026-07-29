@@ -6,17 +6,13 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Formats the Generic JSON payload — a public, versioned contract for custom
- * receivers (parent #41, user story 14). Keys are written explicitly in
- * snake_case rather than derived from a naming strategy so the wire shape is a
- * deliberate contract, not a serialization side effect, and stays stable
- * regardless of the app's Jackson configuration.
+ * receivers (#41). Keys are written explicitly rather than derived from a naming
+ * strategy, so the wire shape is a deliberate contract that survives any change
+ * to the app's Jackson configuration.
  *
- * <p>Contract rules: top-level {@code version} is {@code 1}; {@code type} is the
- * trigger discriminator; changes within a version are additive only. Documented
- * in {@code docs/notifications/generic-json-payload.md}.
- *
- * <p>The {@code generic_json} implementation of the {@link NotificationFormatter}
- * seam (issue #46): resolved by {@link NotificationFormatters} on channel type.
+ * <p>Contract rules: {@code version} is {@code 1}; changes within a version are
+ * additive only. Documented in
+ * {@code docs/notifications/generic-json-payload.md}.
  */
 @Component
 public class GenericJsonFormatter implements NotificationFormatter {
@@ -34,7 +30,6 @@ public class GenericJsonFormatter implements NotificationFormatter {
 		return "generic_json";
 	}
 
-	/** Serializes {@code occurrence} into the Generic JSON payload for one delivery. */
 	@Override
 	public String format(NotificationOccurrence occurrence, NotificationContext context) {
 		ObjectNode root = mapper.createObjectNode();
@@ -92,8 +87,7 @@ public class GenericJsonFormatter implements NotificationFormatter {
 	}
 
 	/**
-	 * The {@code monitor} + {@code incident} blocks common to both incident
-	 * triggers. Returns the {@code incident} node so each caller can add its own
+	 * Returns the {@code incident} node so each caller can add its own
 	 * trigger-specific fields (failure reason vs. downtime).
 	 */
 	private ObjectNode writeMonitor(ObjectNode root, long monitorId, String monitorUrl, String environment,

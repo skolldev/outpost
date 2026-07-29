@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** sentry-cli API tokens (§8, §10): create (secret shown once), list, revoke. Admin-only. */
+/** sentry-cli API tokens: create (secret shown once), list, revoke. Admin-only. */
 @RestController
 @RequestMapping("/api/internal/tokens")
 @PreAuthorize("hasRole('ADMIN')")
@@ -23,7 +23,7 @@ public class TokenController {
 	public record CreateToken(String name) {
 	}
 
-	/** Creation response — the only time the secret is shown (§10). */
+	/** Creation response — the only time the secret is shown. */
 	public record CreatedTokenResponse(long id, String name, java.util.List<String> scopes,
 			java.time.Instant createdAt, String token) {
 	}

@@ -21,14 +21,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Notification Channel management (§ issue #42, parent #41): admin-configured
- * webhook destinations. This slice is configuration only — no delivery yet.
+ * Notification Channel management (#42, parent #41): admin-configured webhook
+ * destinations, plus the test-send action.
  * <p>
- * The whole surface is Admin-only, unlike uptime reads: a channel's URL is a
- * bearer credential returned unmasked (ADR 0006), so even listing is gated. An
- * empty {@code project_filter} matches all Projects and an empty
- * {@code environment_filter} matches all Environments; the eventual publisher
- * applies these, this controller only persists them.
+ * The whole surface is Admin-only, unlike uptime reads, because a channel's URL
+ * is a bearer credential returned unmasked (ADR 0006) — so even listing is gated.
+ * Filters are only persisted here; {@link NotificationService} applies them at
+ * delivery.
  */
 @RestController
 @RequestMapping("/api/internal/notifications/channels")

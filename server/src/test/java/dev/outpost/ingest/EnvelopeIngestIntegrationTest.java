@@ -28,10 +28,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * End-to-end compat test (§13.1 skeleton): real SDK-shaped envelopes from both
- * supported SDK families go through ingest → pipeline → storage and come back
- * out of the query API grouped and env-filterable. This is the Phase 1 exit
- * check and the future gate for SDK version bumps.
+ * End-to-end compat test: real SDK-shaped envelopes from both supported SDK
+ * families go through ingest → pipeline → storage and come back out of the query
+ * API grouped and env-filterable. This is the gate for SDK version bumps.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",

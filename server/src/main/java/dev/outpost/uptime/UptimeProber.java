@@ -17,9 +17,9 @@ import org.springframework.stereotype.Component;
  * <p>SSRF note: monitor URLs are admin-configured on a self-hosted install,
  * so probing internal addresses is accepted by design (no allowlist).
  *
- * <p>{@link HttpRequest#timeout} covers time-to-response-headers; the
- * discarding body handler minimizes (but does not hard-cap) body-read time —
- * negligible for health endpoints.
+ * <p>{@link HttpRequest#timeout} covers time-to-response-headers only; the
+ * discarding body handler minimizes but does not hard-cap body-read time, which
+ * is negligible for health endpoints.
  */
 @Component
 public class UptimeProber {

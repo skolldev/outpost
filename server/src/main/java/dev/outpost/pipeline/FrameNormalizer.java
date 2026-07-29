@@ -1,7 +1,7 @@
 package dev.outpost.pipeline;
 
 /**
- * Normalizes stack-frame identity for grouping (§6.2): strips the parts that
+ * Normalizes stack-frame identity for grouping: strips the parts that
  * vary between builds or JVM runs — lambda indices, proxy/CGLIB suffixes,
  * webpack hash fragments — so logically identical frames fingerprint equally.
  */
@@ -28,7 +28,6 @@ final class FrameNormalizer {
 		return m;
 	}
 
-	/** Normalizes a function name for fingerprinting. */
 	static String normalizeFunction(String function) {
 		if (function == null) {
 			return "";

@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * Live-tail fan-out (§9.3): the query API subscribes SSE emitters with a
+ * Live-tail fan-out: the query API subscribes SSE emitters with a
  * filter predicate; {@link LogStore} publishes every stored record. Slow or
  * gone clients are dropped on the first failed send; a periodic comment keeps
  * idle connections alive through proxies.

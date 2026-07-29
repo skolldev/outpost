@@ -7,20 +7,12 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The {@code teams} implementation of the {@link NotificationFormatter} seam
- * (issue #46): renders an occurrence as a Microsoft Teams Adaptive Card wrapped
- * in the envelope a Teams Workflows incoming webhook requires
+ * Renders an occurrence as a Microsoft Teams Adaptive Card, wrapped in the
+ * envelope a Teams Workflows incoming webhook requires
  * ({@code {"type":"message","attachments":[{"contentType":
  * "application/vnd.microsoft.card.adaptive","content":<card>}]}}). Posting a bare
  * card, or the legacy MessageCard {@code {"text":...}}, gets a 400 from a
  * Workflows webhook.
- *
- * <p>Each card presents the same summary facts as the Generic JSON payload for
- * that trigger — a bold title, a {@code FactSet} of key facts, and one
- * {@code Action.OpenUrl} button deep-linking into Outpost — so a reader judges
- * severity at a glance and is one click from diagnosis (parent #41, stories
- * 10–13). Card layout is presentation, not a versioned contract (unlike Generic
- * JSON): this shape may change freely without a version bump.
  */
 @Component
 public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
@@ -154,7 +146,6 @@ public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
 		return actions;
 	}
 
-	/** Wraps the card in the Teams Workflows message/attachments envelope. */
 	private ObjectNode envelope(ObjectNode card) {
 		ObjectNode root = mapper.createObjectNode();
 		root.put("type", "message");

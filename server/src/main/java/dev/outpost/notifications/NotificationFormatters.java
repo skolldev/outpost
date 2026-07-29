@@ -7,14 +7,10 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 /**
- * Resolves the {@link NotificationFormatter} for a channel type (issue #46).
- * Spring injects every formatter bean; this indexes them by
- * {@link NotificationFormatter#channelType()} so {@link NotificationService}
- * looks one up by the channel's stored {@code type} without a hardcoded switch.
- *
- * <p>This is what keeps the formatter seam a seam: a new channel type is a new
- * {@link NotificationFormatter} bean and appears here automatically — the
- * registry, the delivery path, and the callers are untouched.
+ * Resolves the {@link NotificationFormatter} for a channel type. Spring injects
+ * every formatter bean and this indexes them by
+ * {@link NotificationFormatter#channelType()}, so a new formatter registers
+ * itself and {@link NotificationService} needs no hardcoded switch.
  */
 @Component
 public class NotificationFormatters {
@@ -27,11 +23,9 @@ public class NotificationFormatters {
 	}
 
 	/**
-	 * Formats {@code occurrence} for {@code channelType}.
-	 *
-	 * @throws IllegalArgumentException if no formatter is registered for the type —
-	 * a programming error (the type CHECK constraint and controller validation keep
-	 * only known types in the table), surfaced rather than silently dropped.
+	 * @throws IllegalArgumentException if no formatter is registered for the type — a
+	 * programming error, since the CHECK constraint and controller validation keep
+	 * only known types in the table. Surfaced rather than silently dropped.
 	 */
 	public String format(String channelType, NotificationOccurrence occurrence, NotificationContext context) {
 		NotificationFormatter formatter = byType.get(channelType);

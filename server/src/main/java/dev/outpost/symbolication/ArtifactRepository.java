@@ -14,7 +14,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 /**
- * Parsed-source-map lookup for the symbolicator (§6.2): by debug ID first,
+ * Parsed-source-map lookup for the symbolicator: by debug ID first,
  * release + minified-file name as the legacy fallback. Parsed maps (and
  * misses) are cached — a burst of errors from one release hits the same few
  * maps — and the cache is dropped whenever a new bundle is assembled.

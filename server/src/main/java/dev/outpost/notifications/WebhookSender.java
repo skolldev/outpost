@@ -12,12 +12,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * Delivers one notification payload over HTTP POST with a small number of
- * in-process retries and linear backoff (ADR 0005: best-effort, no durable
- * queue). Success is a 2xx response; any non-2xx, timeout, or connection error
- * is retried up to {@code max-attempts}, and the last failure's detail is
- * returned for the history row. A failure is always a {@link Result}, never an
- * exception — the caller records outcomes, it does not handle throws.
+ * Delivers one notification payload over HTTP POST with a few in-process retries
+ * and linear backoff (ADR 0005: best-effort, no durable queue). Any non-2xx,
+ * timeout, or connection error is retried up to {@code max-attempts}, and the
+ * last failure's detail is returned for the history row. A failure is always a
+ * {@link Result}, never an exception — the caller records outcomes rather than
+ * handling throws.
  *
  * <p>No egress/SSRF filtering (ADR 0006): the URL is admin-configured on a
  * single-tenant install, so private and internal destinations are intended.

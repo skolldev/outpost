@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * {@code sentry-cli releases new/finalize} compatibility (§4.4): trivial
+ * {@code sentry-cli releases new/finalize} compatibility: trivial
  * upserts to the release table so existing CI recipes keep working. Legacy
  * release-file and dif uploads are intentionally absent (404).
  */

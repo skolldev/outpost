@@ -19,21 +19,20 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Persists processed error events (§6.2): environment/release auto-upsert,
+ * Persists processed error events: environment/release auto-upsert,
  * issue upsert with regression handling, per-environment stats, then a JDBC
  * batch insert of the event rows.
  *
- * <p>The publisher seam (parent #41): when an issue upsert inserts — a
- * fingerprint's first Event — a {@code new_issue} occurrence is published, but
- * only after the storing transaction commits, so a notification is never sent
- * for an Issue that rolled back. Repeats and regressions do not publish.
+ * <p>Crosses the publisher seam (#41) when an issue upsert inserts — a
+ * fingerprint's first Event — but only after the storing transaction commits, so
+ * a notification is never sent for an Issue that rolled back. Repeats and
+ * regressions do not publish.
  */
 @Component
 public class EventStore {
 
 	private static final Logger log = LoggerFactory.getLogger(EventStore.class);
 
-	/** Result of the issue upsert: the row id and whether this statement inserted it. */
 	private record IssueUpsert(long id, boolean inserted) {
 	}
 
@@ -113,9 +112,9 @@ public class EventStore {
 			}
 			return;
 		}
-		// Publish only after the transaction commits, so a rolled-back Issue never
-		// notifies. The seam is fire-and-forget (ADR 0005): publish never throws,
-		// but guard anyway so a notification hiccup can't fail a stored batch.
+		// After commit, so a rolled-back Issue never notifies. The seam is
+		// fire-and-forget (ADR 0005) and never throws, but guard anyway so a
+		// notification hiccup can't fail an already-stored batch.
 		for (NotificationOccurrence occurrence : newIssues) {
 			try {
 				notifications.publish(occurrence);

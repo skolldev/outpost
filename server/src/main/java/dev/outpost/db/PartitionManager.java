@@ -61,27 +61,25 @@ public class PartitionManager {
 	}
 
 	/**
-	 * Drops every weekly partition of {@code table} whose range lies entirely
-	 * before {@code cutoff}, reclaiming disk immediately instead of row-deleting.
-	 * Runs under the same advisory lock as creation, so it never races
-	 * {@link #ensureWeek}. The boundary partition straddling the cutoff still
-	 * holds live rows and is left for the caller to prune.
+	 * Drops every weekly partition of {@code table} lying entirely before
+	 * {@code cutoff} — reclaiming disk immediately instead of row-deleting. Takes
+	 * the same advisory lock as creation, so it never races {@link #ensureWeek}. The
+	 * boundary partition straddling the cutoff still holds live rows and is left for
+	 * the caller to prune.
 	 * <p>
-	 * Each drop runs in a transaction bounded by {@code lockTimeoutSeconds}: a
-	 * {@code DROP TABLE} needs an ACCESS EXCLUSIVE lock, which a concurrent
-	 * time-unfiltered scan of an old partition (e.g. a trace fan-out by
-	 * {@code trace_id}) can hold, so without the bound the daily job could block
-	 * indefinitely and pin a connection. On timeout the drop throws (a query
-	 * cancellation) so the caller can defer it to the next run.
+	 * {@code lockTimeoutSeconds} bounds each drop because {@code DROP TABLE} needs
+	 * an ACCESS EXCLUSIVE lock that a concurrent time-unfiltered scan (e.g. a trace
+	 * fan-out by {@code trace_id}) can hold; unbounded, the daily job could block
+	 * forever and pin a connection. On timeout the drop throws so the caller can
+	 * defer it to the next run.
 	 * <p>
-	 * With {@code onlyIfEmpty}, a partition is dropped only when it holds no
-	 * rows, checked after taking its ACCESS EXCLUSIVE lock so a concurrent
-	 * insert either commits before the check (partition is kept) or blocks until
-	 * the decision is made — there is no window where a committed row can be
-	 * dropped. Used for {@code event}, where rows may only be removed under the
-	 * per-project event lock: a stale-timestamped event can land in an expired
-	 * week after that pass, and its partition must then survive until the next
-	 * run row-deletes it and rebuilds the issue aggregates.
+	 * {@code onlyIfEmpty} checks for rows <em>after</em> taking the partition's
+	 * ACCESS EXCLUSIVE lock, so a concurrent insert either commits before the check
+	 * (partition kept) or blocks until the decision is made — there is no window
+	 * where a committed row can be dropped. Needed for {@code event}, whose rows may
+	 * only be removed under the per-project event lock: a stale-timestamped event
+	 * can land in an already-expired week, and its partition must survive until the
+	 * next run row-deletes it and rebuilds the issue aggregates.
 	 *
 	 * @return the number of partitions dropped
 	 */
@@ -108,9 +106,8 @@ public class PartitionManager {
 			if (weekStart == null) {
 				continue;
 			}
-			// The partition covers [weekStart, weekStart + 1 week); it is fully
-			// expired only when that upper bound is at or before the cutoff, so
-			// the current and future partitions are never eligible.
+			// Compare the range's upper bound, not its start, so the current and
+			// future partitions are never eligible.
 			Instant upperBound = weekStart.plusWeeks(1).atStartOfDay(ZoneOffset.UTC).toInstant();
 			if (upperBound.isAfter(cutoff)) {
 				continue;

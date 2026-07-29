@@ -6,7 +6,7 @@ import java.util.List;
 
 /**
  * Source Map v3 consumer: standard and index ("sections") maps, base64-VLQ
- * mappings, {@code sourcesContent}. Own implementation per the §13.2 spike:
+ * mappings, {@code sourcesContent}. Own implementation:
  * {@code com.atlassian.sourcemap} lacks index-map support and is only
  * published to Atlassian's own Maven repository.
  *

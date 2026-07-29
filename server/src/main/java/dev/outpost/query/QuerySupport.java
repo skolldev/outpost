@@ -7,11 +7,9 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Small shared helpers for the query controllers. Keyset pagination and its
- * cursor codec live in {@link KeysetPage}; what remains here are the two
- * mechanics unrelated to paging that every list/detail controller needs: SQL
- * {@code IN}-clause placeholder expansion and lenient {@code jsonb} column
- * parsing.
+ * Shared helpers for the query controllers. Paging lives in {@link KeysetPage};
+ * what stays here is the paging-independent mechanics every list/detail
+ * controller needs.
  */
 final class QuerySupport {
 
@@ -24,10 +22,8 @@ final class QuerySupport {
 	}
 
 	/**
-	 * Appends {@code AND <column> IN (?, ?, …)} to {@code sql} and its bind values to
-	 * {@code params} — but only when {@code values} is non-empty, so an absent or empty
-	 * filter adds no constraint. Keeps the repeated {@code IN}-clause filter (project,
-	 * environment, level…) in one place across the list controllers.
+	 * Appends {@code AND <column> IN (?, ?, …)} and its bind values — but only when
+	 * {@code values} is non-empty, so an absent or empty filter adds no constraint.
 	 */
 	static void appendInClause(StringBuilder sql, String column, Collection<?> values, List<Object> params) {
 		if (values == null || values.isEmpty()) {
@@ -38,10 +34,9 @@ final class QuerySupport {
 	}
 
 	/**
-	 * Parses a {@code jsonb} column value into a tree, falling back to an empty
-	 * object on malformed or null input — a stored column should never be
-	 * unparseable, so a bad value degrades the one row rather than failing the
-	 * whole query.
+	 * Falls back to an empty object on malformed or null input: a stored column
+	 * should never be unparseable, so a bad value degrades that one row rather than
+	 * failing the whole query.
 	 */
 	static JsonNode parseJson(ObjectMapper mapper, String json) {
 		try {

@@ -8,7 +8,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * DSN-key authentication for the envelope endpoint (§4.2). Key lookup order:
+ * DSN-key authentication for the envelope endpoint. Key lookup order:
  * {@code X-Sentry-Auth} header, {@code sentry_key} query parameter, {@code dsn}
  * field in the envelope header. The key must be an active key of the project.
  */

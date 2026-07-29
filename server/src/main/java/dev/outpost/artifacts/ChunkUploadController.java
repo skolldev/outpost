@@ -19,7 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
 
 /**
- * sentry-cli chunk upload (§4.4): capability discovery + chunk staging.
+ * sentry-cli chunk upload: capability discovery + chunk staging.
  * {@code {org}} is accepted but ignored (single tenant). The CLI hashes each
  * chunk with SHA-1 (part filename), optionally gzips the part body (part name
  * {@code file_gzip} instead of {@code file}), and re-uploads anything the
@@ -38,22 +38,21 @@ public class ChunkUploadController {
 	}
 
 	/**
-	 * Capability discovery. {@code accept: ["artifact_bundles"]} steers the CLI
-	 * to the debug-ID flow; camelCase keys are part of the wire contract, hence
-	 * the explicit map (the app default is snake_case).
+	 * Capability discovery. camelCase keys are part of the wire contract, hence the
+	 * explicit map — the app default is snake_case.
 	 *
-	 * {@code release_files} must be advertised too, even though we never assemble
-	 * release files: sentry-cli's {@code FileUpload::upload} only takes the
-	 * chunked path at all when the server accepts release_files, and only then
-	 * selects the artifact-bundle assemble endpoint via artifact_bundles. Without
-	 * it the CLI falls back to its legacy upload and aborts with "a release is
-	 * required for this upload" (observed with sentry-cli 2.58.6).
+	 * <p>{@code release_files} must be advertised even though we never assemble
+	 * release files: sentry-cli's {@code FileUpload::upload} only takes the chunked
+	 * path when the server accepts release_files, and only then selects the
+	 * artifact-bundle assemble endpoint via artifact_bundles. Without it the CLI
+	 * falls back to its legacy upload and aborts with "a release is required for
+	 * this upload" (observed with sentry-cli 2.58.6).
 	 *
-	 * {@code url} is a bare path on purpose: sentry-cli resolves paths against
-	 * its {@code --url} base and attaches auth. An absolute URL built from
+	 * <p>{@code url} is a bare path on purpose: sentry-cli resolves paths against
+	 * its {@code --url} base and attaches auth. An absolute URL from
 	 * OUTPOST_PUBLIC_URL breaks any uploader whose network view differs from the
-	 * public URL (e.g. a container that reaches Outpost as http://outpost:8080
-	 * while the public URL says http://localhost:8080).
+	 * public URL (e.g. a container reaching Outpost as http://outpost:8080 while the
+	 * public URL says http://localhost:8080).
 	 */
 	@GetMapping("/api/0/organizations/{org}/chunk-upload/")
 	public Map<String, Object> capabilities(@PathVariable String org) {

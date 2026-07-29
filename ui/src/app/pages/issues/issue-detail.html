@@ -87,7 +87,7 @@
       <span class="ml-auto font-mono text-xs text-muted-foreground/70">{{ event.id }}</span>
     </div>
 
-    <!-- Symbolication warning (§9.2) -->
+    <!-- Symbolication warning -->
     @if (symbolicationWarning(); as warning) {
       <div
         hlmAlert
@@ -275,7 +275,7 @@
       </section>
     </div>
 
-    <!-- Logs around this event (§9.2): by trace_id, or ±60 s same-service window. -->
+    <!-- Logs around this event: by trace_id, or ±60 s same-service window. -->
     <section hlmCard class="mt-6">
       <div class="flex items-center justify-between border-b border-border px-4 py-2">
         <button

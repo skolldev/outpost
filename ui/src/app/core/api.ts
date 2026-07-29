@@ -81,7 +81,7 @@ export class Api {
     return this.http.get<LogPage>(`${this.base}/logs`, { params: httpParams(logParams(filters)) });
   }
 
-  /** URL for the SSE live tail (§9.3) — same filters, consumed via EventSource. */
+  /** URL for the SSE live tail — same filters, consumed via EventSource. */
   logTailUrl(filters: LogFilters): string {
     const params = httpParams(logParams(filters)).set('live', 'true');
     return `${this.base}/logs?${params.toString()}`;

@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Project + DSN key management (§8). Mutations are admin-only. */
+/** Project + DSN key management. Mutations are admin-only. */
 @RestController
 @RequestMapping("/api/internal/projects")
 public class ProjectController {
@@ -204,7 +204,7 @@ public class ProjectController {
 	}
 
 	/**
-	 * DSN per §4.1: {@code scheme://<public_key>@<host>[/<path>]/<project_id>}. A path in
+	 * DSN format: {@code scheme://<public_key>@<host>[/<path>]/<project_id>}. A path in
 	 * {@code outpost.public-url} (e.g. {@code https://host/outpost}) is kept so SDKs post to
 	 * {@code <path>/api/<project_id>/envelope/} — required when the app is served under a
 	 * path prefix behind a reverse proxy.

@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Issue + event query API (§8): filterable issue list with 14-day sparklines,
+ * Issue + event query API: filterable issue list with 14-day sparklines,
  * issue detail with per-environment stats, event navigation within an issue.
  * Cursor pagination is keyset-based on {@code (sort value, id)}.
  */

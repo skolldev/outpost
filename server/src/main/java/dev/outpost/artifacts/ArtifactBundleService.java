@@ -23,7 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Chunk staging + synchronous artifact-bundle assembly (§4.4): concatenate
+ * Chunk staging + synchronous artifact-bundle assembly: concatenate
  * staged chunks, verify the SHA-1, unpack the zip, and store one artifact row
  * per manifest entry keyed by (debug_id, type). The raw bundle is kept for
  * re-processing; bundles are deduped by checksum. Publishes

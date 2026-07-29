@@ -14,9 +14,9 @@ import { NgIconComponent, provideIcons } from '@ng-icons/core';
 import { lucideTowerControl } from '@ng-icons/lucide';
 
 /**
- * App shell (§9): global header with a multi-select project filter, a
- * cross-project environment-intersection bar and a time-range picker. Filter
- * state lives in the URL so every view is shareable.
+ * App shell: global header with a multi-select project filter, a cross-project
+ * environment-intersection bar and a time-range picker. Filter state lives in the
+ * URL so every view is shareable.
  */
 @Component({
   selector: 'app-shell',
@@ -74,7 +74,6 @@ export class Shell {
     { value: 'all', label: 'All time' },
   ];
 
-  /** Resolves a range key to its trigger label. */
   readonly rangeLabel = (value: string): string =>
     this.ranges.find((r) => r.value === value)?.label ?? value;
 

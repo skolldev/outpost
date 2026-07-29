@@ -81,7 +81,7 @@ export interface SentryEventData {
   user?: Record<string, unknown>;
   contexts?: Record<string, Record<string, unknown>>;
   request?: { url?: string; method?: string; headers?: Record<string, string> };
-  // Added by the symbolicator when source maps were missing (§6.2).
+  // Added by the symbolicator when source maps were missing.
   _outpost_symbolication?: {
     status: string;
     missing: { debug_id: string; abs_path: string }[];
@@ -203,7 +203,7 @@ export interface IssueFilters {
   cursor?: string;
 }
 
-// --- Tracing (§9.4) ---
+// --- Tracing ---
 
 /** A row in the trace search list — one distributed trace, keyed by trace_id. */
 export interface TraceSummary {

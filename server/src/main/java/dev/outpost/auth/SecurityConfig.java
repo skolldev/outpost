@@ -23,7 +23,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Conventional Spring Security chain (§10): the ingest surface is open (it does
+ * Conventional Spring Security chain: the ingest surface is open (it does
  * its own DSN-key auth), the internal query API requires the signed session
  * cookie, admin-only endpoints are guarded by {@code @PreAuthorize}. CSRF is
  * covered by {@code SameSite=Lax} on the session cookie plus a JSON-only API.
@@ -68,7 +68,7 @@ public class SecurityConfig {
 		return source;
 	}
 
-	/** Populates the security context from a sentry-cli bearer token (§10) on the /api/0/** surface. */
+	/** Populates the security context from a sentry-cli bearer token on the /api/0/** surface. */
 	static final class ApiTokenFilter extends OncePerRequestFilter {
 
 		private final ApiTokenService apiTokens;

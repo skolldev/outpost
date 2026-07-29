@@ -16,7 +16,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * Stateless server-signed session cookie (§10): value is
+ * Stateless server-signed session cookie: value is
  * {@code base64url(email).base64url(role).expiry.base64url(hmacSha256)}. The signing
  * secret is generated on first boot and kept in the {@code setting} table so
  * sessions survive restarts and are valid across replicas.

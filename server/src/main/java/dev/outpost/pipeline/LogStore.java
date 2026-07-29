@@ -13,7 +13,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Persists processed log records (§6.3): environment/release auto-upsert, then
+ * Persists processed log records: environment/release auto-upsert, then
  * a JDBC batch insert — append-only, no grouping. Stored records are published
  * to the live tail.
  */

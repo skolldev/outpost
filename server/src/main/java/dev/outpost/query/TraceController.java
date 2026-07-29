@@ -16,12 +16,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Trace query API (§8). {@code GET /traces} searches root transactions with the
- * common filter layer plus duration range and "has errors"; {@code GET
- * /traces/{trace_id}} fans out across txn / span / event / log_record by
- * {@code trace_id} — a cross-project join done at query time, since nothing is
- * linked at ingest (§6.4). The detail payload is waterfall-ready: the UI nests
- * spans by {@code parent_span_id} and orders by {@code start_ts}.
+ * Trace query API. {@code GET /traces/{trace_id}} fans out across txn / span /
+ * event / log_record by {@code trace_id} — a cross-project join done at query
+ * time, because nothing is linked at ingest. The detail payload is
+ * waterfall-ready: the UI nests spans by {@code parent_span_id} and orders by
+ * {@code start_ts}.
  */
 @RestController
 @RequestMapping("/api/internal")
@@ -29,7 +28,7 @@ public class TraceController {
 
 	private static final int PAGE_SIZE = 50;
 
-	/** Trace search pages by {@code (start_ts, id)} descending over the deduped trace rows. */
+	/** Pages over the deduped trace rows, not raw transactions. */
 	private static final KeysetPage PAGE = KeysetPage.of(KeysetPage.KeyColumn.instant("start_ts"),
 			KeysetPage.KeyColumn.uuid("id"), PAGE_SIZE);
 
@@ -41,7 +40,6 @@ public class TraceController {
 		this.mapper = mapper;
 	}
 
-	/** Trace search over root transactions (§9.4 list). */
 	@GetMapping("/traces")
 	public Map<String, Object> traces(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment,
@@ -82,22 +80,20 @@ public class TraceController {
 		return body;
 	}
 
-	/** The trace-search SQL and its ordered bind parameters. */
 	record SearchQuery(String sql, List<Object> params) {
 	}
 
 	/**
-	 * Builds the trace-search SQL (§9.4 list) and its bind parameters. Extracted
-	 * so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact query
-	 * the controller runs — a regression guard that copied the SQL would keep
-	 * passing if the real query regressed.
+	 * Extracted so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact
+	 * query the controller runs — a regression guard holding a copy of the SQL would
+	 * keep passing if the real query regressed.
 	 *
-	 * <p>One row per trace_id. A distributed trace has many transactions sharing
-	 * a trace_id (browser pageload + backend request…); we represent each trace
-	 * by its root transaction (parent_span_id IS NULL), or — when a filter only
-	 * matches a continuation — by the best-matching transaction, so filtering by
-	 * the backend project still surfaces the trace. Filters apply per-transaction;
-	 * span/error counts span the whole trace.
+	 * <p>One row per trace_id. A distributed trace has many transactions sharing a
+	 * trace_id (browser pageload + backend request…); each trace is represented by
+	 * its root transaction, or — when a filter only matches a continuation — by the
+	 * best-matching transaction, so filtering by the backend project still surfaces
+	 * the trace. Filters apply per-transaction; span/error counts span the whole
+	 * trace.
 	 */
 	static SearchQuery buildSearchQuery(List<Long> project, List<String> environment, String release, String query,
 			Double minDuration, Double maxDuration, Boolean hasErrors, Instant from, Instant to, String cursor) {
@@ -148,10 +144,9 @@ public class TraceController {
 		page.append(tail.sql());
 		params.addAll(tail.params());
 
-		// Count spans/errors only for the paginated representative rows — computing
-		// them inside the DISTINCT ON scan runs both correlated subqueries once per
-		// candidate transaction (thousands) just to discard all but one row per
-		// trace; here they run for at most PAGE_SIZE+1 rows. Order is re-asserted
+		// Count spans/errors only for the paginated rows: inside the DISTINCT ON scan
+		// both correlated subqueries would run once per candidate transaction
+		// (thousands) just to discard all but one row per trace. Order is re-asserted
 		// because the outer SELECT does not inherit the subquery's ordering.
 		String sql = "SELECT p.*,\n"
 				+ "       (SELECT count(*) FROM span s WHERE s.trace_id = p.trace_id) AS span_count,\n"
@@ -162,10 +157,8 @@ public class TraceController {
 	}
 
 	/**
-	 * Everything sharing a trace_id across all projects, in one payload:
-	 * transactions + spans (waterfall-ready), error events, log records (§8).
-	 * Fan-out by trace_id — cheaper and simpler than one mega-join, and each
-	 * table already has a trace_id index.
+	 * Everything sharing a trace_id across all projects, in one payload. Fanning out
+	 * per table beats one mega-join here — each already has a trace_id index.
 	 */
 	@GetMapping("/traces/{trace_id}")
 	public ResponseEntity<Map<String, Object>> trace(@PathVariable("trace_id") String traceId) {

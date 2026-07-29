@@ -10,8 +10,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Release + uploaded-artifact inspection (§8): the Releases page is primarily
- * a "why isn't my stack trace symbolicated" debugging aid (§9.5).
+ * Release + uploaded-artifact inspection: the Releases page is primarily
+ * a "why isn't my stack trace symbolicated" debugging aid.
  */
 @RestController
 @RequestMapping("/api/internal/releases")

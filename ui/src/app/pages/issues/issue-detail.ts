@@ -30,7 +30,7 @@ import {
 import { LevelBadge } from '../../shared/level-badge';
 import { timeAgo } from '../../shared/ui';
 
-/** Issue detail (§9 page 2): stacktrace, breadcrumbs, tags, contexts, event navigator. */
+/** Issue detail: stacktrace, breadcrumbs, tags, contexts, event navigator. */
 @Component({
   selector: 'app-issue-detail',
   imports: [
@@ -79,7 +79,7 @@ export class IssueDetailPage {
     return [...values].reverse();
   });
 
-  /** Missing-source-map banner data (§9.2), or null when fully symbolicated. */
+  /** Missing-source-map banner data, or null when fully symbolicated. */
   readonly symbolicationWarning = computed(() => {
     const event = this.event();
     if (!event) return null;
@@ -212,7 +212,7 @@ export class IssueDetailPage {
     if (this.logsOpen() && this.eventLogs() === null) void this.loadEventLogs();
   }
 
-  /** Correlated logs (§9.2): by trace_id, else a ±60 s window in the same project. */
+  /** Correlated logs: by trace_id, else a ±60 s window in the same project. */
   private async loadEventLogs(): Promise<void> {
     const event = this.event();
     if (!event) return;

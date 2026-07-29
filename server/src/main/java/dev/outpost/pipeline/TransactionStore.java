@@ -15,7 +15,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Persists processed transactions and their spans (§6.4): environment/release
+ * Persists processed transactions and their spans: environment/release
  * auto-upsert, then JDBC batch inserts into txn + span — append-only, no
  * grouping. On failure the batch degrades to per-transaction storage so one
  * poison transaction cannot sink the rest.

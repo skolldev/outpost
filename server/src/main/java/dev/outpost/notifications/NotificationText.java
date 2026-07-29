@@ -6,11 +6,9 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Formatting helpers shared across {@link NotificationFormatter} implementations
- * (issue #46). Pure presentation with no contract semantics — the Generic JSON
- * and Teams formatters both render downtime the same way and both serialize a
- * built node the same way, so the logic lives here rather than being copied into
- * each. Package-private: an implementation detail of the notifications module.
+ * Formatting helpers shared across {@link NotificationFormatter} implementations.
+ * Pure presentation with no contract semantics. Package-private, so it stays an
+ * implementation detail of the notifications module.
  */
 final class NotificationText {
 

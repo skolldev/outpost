@@ -16,9 +16,8 @@ import org.springframework.stereotype.Component;
 /**
  * Runs retention cleanup every day at 02:00 UTC. With the policy enabled it
  * purges all expired telemetry; disabled, it still caps uptime history at the
- * 90-day default (previously an hourly sweep in {@code UptimeScheduler}), so
- * check rows never accumulate unbounded on installations that keep the
- * opt-in policy off.
+ * 90-day default, so check rows never accumulate unbounded on installations that
+ * keep the opt-in policy off.
  */
 @Component
 public class DataRetentionScheduler implements SmartLifecycle {

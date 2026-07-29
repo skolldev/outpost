@@ -7,10 +7,10 @@ interface SettingsTab {
 }
 
 /**
- * Settings shell (§9 page 6): a tab bar over the Admin-managed installation
- * resources. Each tab is its own routed component (see settings.routes.ts);
- * the active tab is driven by the URL via routerLinkActive, so settings are
- * deep-linkable and consistent with the rest of the app's URL-as-state model.
+ * Settings shell: a tab bar over the Admin-managed installation resources. Each
+ * tab is its own routed component (see settings.routes.ts) and the active tab is
+ * driven by the URL, so settings are deep-linkable and consistent with the rest
+ * of the app's URL-as-state model.
  */
 @Component({
   selector: 'app-settings',

@@ -11,10 +11,9 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Validates the consumer against fixtures generated from a real Angular 22
- * production build (`ng build --source-map`), with expected lookups produced
- * by Node's built-in {@code node:module} SourceMap (Chrome DevTools port) —
- * see the §13.2 risk spike. Regenerate with gen-fixtures.js (next to the
- * fixtures) if they ever need refreshing.
+ * production build (`ng build --source-map`), with expected lookups produced by
+ * Node's built-in {@code node:module} SourceMap (Chrome DevTools port).
+ * Regenerate with gen-fixtures.js (next to the fixtures) if they need refreshing.
  */
 class SourceMapConsumerTest {
 
