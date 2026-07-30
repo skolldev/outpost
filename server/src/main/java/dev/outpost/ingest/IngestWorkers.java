@@ -9,8 +9,10 @@ import dev.outpost.pipeline.ProcessedLog;
 import dev.outpost.pipeline.ProcessedTransaction;
 import dev.outpost.pipeline.TransactionPipeline;
 import dev.outpost.pipeline.TransactionStore;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +36,7 @@ public class IngestWorkers implements SmartLifecycle {
 	private final LogStore logStore;
 	private final TransactionPipeline transactionPipeline;
 	private final TransactionStore transactionStore;
+	private final IngestMetrics metrics;
 	private final int workerCount;
 	private final int maxBatch;
 	private final long lingerMillis;
@@ -42,7 +45,7 @@ public class IngestWorkers implements SmartLifecycle {
 
 	public IngestWorkers(IngestQueue queue, ErrorPipeline pipeline, EventStore store, LogPipeline logPipeline,
 			LogStore logStore, TransactionPipeline transactionPipeline, TransactionStore transactionStore,
-			@Value("${outpost.ingest.workers:2}") int workerCount,
+			IngestMetrics metrics, @Value("${outpost.ingest.workers:2}") int workerCount,
 			@Value("${outpost.ingest.max-batch:500}") int maxBatch,
 			@Value("${outpost.ingest.linger-millis:1000}") long lingerMillis) {
 		this.queue = queue;
@@ -52,6 +55,7 @@ public class IngestWorkers implements SmartLifecycle {
 		this.logStore = logStore;
 		this.transactionPipeline = transactionPipeline;
 		this.transactionStore = transactionStore;
+		this.metrics = metrics;
 		this.workerCount = workerCount;
 		this.maxBatch = maxBatch;
 		this.lingerMillis = lingerMillis;
@@ -75,24 +79,33 @@ public class IngestWorkers implements SmartLifecycle {
 				if (batch.isEmpty()) {
 					continue;
 				}
+				metrics.batchDrained(batch.size());
 				List<ProcessedEvent> events = new ArrayList<>(batch.size());
 				List<ProcessedLog> logs = new ArrayList<>();
 				List<ProcessedTransaction> transactions = new ArrayList<>();
+				Instant dequeuedAt = Instant.now();
 				for (IngestItem item : batch) {
+					IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
+					// Measured before processing: this is buffer dwell time, the delay
+					// the SDK cannot see and the one that precedes a 429.
+					metrics.queueWait(signal, item.receivedAt(), dequeuedAt);
+					long startedAt = System.nanoTime();
 					try {
 						switch (item) {
 							case IngestItem.ErrorEvent event -> events.add(pipeline.process(event));
 							case IngestItem.LogBatch logBatch -> logs.addAll(logPipeline.process(logBatch));
 							case IngestItem.TransactionEvent txn -> transactions.add(transactionPipeline.process(txn));
 						}
+						metrics.processed(signal, System.nanoTime() - startedAt);
 					}
 					catch (RuntimeException e) {
+						metrics.dropped(IngestMetrics.DropStage.PIPELINE);
 						log.warn("dropping unprocessable item for project {}: {}", item.projectId(), e.toString());
 					}
 				}
-				store.store(events);
-				logStore.store(logs);
-				transactionStore.store(transactions);
+				storeTimed(IngestMetrics.Signal.ERROR, events, store::store);
+				storeTimed(IngestMetrics.Signal.LOG, logs, logStore::store);
+				storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
@@ -104,6 +117,19 @@ public class IngestWorkers implements SmartLifecycle {
 				log.error("ingest worker iteration failed", e);
 			}
 		}
+	}
+
+	/**
+	 * Times a store call, skipping empty lists so a mixed batch doesn't record a
+	 * near-zero sample for the signals it didn't carry.
+	 */
+	private <T> void storeTimed(IngestMetrics.Signal signal, List<T> batch, Consumer<List<T>> store) {
+		if (batch.isEmpty()) {
+			return;
+		}
+		long startedAt = System.nanoTime();
+		store.accept(batch);
+		metrics.stored(signal, System.nanoTime() - startedAt);
 	}
 
 	@Override

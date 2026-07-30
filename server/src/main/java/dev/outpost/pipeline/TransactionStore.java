@@ -4,6 +4,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
+import dev.outpost.ingest.IngestMetrics;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,13 +44,15 @@ public class TransactionStore {
 	private final TransactionTemplate transaction;
 	private final PartitionManager partitions;
 	private final ObjectMapper mapper;
+	private final IngestMetrics metrics;
 
 	public TransactionStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
-			PartitionManager partitions, ObjectMapper mapper) {
+			PartitionManager partitions, ObjectMapper mapper, IngestMetrics metrics) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -73,6 +76,7 @@ public class TransactionStore {
 		}
 		catch (RuntimeException e) {
 			if (batch.size() == 1) {
+				metrics.dropped(IngestMetrics.DropStage.STORE);
 				log.warn("dropping unstorable transaction {}: {}", batch.get(0).id(), e.toString());
 				return;
 			}

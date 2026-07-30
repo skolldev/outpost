@@ -25,6 +25,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	implementation 'org.bouncycastle:bcprov-jdk18on:1.85'
+	implementation 'io.micrometer:micrometer-registry-prometheus'
 	runtimeOnly 'org.postgresql:postgresql'
 	testImplementation 'org.springframework.boot:spring-boot-starter-actuator-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-flyway-test'
@@ -38,5 +39,37 @@ dependencies {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	// The load benchmark is wall-clock and minutes long — opt in via `ingestBenchmark`.
+	useJUnitPlatform {
+		excludeTags 'benchmark'
+	}
+}
+
+tasks.register('ingestBenchmark', Test) {
+	description = 'Opt-in ingest load benchmark. Not run by `build`. Requires Docker.'
+	group = 'verification'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'benchmark'
+	}
+	// Gradle's 512 MB default is not a realistic server heap, and it matters more
+	// than it looks: outpost.ingest.queue-capacity bounds the number of queued
+	// items, not their size, and a log envelope holds up to 100 records. At 512 MB
+	// the JVM dies with the buffer 15% full, before any 429 is issued. Override
+	// with -Pbench.heap=4g to explore that boundary deliberately.
+	maxHeapSize = project.findProperty('bench.heap') ?: '2g'
+	// Always rerun: the point is a fresh measurement, not a cached verdict.
+	outputs.upToDateWhen { false }
+	testLogging {
+		showStandardStreams = true
+		exceptionFormat = 'full'
+	}
+	// -Pbench.target=http://host:8080 drives a real deployment instead of the
+	// embedded app; -Pbench.projectId / -Pbench.key name the DSN to post to.
+	['target', 'projectId', 'key'].each { name ->
+		if (project.hasProperty("bench.${name}")) {
+			systemProperty "outpost.bench.${name}", project.property("bench.${name}")
+		}
+	}
 }
