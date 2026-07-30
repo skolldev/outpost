@@ -17,7 +17,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class EnvelopeParser {
 
-	public static final int MAX_ENVELOPE_BYTES = 20 * 1024 * 1024;
 	public static final int MAX_ITEM_BYTES = 1024 * 1024;
 
 	private final ObjectMapper mapper;
@@ -27,9 +26,6 @@ public class EnvelopeParser {
 	}
 
 	public Envelope parse(byte[] body) {
-		if (body.length > MAX_ENVELOPE_BYTES) {
-			throw new OversizeException("envelope exceeds " + MAX_ENVELOPE_BYTES + " bytes");
-		}
 		int pos = indexOfNewline(body, 0);
 		int headerEnd = pos < 0 ? body.length : pos;
 		JsonNode header = parseJson(body, 0, headerEnd, "envelope header");
