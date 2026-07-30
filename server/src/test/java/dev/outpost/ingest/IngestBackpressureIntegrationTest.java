@@ -6,8 +6,10 @@ import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.support.EnvelopeFactory;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -89,6 +91,11 @@ class IngestBackpressureIntegrationTest {
 			.param(projectId)
 			.param(publicKey)
 			.update();
+		drainQueue();
+	}
+
+	@AfterEach
+	void tearDown() {
 		drainQueue();
 	}
 
@@ -183,8 +190,16 @@ class IngestBackpressureIntegrationTest {
 	/** No workers run, so the queue survives between tests in the shared context. */
 	private void drainQueue() {
 		try {
-			List<IngestItem> batch;
+			List<QueuedEnvelope> batch;
 			while (!(batch = queue.nextBatch(CAPACITY, 0)).isEmpty()) {
+				for (QueuedEnvelope envelope : batch) {
+					try {
+						Files.deleteIfExists(envelope.spoolFile().path());
+					}
+					catch (java.io.IOException e) {
+						throw new AssertionError(e);
+					}
+				}
 				queue.completed(batch.size());
 			}
 		}

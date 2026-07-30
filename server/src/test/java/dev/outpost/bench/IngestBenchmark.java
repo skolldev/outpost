@@ -52,7 +52,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <li><b>stored/s</b> — rows that reached Postgres. This is the real capacity;
  * accepted/s only says the endpoint took the bytes.
  * <li><b>queue depth</b> — the leading indicator. It climbs a whole step or two
- * before any 429 appears, because 10 000 slots take a while to fill.
+ * before any 429 appears, because the reference buffer takes a while to fill.
  * <li><b>429s</b> — the lagging indicator, and the only one an SDK ever sees.
  * </ol>
  *
@@ -184,7 +184,7 @@ class IngestBenchmark {
 	 * workers cannot possibly keep up with, and check the server sheds rather than
 	 * falls over — the premise of ADR 0002.
 	 *
-	 * <p>Paced rather than fired all at once. An instantaneous 20 000-request
+	 * <p>Paced rather than fired all at once. A large instantaneous request
 	 * spike never reaches the ingest buffer at all: it exhausts Tomcat's accept
 	 * backlog first, so the run measures the socket layer and reports zero 429s
 	 * while the queue sat half empty. Spreading the same volume over seconds keeps

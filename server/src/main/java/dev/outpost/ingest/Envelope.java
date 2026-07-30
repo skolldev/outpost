@@ -1,17 +1,29 @@
 package dev.outpost.ingest;
 
 import tools.jackson.databind.JsonNode;
-import java.util.List;
+/** Types shared by the streaming envelope parser and its consumers. */
+public final class Envelope {
 
-/** A parsed Sentry envelope: one header line + N items. */
-public record Envelope(JsonNode header, List<Item> items) {
+	private Envelope() {
+	}
+
+	public enum ItemKind {
+		EVENT, LOG, TRANSACTION, ATTACHMENT, CLIENT_REPORT, OTHER
+	}
 
 	/** One envelope item: JSON header line + payload bytes. */
 	public record Item(JsonNode header, byte[] payload) {
 
-		public String type() {
+		public ItemKind kind() {
 			JsonNode type = header.get("type");
-			return type == null ? "" : type.asText();
+			return switch (type == null ? "" : type.asText()) {
+				case "event" -> ItemKind.EVENT;
+				case "log" -> ItemKind.LOG;
+				case "transaction" -> ItemKind.TRANSACTION;
+				case "attachment" -> ItemKind.ATTACHMENT;
+				case "client_report" -> ItemKind.CLIENT_REPORT;
+				default -> ItemKind.OTHER;
+			};
 		}
 	}
 }

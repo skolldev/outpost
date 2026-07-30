@@ -5,7 +5,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * One unit of work pulled off an envelope, queued for the processing pipeline:
+ * One unit of work parsed from a spooled envelope for the processing pipeline:
  * either a single error event or a batch of log records (the SDKs ship logs
  * pre-batched, ≤ 100 records per item).
  */
