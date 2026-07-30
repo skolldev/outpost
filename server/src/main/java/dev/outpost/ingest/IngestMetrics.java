@@ -198,6 +198,10 @@ public class IngestMetrics {
 		dropped.get(stage).increment();
 	}
 
+	public void dropped(DropStage stage, int count) {
+		dropped.get(stage).increment(count);
+	}
+
 	public void duplicates(int count) {
 		duplicates.increment(count);
 	}

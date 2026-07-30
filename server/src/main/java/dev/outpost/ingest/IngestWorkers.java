@@ -111,8 +111,7 @@ public class IngestWorkers implements SmartLifecycle {
 		}
 	}
 
-	private void digest(List<QueuedEnvelope> batch) {
-		List<QueuedEnvelope> parsedEnvelopes = new ArrayList<>(batch.size());
+	void digest(List<QueuedEnvelope> batch) {
 		try {
 			metrics.batchDrained(batch.size());
 			List<ProcessedEvent> events = new ArrayList<>(batch.size());
@@ -122,7 +121,6 @@ public class IngestWorkers implements SmartLifecycle {
 			for (QueuedEnvelope envelope : batch) {
 				try {
 					processEnvelope(envelope, dequeuedAt, events, logs, transactions);
-					parsedEnvelopes.add(envelope);
 				}
 				catch (IOException | RuntimeException e) {
 					metrics.dropped(IngestMetrics.DropStage.PIPELINE);
@@ -133,11 +131,11 @@ public class IngestWorkers implements SmartLifecycle {
 			storeTimed(IngestMetrics.Signal.ERROR, events, store::store);
 			storeTimed(IngestMetrics.Signal.LOG, logs, logStore::store);
 			storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
-			for (QueuedEnvelope envelope : parsedEnvelopes) {
-				spool.delete(envelope.spoolFile());
-			}
 		}
 		finally {
+			for (QueuedEnvelope envelope : batch) {
+				spool.delete(envelope.spoolFile());
+			}
 			queue.completed(batch.size());
 		}
 	}
@@ -209,8 +207,14 @@ public class IngestWorkers implements SmartLifecycle {
 			return;
 		}
 		long startedAt = System.nanoTime();
-		store.accept(batch);
-		metrics.stored(signal, System.nanoTime() - startedAt);
+		try {
+			store.accept(batch);
+			metrics.stored(signal, System.nanoTime() - startedAt);
+		}
+		catch (RuntimeException e) {
+			metrics.dropped(IngestMetrics.DropStage.STORE, batch.size());
+			log.warn("dropping {} {} item(s) after store failure: {}", batch.size(), signal, e.toString());
+		}
 	}
 
 	@Override
@@ -240,6 +244,9 @@ public class IngestWorkers implements SmartLifecycle {
 			if (worker.isAlive()) {
 				worker.interrupt();
 			}
+		}
+		for (QueuedEnvelope envelope : queue.drainRemaining()) {
+			spool.delete(envelope.spoolFile());
 		}
 		workers.clear();
 		if (interrupted) {

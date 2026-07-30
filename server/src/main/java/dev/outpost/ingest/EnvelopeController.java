@@ -3,12 +3,14 @@ package dev.outpost.ingest;
 import dev.outpost.config.OutpostProperties;
 import tools.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.zip.ZipException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -35,15 +37,18 @@ public class EnvelopeController {
 	private final EnvelopeSpool spool;
 	private final IngestAuthenticator authenticator;
 	private final IngestQueue queue;
+	private final ClientReportCounters clientReports;
 	private final IngestMetrics metrics;
 	private final OutpostProperties properties;
 
 	public EnvelopeController(EnvelopeParser parser, EnvelopeSpool spool, IngestAuthenticator authenticator,
-			IngestQueue queue, IngestMetrics metrics, OutpostProperties properties) {
+			IngestQueue queue, ClientReportCounters clientReports, IngestMetrics metrics,
+			OutpostProperties properties) {
 		this.parser = parser;
 		this.spool = spool;
 		this.authenticator = authenticator;
 		this.queue = queue;
+		this.clientReports = clientReports;
 		this.metrics = metrics;
 		this.properties = properties;
 	}
@@ -74,6 +79,7 @@ public class EnvelopeController {
 
 			QueuedEnvelope envelope = new QueuedEnvelope(projectId, receivedAt, spoolFile);
 			if (!queue.offer(envelope)) {
+				recordClientReports(projectId, spoolFile);
 				recordItems(inspection, false);
 				metrics.envelope(IngestMetrics.Outcome.REJECTED);
 				return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -86,8 +92,16 @@ public class EnvelopeController {
 			metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
 			return ResponseEntity.ok(Map.of("id", eventId(inspection)));
 		}
-		catch (IOException e) {
+		catch (EOFException | ZipException e) {
+			if (!spoolFile.gzip()) {
+				log.error("failed to read spooled envelope for project {} from {}", projectId, spoolFile.path(), e);
+				throw new EnvelopeSpool.SpoolReadException(e);
+			}
 			throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
+		}
+		catch (IOException e) {
+			log.error("failed to read spooled envelope for project {} from {}", projectId, spoolFile.path(), e);
+			throw new EnvelopeSpool.SpoolReadException(e);
 		}
 		finally {
 			if (!queued) {
@@ -108,6 +122,20 @@ public class EnvelopeController {
 			header = parser.parse(in, inspection::accept);
 		}
 		return inspection.build(header);
+	}
+
+	private void recordClientReports(long projectId, SpoolFile spoolFile) throws IOException {
+		try (InputStream in = spool.open(spoolFile)) {
+			parser.parse(in, item -> {
+				if (item.kind() != Envelope.ItemKind.CLIENT_REPORT) {
+					return;
+				}
+				JsonNode report = parser.parseObjectPayload(item);
+				if (report != null) {
+					clientReports.record(projectId, report);
+				}
+			});
+		}
 	}
 
 	private void recordItems(Inspection inspection, boolean accepted) {
@@ -149,6 +177,12 @@ public class EnvelopeController {
 	public ResponseEntity<Map<String, String>> spoolWriteFailure() {
 		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 			.body(Map.of("detail", "unable to spool envelope"));
+	}
+
+	@ExceptionHandler(EnvelopeSpool.SpoolReadException.class)
+	public ResponseEntity<Map<String, String>> spoolReadFailure() {
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+			.body(Map.of("detail", "unable to read spooled envelope"));
 	}
 
 	private class InspectionBuilder {

@@ -10,9 +10,12 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -119,6 +122,36 @@ class EnvelopeSpoolingIntegrationTest {
 
 		assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
 		assertThat(SpoolTestFiles.count(spoolDirectory())).isEqualTo(1);
+	}
+
+	@Test
+	void spoolDirectoryAndFileAreOwnerOnly() throws IOException, InterruptedException {
+		Assumptions.assumeTrue(Files.getFileStore(spoolDirectory())
+			.supportsFileAttributeView(PosixFileAttributeView.class));
+
+		assertThat(post(envelopes.error("prod").getBytes(StandardCharsets.UTF_8)).getStatusCode())
+			.isEqualTo(HttpStatus.OK);
+		List<QueuedEnvelope> queued = queue.nextBatch(10, 0);
+
+		assertThat(Files.getPosixFilePermissions(spoolDirectory()))
+			.containsExactlyInAnyOrderElementsOf(PosixFilePermissions.fromString("rwx------"));
+		assertThat(Files.getPosixFilePermissions(queued.getFirst().spoolFile().path()))
+			.containsExactlyInAnyOrderElementsOf(PosixFilePermissions.fromString("rw-------"));
+		queue.completed(queued.size());
+	}
+
+	@Test
+	void recreatesADeletedSpoolDirectory() throws IOException, InterruptedException {
+		assertThat(post(envelopes.error("prod").getBytes(StandardCharsets.UTF_8)).getStatusCode())
+			.isEqualTo(HttpStatus.OK);
+		List<QueuedEnvelope> first = queue.nextBatch(10, 0);
+		Files.delete(first.getFirst().spoolFile().path());
+		queue.completed(first.size());
+		Files.delete(spoolDirectory());
+
+		assertThat(post(envelopes.error("prod").getBytes(StandardCharsets.UTF_8)).getStatusCode())
+			.isEqualTo(HttpStatus.OK);
+		assertThat(spoolDirectory()).isDirectory();
 	}
 
 	private ResponseEntity<String> post(byte[] body) {

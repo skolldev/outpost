@@ -72,6 +72,14 @@ public class IngestQueue {
 		outstanding.addAndGet(-count);
 	}
 
+	/** Removes accepted references that no worker can finish during shutdown. */
+	List<QueuedEnvelope> drainRemaining() {
+		List<QueuedEnvelope> remaining = new ArrayList<>();
+		queue.drainTo(remaining);
+		completed(remaining.size());
+		return remaining;
+	}
+
 	/** Accepted items that are still queued or being processed by a worker. */
 	public int outstanding() {
 		return outstanding.get();

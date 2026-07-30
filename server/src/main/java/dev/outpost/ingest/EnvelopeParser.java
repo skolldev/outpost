@@ -47,8 +47,11 @@ public class EnvelopeParser {
 			}
 			JsonNode itemHeader = parseJson(itemHeaderLine, "item header");
 			JsonNode length = itemHeader.get("length");
-			if (length != null && length.isNumber()) {
-				long payloadLength = length.asLong();
+			if (length != null) {
+				if (!length.isIntegralNumber() || !length.canConvertToLong()) {
+					throw new MalformedEnvelopeException("item length out of bounds");
+				}
+				long payloadLength = length.longValue();
 				if (payloadLength < 0) {
 					throw new MalformedEnvelopeException("item length out of bounds");
 				}
