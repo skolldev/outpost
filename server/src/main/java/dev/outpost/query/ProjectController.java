@@ -1,8 +1,8 @@
 package dev.outpost.query;
 
 import dev.outpost.config.OutpostProperties;
+import dev.outpost.ingest.IngestAuthenticator;
 import dev.outpost.pipeline.EventIssueLock;
-import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -46,13 +46,16 @@ public class ProjectController {
 	private final OutpostProperties properties;
 	private final TransactionTemplate transaction;
 	private final EventIssueLock eventIssueLock;
+	private final IngestAuthenticator ingestAuthenticator;
 
 	public ProjectController(JdbcClient jdbc, OutpostProperties properties,
-			PlatformTransactionManager transactionManager, EventIssueLock eventIssueLock) {
+			PlatformTransactionManager transactionManager, EventIssueLock eventIssueLock,
+			IngestAuthenticator ingestAuthenticator) {
 		this.jdbc = jdbc;
 		this.properties = properties;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.eventIssueLock = eventIssueLock;
+		this.ingestAuthenticator = ingestAuthenticator;
 	}
 
 	@GetMapping
@@ -102,6 +105,9 @@ public class ProjectController {
 	@PreAuthorize("hasRole('ADMIN')")
 	public ResponseEntity<Void> delete(@PathVariable long id) {
 		int deleted = Objects.requireNonNull(transaction.execute(status -> deleteProject(id)));
+		if (deleted > 0) {
+			ingestAuthenticator.invalidateProjectKeys(id);
+		}
 		return deleted > 0 ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
 	}
 
@@ -169,7 +175,7 @@ public class ProjectController {
 		if (active == null) {
 			return ResponseEntity.badRequest().build();
 		}
-		return jdbc.sql("""
+		var updated = jdbc.sql("""
 				UPDATE project_key SET is_active = ? WHERE id = ? AND project_id = ?
 				RETURNING id, project_id, public_key, is_active, created_at
 				""")
@@ -177,7 +183,11 @@ public class ProjectController {
 			.param(keyId)
 			.param(id)
 			.query(this::mapKey)
-			.optional()
+			.optional();
+		if (updated.isPresent()) {
+			ingestAuthenticator.invalidateProjectKeys(id);
+		}
+		return updated
 			.map(ResponseEntity::ok)
 			.orElse(ResponseEntity.notFound().build());
 	}
@@ -185,10 +195,12 @@ public class ProjectController {
 	private Key createKey(long projectId) {
 		byte[] bytes = new byte[16];
 		RANDOM.nextBytes(bytes);
-		return jdbc.sql("""
+		Key key = jdbc.sql("""
 				INSERT INTO project_key (project_id, public_key) VALUES (?, ?)
 				RETURNING id, project_id, public_key, is_active, created_at
 				""").param(projectId).param(HexFormat.of().formatHex(bytes)).query(this::mapKey).single();
+		ingestAuthenticator.invalidateProjectKeys(projectId);
+		return key;
 	}
 
 	private Project mapProject(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
@@ -200,19 +212,6 @@ public class ProjectController {
 		long projectId = rs.getLong("project_id");
 		String publicKey = rs.getString("public_key");
 		return new Key(rs.getLong("id"), projectId, publicKey, rs.getBoolean("is_active"),
-				rs.getTimestamp("created_at").toInstant(), dsn(publicKey, projectId));
-	}
-
-	/**
-	 * DSN format: {@code scheme://<public_key>@<host>[/<path>]/<project_id>}. A path in
-	 * {@code outpost.public-url} (e.g. {@code https://host/outpost}) is kept so SDKs post to
-	 * {@code <path>/api/<project_id>/envelope/} — required when the app is served under a
-	 * path prefix behind a reverse proxy.
-	 */
-	private String dsn(String publicKey, long projectId) {
-		URI base = URI.create(properties.publicUrl());
-		String authority = base.getPort() > 0 ? base.getHost() + ":" + base.getPort() : base.getHost();
-		String path = base.getPath() == null ? "" : base.getPath().replaceAll("/+$", "");
-		return base.getScheme() + "://" + publicKey + "@" + authority + path + "/" + projectId;
+				rs.getTimestamp("created_at").toInstant(), properties.dsn(publicKey, projectId));
 	}
 }

@@ -96,7 +96,7 @@ class TraceQueryIntegrationTest {
 		postEnvelope(backendProject, backendKey, errorEnvelope());
 		postEnvelope(backendProject, backendKey, logEnvelope());
 
-		Map<String, Object> trace = awaitTrace(2);
+		Map<String, Object> trace = awaitTrace(2, 1, 1);
 
 		// Two transactions across two projects.
 		List<Map<String, Object>> transactions = cast(trace.get("transactions"));
@@ -252,12 +252,18 @@ class TraceQueryIntegrationTest {
 	}
 
 	private Map<String, Object> awaitTrace(int expectedTransactions) {
+		return awaitTrace(expectedTransactions, 0, 0);
+	}
+
+	private Map<String, Object> awaitTrace(int expectedTransactions, int expectedErrors, int expectedLogs) {
 		Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
 		while (Instant.now().isBefore(deadline)) {
 			ResponseEntity<Map> response = getEntity("/api/internal/traces/" + TRACE_ID);
 			if (response.getStatusCode() == HttpStatus.OK) {
 				Map<String, Object> body = cast(response.getBody());
-				if (((List<?>) body.get("transactions")).size() >= expectedTransactions) {
+				if (((List<?>) body.get("transactions")).size() >= expectedTransactions
+						&& ((List<?>) body.get("errors")).size() >= expectedErrors
+						&& ((List<?>) body.get("logs")).size() >= expectedLogs) {
 					return body;
 				}
 			}

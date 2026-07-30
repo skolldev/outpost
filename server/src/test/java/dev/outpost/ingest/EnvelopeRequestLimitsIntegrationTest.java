@@ -122,10 +122,10 @@ class EnvelopeRequestLimitsIntegrationTest {
 
 	@Test
 	void nonPositiveLimitsAreRejectedAtStartup() {
-		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, 0, 1))
+		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, null, 0, 1))
 			.isInstanceOf(IllegalArgumentException.class)
 			.hasMessageContaining("max-envelope-wire-bytes");
-		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, 1, -1))
+		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, null, 1, -1))
 			.isInstanceOf(IllegalArgumentException.class)
 			.hasMessageContaining("max-envelope-decompressed-bytes");
 	}
