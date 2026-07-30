@@ -25,11 +25,15 @@ import java.util.Map;
 public final class BenchReport {
 
 	/**
-	 * One rate plateau's outcome. Storage and queue figures are {@link Double#NaN}
-	 * / -1 when the run cannot see them (the remote driver has no DB handle).
+	 * One rate plateau's outcome. Storage, queue and allocation figures are
+	 * {@link Double#NaN} / -1 when the run cannot see them (the remote driver has
+	 * no DB handle and cannot sample the target's threads).
+	 *
+	 * @param allocatedBytes bytes allocated by server-side threads over the
+	 * plateau <em>and its drain</em> — see {@link AllocationProbe}
 	 */
 	public record Row(String scenario, String step, LoadDriver.Result load, double storedPerSecond, long queueDepthAtEnd,
-			double queueWaitP99Millis) {
+			double queueWaitP99Millis, long allocatedBytes) {
 	}
 
 	private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
@@ -92,6 +96,13 @@ public final class BenchReport {
 				Postgres. When accepted greatly exceeds stored, the run is filling a buffer rather
 				than ingesting, and `stored/s` is the honest capacity number.
 
+				`alloc KB/env` counts bytes allocated on Tomcat's request threads and the ingest
+				workers, divided by the envelopes they handled (200s and 429s alike — a shed
+				envelope was still parsed). It covers the plateau *and* the drain that follows it,
+				so the store-side cost of a backlog is attributed to the step that created it.
+				Unlike `stored/s` it is not a rate, and it is GC-independent, so it is the column to
+				quote when a change claims to have removed a copy.
+
 				""");
 		out.append("## Conditions\n\n");
 		conditions.forEach((key, value) -> out.append("- `").append(key).append("`: ").append(value).append('\n'));
@@ -100,8 +111,8 @@ public final class BenchReport {
 				+ "Any non-zero value there is explained under Failures below, and usually means the load "
 				+ "generator or the socket layer gave out before ingest did.\n\n");
 		out.append("| scenario | step | offered/s | sent/s | 200 | 429 | other | accepted/s | stored/s "
-				+ "| p50 ms | p95 ms | p99 ms | max ms | queue depth | queue wait p99 ms |\n");
-		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
+				+ "| p50 ms | p95 ms | p99 ms | max ms | queue depth | queue wait p99 ms | alloc MB | alloc KB/env |\n");
+		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
 		for (Row row : rows) {
 			LoadDriver.Result load = row.load();
 			long other = load.completed() - load.status(200) - load.status(429);
@@ -119,6 +130,8 @@ public final class BenchReport {
 			out.append(" | ").append(round(load.maxMillis()));
 			out.append(" | ").append(row.queueDepthAtEnd() < 0 ? "—" : row.queueDepthAtEnd());
 			out.append(" | ").append(round(row.queueWaitP99Millis()));
+			out.append(" | ").append(round(allocatedMegabytes(row)));
+			out.append(" | ").append(round(allocatedKilobytesPerEnvelope(row)));
 			out.append(" |\n");
 		}
 		Map<String, Long> failures = new LinkedHashMap<>();
@@ -137,6 +150,20 @@ public final class BenchReport {
 
 	private static double seconds(LoadDriver.Result load) {
 		return load.offered() / (double) load.targetRate();
+	}
+
+	private static double allocatedMegabytes(Row row) {
+		return row.allocatedBytes() < 0 ? Double.NaN : row.allocatedBytes() / (1024.0 * 1024.0);
+	}
+
+	/**
+	 * Normalized by envelopes the server actually handled, which includes the 429s:
+	 * shedding happens after the parse, so a rejected envelope has already paid for
+	 * one. Dividing by 200s alone would make an overloaded step look profligate.
+	 */
+	private static double allocatedKilobytesPerEnvelope(Row row) {
+		long handled = row.load().status(200) + row.load().status(429);
+		return (row.allocatedBytes() < 0 || handled == 0) ? Double.NaN : row.allocatedBytes() / 1024.0 / handled;
 	}
 
 	private static String round(double value) {
@@ -173,6 +200,8 @@ public final class BenchReport {
 			out.append(", \"max_ms\": ").append(number(load.maxMillis()));
 			out.append(", \"queue_depth_at_end\": ").append(row.queueDepthAtEnd());
 			out.append(", \"queue_wait_p99_ms\": ").append(number(row.queueWaitP99Millis()));
+			out.append(", \"allocated_bytes\": ").append(row.allocatedBytes());
+			out.append(", \"allocated_kb_per_envelope\": ").append(number(allocatedKilobytesPerEnvelope(row)));
 			out.append('}');
 			separator = ",";
 		}

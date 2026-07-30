@@ -95,6 +95,46 @@ Scenarios, in `server/src/test/java/dev/outpost/bench/IngestBenchmark.java`:
 | `singleVersusMultiProjectThroughput` | Does throughput scale with projects? Isolates the per-project advisory lock |
 | `burstBeyondQueueCapacity` | Does an overload shed cleanly instead of falling over? |
 
+### The allocation columns
+
+`alloc MB` and `alloc KB/env` come from `AllocationProbe`, which reads the
+per-thread allocation counters (`ThreadMXBean.getThreadAllocatedBytes`) for
+Tomcat's `http-nio-*` threads and the `ingest-worker-*` threads either side of a
+plateau. This is the column to quote in a PR that claims to have removed a copy
+— `stored/s` will barely move for one, because on a 2 GB heap allocation is not
+yet the constraint.
+
+Three properties it is worth knowing about:
+
+- **GC-independent.** The counters are monotonic and count every byte handed
+  out, whether it survived a millisecond or the whole run. A before/after is
+  therefore not measuring where the collector happened to be on its sawtooth,
+  which is what `totalMemory() - freeMemory()` deltas measure.
+- **Server-side only.** The in-JVM driver generates envelopes and runs an HTTP
+  client in the same process. It dispatches on virtual threads, whose allocation
+  is charged to their `ForkJoinPool` carriers, so the thread-name filter excludes
+  the driver by construction rather than by luck.
+- **Charged to the step that caused it.** The window closes once the queue has
+  drained, not when the offered load stops. Past the knee most of a plateau's
+  store work happens after its last request, and closing the window earlier would
+  bill that work to the following step — making the overloaded step look cheap
+  and its successor look expensive.
+
+`alloc KB/env` divides by 200s **and** 429s, because shedding happens after the
+parse: a rejected envelope has already paid for one. The unit is the envelope, so
+a log envelope carrying 100 records is legitimately ~100× an error envelope.
+Compare within a scenario, not across.
+
+Expect the figure to *drift down* on the saturated steps of a ladder — 116 KB at
+200/s against 89 KB at 3 200/s on the error ladder. Nothing got cheaper: a shed
+envelope pays for the parse and never for the store, so a step that is mostly
+429s has a cheaper mix. Compare steps with similar 429 shares, and prefer the
+unsaturated steps when quoting a before/after.
+
+A `—` in these columns means the probe's thread-name filter matched nothing — if
+Tomcat is ever switched to virtual threads, for instance. It says so on stdout
+rather than reporting a confident zero.
+
 ### Against a real deployment
 
 The in-JVM run shares a machine with the server, so its numbers are a floor —
@@ -142,7 +182,7 @@ sat half empty. Pace overload tests over seconds.
 Baseline from 2026-07-29 on a 14-core laptop, 2 GB heap, Postgres in Docker,
 shipped defaults (`queue-capacity` 10 000, `workers` 2, `max-batch` 500,
 `linger-millis` 1000). **The absolute numbers are machine-specific and will not
-reproduce elsewhere. The four findings are structural and will.**
+reproduce elsewhere. The five findings are structural and will.**
 
 | Signal | Sustained | First 429 at |
 | --- | --- | --- |
@@ -167,7 +207,16 @@ reproduce elsewhere. The four findings are structural and will.**
    past 40 envelopes/s instead of plateauing, and at 160/s a single batch did not
    finish inside the 15 s measurement window at all (0 rows stored).
 
-4. **Backpressure is late but correct.** Queue depth was pinned at 10 000 and
+4. **One error event costs ~110 KB of allocation.** Measured on the error ladder
+   (2026-07-30, `alloc KB/env`): 116 KB at 200/s, holding within a few percent up
+   to the knee. The envelope on the wire is under a kilobyte, so the ingest path
+   allocates orders of magnitude more than the telemetry it is storing — which is
+   what `TODO.md` #3 predicts from the copy count: the raw body, a per-item
+   `copyOfRange`, the Jackson tree, two `deepCopy()`s, the gzip array and a JSON
+   `String` for the JSONB bind. It is the number to beat when that item is picked
+   up.
+
+5. **Backpressure is late but correct.** Queue depth was pinned at 10 000 and
    queue wait p99 had reached ~8 s before the first 429 — an SDK gets no signal
    at all until the buffer is completely full, by which point accepted telemetry
    is arriving eight seconds stale. Accept latency stayed at 1–3 ms throughout,

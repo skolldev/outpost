@@ -108,6 +108,8 @@ class IngestBenchmark {
 
 	final LoadDriver driver = new LoadDriver();
 
+	final AllocationProbe allocation = new AllocationProbe();
+
 	List<Long> projectIds = new ArrayList<>();
 
 	List<String> keys = new ArrayList<>();
@@ -195,14 +197,23 @@ class IngestBenchmark {
 
 		int seconds = 10;
 		int rate = queue.capacity() * 3 / seconds;
+		allocation.start();
 		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, Duration.ofSeconds(seconds)),
 				request(0, () -> envelopes.error("prod")));
 
+		// Sampled while the backlog is still there, which is the demanding moment:
+		// after the drain below, readiness would be green on an idle server.
+		int readiness = readyz();
+		long depth = queue.size();
+		double waitP99 = queueWaitP99Millis("error");
 		System.out.printf("burst of %d envelopes at %d/s: %d accepted, %d rejected, %d failed, %d shed%n",
 				result.offered(), rate, result.status(200), result.status(429), result.failures(), result.shed());
 		result.failureCounts().forEach((cause, count) -> System.out.printf("  %6d × %s%n", count, cause));
-		REPORT.add(new BenchReport.Row("burst", rate + "/s", result, Double.NaN, queue.size(),
-				queueWaitP99Millis("error")));
+
+		// Drain inside the allocation window, as in measure(): a burst deliberately
+		// stores most of its rows after the offered load has stopped.
+		awaitDrain(Duration.ofMinutes(2));
+		REPORT.add(new BenchReport.Row("burst", rate + "/s", result, Double.NaN, depth, waitP99, allocation.stop()));
 
 		long serverErrors = result.statusCounts()
 			.entrySet()
@@ -212,12 +223,11 @@ class IngestBenchmark {
 			.sum();
 		assertThat(serverErrors).as("server errors under burst").isZero();
 		assertThat(result.status(429)).as("429s: the buffer must shed once full").isPositive();
-		assertThat(readyz()).as("readiness after burst").isEqualTo(200);
+		assertThat(readiness).as("readiness under a full buffer").isEqualTo(200);
 
 		// Reported rather than asserted: a shortfall here means we acknowledged
 		// telemetry we then failed to store, which is a defect to investigate, not
 		// a benchmark result to gate on.
-		awaitDrain(Duration.ofMinutes(2));
 		System.out.printf("burst durability: %d stored vs %d acknowledged%n", rowCount("event"), result.status(200));
 	}
 
@@ -245,16 +255,24 @@ class IngestBenchmark {
 			throws InterruptedException {
 		long rowsBefore = rowCount(table);
 		Instant startedAt = Instant.now();
+		allocation.start();
 		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), requests);
 		double elapsedSeconds = Duration.between(startedAt, Instant.now()).toMillis() / 1000.0;
-		// Read the queue before draining: depth at the end of the plateau is the
-		// leading indicator, and it moves long before the first 429.
+		// Read the queue and the row count before draining: depth at the end of the
+		// plateau is the leading indicator and moves long before the first 429, and
+		// stored/s is a rate over the offered window, not over the drain.
 		long depth = queue.size();
 		double stored = (rowCount(table) - rowsBefore) / elapsedSeconds;
 		double waitP99 = queueWaitP99Millis(signalOf(table));
-		System.out.printf("%-14s %5d/s offered → %6d ok, %6d 429, depth %5d, %.0f rows/s%n", scenario, rate,
-				result.status(200), result.status(429), depth, stored);
-		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitP99);
+		// Allocation, unlike the rates above, spans the drain too. Past the knee most
+		// of a plateau's store work happens after the offered load stops, and closing
+		// the window here would bill it to the next step. Free in wall clock: the same
+		// drain would otherwise be paid by the next drainAndClear().
+		awaitDrain(Duration.ofMinutes(2));
+		long allocated = allocation.stop();
+		System.out.printf("%-14s %5d/s offered → %6d ok, %6d 429, depth %5d, %.0f rows/s, %.0f MB allocated%n", scenario,
+				rate, result.status(200), result.status(429), depth, stored, allocated / (1024.0 * 1024.0));
+		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitP99, allocated);
 	}
 
 	/**

@@ -96,7 +96,10 @@ gzip `byte[]`, and a JSON `String` for the JSONB bind.
 - Allocation per event measurably reduced under a repeatable ingest benchmark
   (state the before/after in the PR). The benchmark now exists:
   `cd server && ./gradlew ingestBenchmark` writes a pasteable table to
-  `server/build/reports/ingest-benchmark/`. See `docs/performance/measuring-ingest.md`.
+  `server/build/reports/ingest-benchmark/`. Quote the **`alloc KB/env`** column —
+  it counts bytes allocated on the Tomcat and worker threads and is
+  GC-independent, so it moves when a copy disappears even though `stored/s` will
+  not. See `docs/performance/measuring-ingest.md`.
 
 Split from #2 deliberately: that one is a security fix on a deadline, this is a
 refactor. Land #2 first; several of these copies also disappear with #8.
