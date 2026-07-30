@@ -73,7 +73,7 @@ public class IngestQueue {
 	}
 
 	/** Accepted items that are still queued or being processed by a worker. */
-	int outstanding() {
+	public int outstanding() {
 		return outstanding.get();
 	}
 }

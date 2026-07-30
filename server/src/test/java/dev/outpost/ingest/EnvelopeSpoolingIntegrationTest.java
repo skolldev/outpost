@@ -84,12 +84,15 @@ class EnvelopeSpoolingIntegrationTest {
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 		List<QueuedEnvelope> queued = queue.nextBatch(10, 0);
+		assertThat(queue.size()).isZero();
+		assertThat(queue.outstanding()).as("taken batches remain outstanding until persistence completes").isOne();
 		assertThat(queued).singleElement().satisfies(item -> {
 			assertThat(item.projectId()).isEqualTo(projectId);
 			assertThat(item.spoolFile().path()).exists();
 			assertThat(read(item.spoolFile().path())).containsExactly(body);
 		});
 		queue.completed(queued.size());
+		assertThat(queue.outstanding()).isZero();
 	}
 
 	@Test

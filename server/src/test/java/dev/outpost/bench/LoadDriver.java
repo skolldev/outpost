@@ -56,7 +56,7 @@ public final class LoadDriver implements AutoCloseable {
 	 * What one plateau produced. {@code statusCounts} is keyed by HTTP status;
 	 * the interesting keys are 200 (queued) and 429 (buffer full).
 	 */
-	public record Result(int targetRate, long offered, long completed, double achievedSendRate,
+	public record Result(int targetRate, long offered, long responses, double achievedOfferRate,
 			Map<Integer, Long> statusCounts, Map<String, Long> failureCounts, long shed, double p50Millis,
 			double p95Millis, double p99Millis, double maxMillis) {
 
@@ -66,6 +66,14 @@ public final class LoadDriver implements AutoCloseable {
 
 		public long failures() {
 			return failureCounts.values().stream().mapToLong(Long::longValue).sum();
+		}
+
+		public long dispatched() {
+			return offered - shed;
+		}
+
+		public double achievedDispatchRate() {
+			return offered == 0 ? 0 : achievedOfferRate * dispatched() / offered;
 		}
 
 	}
