@@ -9,6 +9,9 @@ import dev.outpost.pipeline.ProcessedLog;
 import dev.outpost.pipeline.ProcessedTransaction;
 import dev.outpost.pipeline.TransactionPipeline;
 import dev.outpost.pipeline.TransactionStore;
+import tools.jackson.databind.JsonNode;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,9 +24,8 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 /**
- * The ingest worker pool: drains the queue in batches (≤ 500 items or
- * 1 s linger), runs the per-signal pipeline, and hands batches to the stores.
- * A failing item is logged and dropped — ingest must never wedge on bad input.
+ * Drains spool references in batches, parses one envelope at a time, and hands
+ * the resulting signal batches to their stores.
  */
 @Component
 public class IngestWorkers implements SmartLifecycle {
@@ -32,6 +34,9 @@ public class IngestWorkers implements SmartLifecycle {
 	private static final int LIFECYCLE_PHASE = 2_147_481_598;
 
 	private final IngestQueue queue;
+	private final EnvelopeSpool spool;
+	private final EnvelopeParser parser;
+	private final ClientReportCounters clientReports;
 	private final ErrorPipeline pipeline;
 	private final EventStore store;
 	private final LogPipeline logPipeline;
@@ -46,13 +51,17 @@ public class IngestWorkers implements SmartLifecycle {
 	private final List<Thread> workers = new ArrayList<>();
 	private volatile boolean running;
 
-	public IngestWorkers(IngestQueue queue, ErrorPipeline pipeline, EventStore store, LogPipeline logPipeline,
+	public IngestWorkers(IngestQueue queue, EnvelopeSpool spool, EnvelopeParser parser,
+			ClientReportCounters clientReports, ErrorPipeline pipeline, EventStore store, LogPipeline logPipeline,
 			LogStore logStore, TransactionPipeline transactionPipeline, TransactionStore transactionStore,
 			IngestMetrics metrics, @Value("${outpost.ingest.workers:2}") int workerCount,
 			@Value("${outpost.ingest.max-batch:500}") int maxBatch,
 			@Value("${outpost.ingest.linger-millis:1000}") long lingerMillis,
 			@Value("${outpost.ingest.shutdown-timeout:25s}") Duration shutdownTimeout) {
 		this.queue = queue;
+		this.spool = spool;
+		this.parser = parser;
+		this.clientReports = clientReports;
 		this.pipeline = pipeline;
 		this.store = store;
 		this.logPipeline = logPipeline;
@@ -86,67 +95,126 @@ public class IngestWorkers implements SmartLifecycle {
 	private void drainLoop() {
 		while (running || queue.size() > 0) {
 			try {
-				List<IngestItem> batch = queue.nextBatch(maxBatch, lingerMillis);
+				List<QueuedEnvelope> batch = queue.nextBatch(maxBatch, lingerMillis);
 				if (batch.isEmpty()) {
 					continue;
 				}
-				try {
-					metrics.batchDrained(batch.size());
-					List<ProcessedEvent> events = new ArrayList<>(batch.size());
-					List<ProcessedLog> logs = new ArrayList<>();
-					List<ProcessedTransaction> transactions = new ArrayList<>();
-					Instant dequeuedAt = Instant.now();
-					for (IngestItem item : batch) {
-						IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
-						// Measured before processing: this is buffer dwell time, the delay
-						// the SDK cannot see and the one that precedes a 429.
-						metrics.queueWait(signal, item.receivedAt(), dequeuedAt);
-						long startedAt = System.nanoTime();
-						try {
-							switch (item) {
-								case IngestItem.ErrorEvent event -> events.add(pipeline.process(event));
-								case IngestItem.LogBatch logBatch -> logs.addAll(logPipeline.process(logBatch));
-								case IngestItem.TransactionEvent txn ->
-									transactions.add(transactionPipeline.process(txn));
-							}
-							metrics.processed(signal, System.nanoTime() - startedAt);
-						}
-						catch (RuntimeException e) {
-							metrics.dropped(IngestMetrics.DropStage.PIPELINE);
-							log.warn("dropping unprocessable item for project {}: {}", item.projectId(), e.toString());
-						}
-					}
-					storeTimed(IngestMetrics.Signal.ERROR, events, store::store);
-					storeTimed(IngestMetrics.Signal.LOG, logs, logStore::store);
-					storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
-				}
-				finally {
-					queue.completed(batch.size());
-				}
+				digest(batch);
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
 				return;
 			}
 			catch (RuntimeException e) {
-				// The stores already degrade to per-row storage; anything reaching
-				// here is unexpected — log and keep the worker alive.
 				log.error("ingest worker iteration failed", e);
 			}
 		}
 	}
 
-	/**
-	 * Times a store call, skipping empty lists so a mixed batch doesn't record a
-	 * near-zero sample for the signals it didn't carry.
-	 */
+	void digest(List<QueuedEnvelope> batch) {
+		try {
+			metrics.batchDrained(batch.size());
+			List<ProcessedEvent> events = new ArrayList<>(batch.size());
+			List<ProcessedLog> logs = new ArrayList<>();
+			List<ProcessedTransaction> transactions = new ArrayList<>();
+			Instant dequeuedAt = Instant.now();
+			for (QueuedEnvelope envelope : batch) {
+				try {
+					processEnvelope(envelope, dequeuedAt, events, logs, transactions);
+				}
+				catch (IOException | RuntimeException e) {
+					metrics.dropped(IngestMetrics.DropStage.PIPELINE);
+					log.warn("dropping unprocessable envelope for project {} from {}: {}", envelope.projectId(),
+							envelope.spoolFile().path(), e.toString());
+				}
+			}
+			storeTimed(IngestMetrics.Signal.ERROR, events, store::store);
+			storeTimed(IngestMetrics.Signal.LOG, logs, logStore::store);
+			storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
+		}
+		finally {
+			for (QueuedEnvelope envelope : batch) {
+				spool.delete(envelope.spoolFile());
+			}
+			queue.completed(batch.size());
+		}
+	}
+
+	private void processEnvelope(QueuedEnvelope queued, Instant dequeuedAt, List<ProcessedEvent> events,
+			List<ProcessedLog> logs, List<ProcessedTransaction> transactions) throws IOException {
+		List<IngestItem.Attachment> attachments = new ArrayList<>();
+		try (InputStream in = spool.open(queued.spoolFile())) {
+			parser.parse(in, item -> {
+				switch (item.kind()) {
+					case ATTACHMENT -> attachments.add(new IngestItem.Attachment(
+							item.header().path("filename").asText("attachment"),
+							item.header().path("content_type").asText("application/octet-stream"), item.payload()));
+					case CLIENT_REPORT -> {
+						JsonNode report = parser.parseObjectPayload(item);
+						if (report != null) {
+							clientReports.record(queued.projectId(), report);
+						}
+					}
+					case EVENT, LOG, TRANSACTION, OTHER -> {
+					}
+				}
+			});
+		}
+
+		try (InputStream in = spool.open(queued.spoolFile())) {
+			parser.parse(in, item -> {
+				JsonNode payload = switch (item.kind()) {
+					case EVENT, LOG, TRANSACTION -> parser.parseObjectPayload(item);
+					default -> null;
+				};
+				if (payload == null) {
+					return;
+				}
+				IngestItem ingestItem = switch (item.kind()) {
+					case EVENT -> new IngestItem.ErrorEvent(queued.projectId(), queued.receivedAt(), payload,
+							attachments);
+					case LOG -> new IngestItem.LogBatch(queued.projectId(), queued.receivedAt(), payload);
+					case TRANSACTION ->
+						new IngestItem.TransactionEvent(queued.projectId(), queued.receivedAt(), payload);
+					default -> throw new IllegalStateException("unexpected non-signal item");
+				};
+				process(ingestItem, dequeuedAt, events, logs, transactions);
+			});
+		}
+	}
+
+	private void process(IngestItem item, Instant dequeuedAt, List<ProcessedEvent> events,
+			List<ProcessedLog> logs, List<ProcessedTransaction> transactions) {
+		IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
+		metrics.queueWait(signal, item.receivedAt(), dequeuedAt);
+		long startedAt = System.nanoTime();
+		try {
+			switch (item) {
+				case IngestItem.ErrorEvent event -> events.add(pipeline.process(event));
+				case IngestItem.LogBatch logBatch -> logs.addAll(logPipeline.process(logBatch));
+				case IngestItem.TransactionEvent txn -> transactions.add(transactionPipeline.process(txn));
+			}
+			metrics.processed(signal, System.nanoTime() - startedAt);
+		}
+		catch (RuntimeException e) {
+			metrics.dropped(IngestMetrics.DropStage.PIPELINE);
+			log.warn("dropping unprocessable item for project {}: {}", item.projectId(), e.toString());
+		}
+	}
+
 	private <T> void storeTimed(IngestMetrics.Signal signal, List<T> batch, Consumer<List<T>> store) {
 		if (batch.isEmpty()) {
 			return;
 		}
 		long startedAt = System.nanoTime();
-		store.accept(batch);
-		metrics.stored(signal, System.nanoTime() - startedAt);
+		try {
+			store.accept(batch);
+			metrics.stored(signal, System.nanoTime() - startedAt);
+		}
+		catch (RuntimeException e) {
+			metrics.dropped(IngestMetrics.DropStage.STORE, batch.size());
+			log.warn("dropping {} {} item(s) after store failure: {}", batch.size(), signal, e.toString());
+		}
 	}
 
 	@Override
@@ -176,6 +244,9 @@ public class IngestWorkers implements SmartLifecycle {
 			if (worker.isAlive()) {
 				worker.interrupt();
 			}
+		}
+		for (QueuedEnvelope envelope : queue.drainRemaining()) {
+			spool.delete(envelope.spoolFile());
 		}
 		workers.clear();
 		if (interrupted) {

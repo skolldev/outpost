@@ -8,22 +8,25 @@ send what they send, and the only lever we have is shedding.
 
 ```
 POST /api/{project}/envelope/
-  → parse envelope
+  → stream wire body to an ephemeral spool file
+  → stream-parse the spool
   → validate Project Key        (bounded in-memory cache; one DB query on miss)
-  → IngestQueue.offer()         ← ArrayBlockingQueue, outpost.ingest.queue-capacity (10 000)
+  → IngestQueue.offer()         ← ArrayBlockingQueue of spool references (50 000)
       full? → 429 + Retry-After + X-Sentry-Rate-Limits
   → 200
                                   ⋮  asynchronous
   ingest-worker-N               ← outpost.ingest.workers (2)
   → nextBatch(max-batch 500, linger 1 s)
+  → stream-parse each spool
   → pipeline.process per item
   → store.store per signal      ← per-project advisory lock, then the inserts
+  → remove successfully digested spools
 ```
 
 The accept side and the drain side fail in completely different ways, and
 conflating them is the main way to get a wrong answer:
 
-- **Accept side** is cheap — a parse, a cached Project Key lookup, an enqueue. It will happily
+- **Accept side** is a bounded spool write, a streaming parse, a cached Project Key lookup, and an enqueue. It will happily
   acknowledge far more than the system can store.
 - **Drain side** is where the work is. `EventStore` takes
   `pg_advisory_xact_lock` for the project and then issues several individual
@@ -31,13 +34,12 @@ conflating them is the main way to get a wrong answer:
 
 So *accepted per second is not capacity*. Stored rows per second is.
 
-> **The buffer bounds item count, not memory.** `queue-capacity` is 10 000
-> *items*, and a `LogBatch` item holds up to 100 log records as a parsed Jackson
-> tree. A log-heavy workload therefore exhausts heap long before it fills the
-> buffer: on a 512 MB heap the first run of this benchmark died at queue depth
-> **1 461 of 10 000**, having issued zero 429s. Backpressure never got a chance to
-> engage. That is `TODO.md` #8's argument, with a number attached — and the reason
-> `ingestBenchmark` sets a 2 GB heap rather than inheriting Gradle's default.
+> **The buffer bounds envelope count without retaining envelope payloads.**
+> `queue-capacity` is 50 000 fixed-size spool references. Parsed trees and
+> attachment bytes exist only while a worker digests one envelope, so queued
+> heap use no longer scales with envelope size. Disk capacity is now the
+> variable-size bound; an unwritable or full spool filesystem returns 500 and
+> logs the failure.
 
 ## Metrics
 
@@ -60,7 +62,7 @@ deliberately **not** published by `docker-compose.yml` — `SecurityConfig` ends
 | `outpost_ingest_items_total{signal,outcome}` | Items reaching the buffer, `accepted` / `rejected` per signal — one envelope can carry several. The envelope-level outcomes reject before an item exists, so they never appear here |
 | `outpost_ingest_queue_depth` / `_capacity` | **The leading indicator.** Depth climbs long before the first 429 |
 | `outpost_ingest_queue_wait_seconds{signal}` | Dwell time in the buffer. The delay an SDK cannot see |
-| `outpost_ingest_batch_size` | Items per worker drain — small batches mean the linger is dominating |
+| `outpost_ingest_batch_size` | Envelope references per worker drain — small batches mean the linger is dominating |
 | `outpost_ingest_process_seconds{signal}` | Pipeline cost |
 | `outpost_ingest_store_seconds{signal}` | Persistence cost — usually where the time is |
 | `outpost_ingest_dropped_total{stage}` | Items lost at `pipeline` or `store`. Should be zero |
@@ -93,16 +95,24 @@ Scenarios, in `server/src/test/java/dev/outpost/bench/IngestBenchmark.java`:
 | `logEnvelopeStepLoad` | Log records per second (100 per envelope, as the SDKs batch them) |
 | `transactionEnvelopeStepLoad` | Transactions per second, each fanning out into spans |
 | `singleVersusMultiProjectThroughput` | Does throughput scale with projects? Isolates the per-project advisory lock |
-| `burstBeyondQueueCapacity` | Does an overload shed cleanly instead of falling over? |
+| `burstBeyondQueueCapacity` | Does an overload shed cleanly instead of falling over? Uses a driver-safe 3 200/s and extends duration to offer three queue capacities |
+
+The report distinguishes the target `offered/s`, the actual scheduler pace,
+and the rate the driver dispatched after its own in-flight limit. Any non-zero
+driver `failed` or `shed` count invalidates a server-capacity comparison and
+fails the embedded benchmark. Queue wait is an exact per-step average; an
+in-process percentile cannot be reset or subtracted safely between plateaus. It
+includes the verified drain, so every accepted envelope in the step contributes.
 
 ### The allocation columns
 
 `alloc MB` and `alloc KB/env` come from `AllocationProbe`, which reads the
 per-thread allocation counters (`ThreadMXBean.getThreadAllocatedBytes`) for
-Tomcat's `http-nio-*` threads and the `ingest-worker-*` threads either side of a
-plateau. This is the column to quote in a PR that claims to have removed a copy
-— `stored/s` will barely move for one, because on a 2 GB heap allocation is not
-yet the constraint.
+Tomcat's `http-nio-*` threads and the `ingest-worker-*` threads. Request threads
+are sampled as soon as every HTTP response has arrived; worker threads remain in
+the window until the queue has fully drained. This is the column to quote in a
+PR that claims to have removed a copy — `stored/s` will barely move for one,
+because on a 2 GB heap allocation is not yet the constraint.
 
 Three properties it is worth knowing about:
 
@@ -118,7 +128,9 @@ Three properties it is worth knowing about:
   drained, not when the offered load stops. Past the knee most of a plateau's
   store work happens after its last request, and closing the window earlier would
   bill that work to the following step — making the overloaded step look cheap
-  and its successor look expensive.
+  and its successor look expensive. The accept-side checkpoint also prevents
+  idle Tomcat threads from timing out during a long drain and taking their
+  allocation counters with them.
 
 `alloc KB/env` divides by 200s **and** 429s, because shedding happens after the
 parse: a rejected envelope has already paid for one. The unit is the envelope, so
@@ -154,7 +166,7 @@ the run for the queue columns.
 
 ## Writing a benchmark that doesn't lie
 
-Four traps, all of which this harness avoids deliberately — worth knowing if you
+Six traps, all of which this harness avoids deliberately — worth knowing if you
 extend it.
 
 1. **Closed-loop drivers hide saturation.** N threads looping send-then-wait
@@ -171,16 +183,21 @@ extend it.
    a single `issue` row *inside* the per-project advisory lock — a degenerate hot
    spot, not production shape. `EnvelopeFactory` spreads over 50 by default; pass
    `1` when you want the worst case on purpose.
-
-A fifth, learned the hard way: an instantaneous spike of tens of thousands of
-requests never reaches the ingest buffer at all. It exhausts the accept backlog
-first, so the run measures the socket layer and reports zero 429s while the queue
-sat half empty. Pace overload tests over seconds.
+5. **The driver can saturate before the server.** An instantaneous spike—or a
+   burst rate scaled with queue capacity—can exhaust the driver's in-flight cap,
+   the accept backlog, or ephemeral ports before the queue fills. The burst keeps
+   a known-good fixed rate and scales duration instead. Driver failures and
+   driver-side shedding are reported separately and make the local run fail.
+6. **An empty buffer is not an idle ingest path.** Workers remove whole batches
+   before persisting them. Clearing fixtures when `queue.size()` reaches zero can
+   delete a Project underneath an in-flight batch and contaminate every later
+   scenario. Scenario boundaries wait for the outstanding count, which includes
+   both buffered and in-flight envelopes, and timeouts fail rather than warn.
 
 ## What the first run found
 
 Baseline from 2026-07-29 on a 14-core laptop, 2 GB heap, Postgres in Docker,
-shipped defaults (`queue-capacity` 10 000, `workers` 2, `max-batch` 500,
+the then-current defaults (`queue-capacity` 10 000 parsed items, `workers` 2, `max-batch` 500,
 `linger-millis` 1000). **The absolute numbers are machine-specific and will not
 reproduce elsewhere. The five findings are structural and will.**
 

@@ -6,7 +6,7 @@ import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.ingest.IngestQueue;
 import dev.outpost.support.EnvelopeFactory;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.distribution.ValueAtPercentile;
+import io.micrometer.core.instrument.Timer;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,8 +42,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * existing perf guard ({@code TraceSearchPerformanceTest}) says as much and
  * measures shared-buffer hits instead. The pass/fail half of this question, that
  * a full buffer sheds load correctly, lives in {@code
- * IngestBackpressureIntegrationTest} and does run in CI. The only assertions here
- * are liveness ones: the server must survive the burst.
+ * IngestBackpressureIntegrationTest} and does run in CI. Assertions here only
+ * validate the run itself and liveness: the driver must deliver the offered load,
+ * and the server must survive the burst.
  *
  * <p>Each step is a plateau at a fixed offered rate against a drained queue, so
  * it reads as an independent answer to "can the system sustain R/s?". Three
@@ -52,7 +54,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <li><b>stored/s</b> — rows that reached Postgres. This is the real capacity;
  * accepted/s only says the endpoint took the bytes.
  * <li><b>queue depth</b> — the leading indicator. It climbs a whole step or two
- * before any 429 appears, because 10 000 slots take a while to fill.
+ * before any 429 appears, because the reference buffer takes a while to fill.
  * <li><b>429s</b> — the lagging indicator, and the only one an SDK ever sees.
  * </ol>
  *
@@ -83,6 +85,14 @@ class IngestBenchmark {
 
 	/** Long enough for the buffer to visibly fill at an unsustainable rate. */
 	private static final Duration STEP_DURATION = Duration.ofSeconds(15);
+
+	/**
+	 * Highest rate already demonstrated to reach the application without exhausting
+	 * the local HTTP driver or ephemeral-port range.
+	 */
+	private static final int BURST_RATE = 3200;
+
+	private static final int BURST_QUEUE_MULTIPLE = 3;
 
 	private static final int LOG_RECORDS_PER_ITEM = 100;
 
@@ -184,36 +194,37 @@ class IngestBenchmark {
 	 * workers cannot possibly keep up with, and check the server sheds rather than
 	 * falls over — the premise of ADR 0002.
 	 *
-	 * <p>Paced rather than fired all at once. An instantaneous 20 000-request
-	 * spike never reaches the ingest buffer at all: it exhausts Tomcat's accept
-	 * backlog first, so the run measures the socket layer and reports zero 429s
-	 * while the queue sat half empty. Spreading the same volume over seconds keeps
-	 * connections serviceable so the pressure lands where this test is aiming.
+	 * <p>The rate stays fixed as capacity grows; duration carries the extra volume.
+	 * Scaling rate with capacity can exhaust the load driver's in-flight limit or
+	 * the host's ephemeral ports before requests reach ingest, producing a false
+	 * zero-429 result while the queue remains partly empty.
 	 */
 	@Test
 	void burstBeyondQueueCapacity() throws Exception {
 		warmUp(() -> envelopes.error("prod"), 0);
 		drainAndClear();
 
-		int seconds = 10;
-		int rate = queue.capacity() * 3 / seconds;
+		LoadDriver.Step step = burstStep(queue.capacity());
+		QueueWaitMark waitBefore = queueWaitMark("error");
 		allocation.start();
-		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, Duration.ofSeconds(seconds)),
-				request(0, () -> envelopes.error("prod")));
+		LoadDriver.Result result = driver.run(step, request(0, () -> envelopes.error("prod")));
+		allocation.finishAcceptPhase();
 
 		// Sampled while the backlog is still there, which is the demanding moment:
 		// after the drain below, readiness would be green on an idle server.
 		int readiness = readyz();
 		long depth = queue.size();
-		double waitP99 = queueWaitP99Millis("error");
 		System.out.printf("burst of %d envelopes at %d/s: %d accepted, %d rejected, %d failed, %d shed%n",
-				result.offered(), rate, result.status(200), result.status(429), result.failures(), result.shed());
+				result.offered(), step.ratePerSecond(), result.status(200), result.status(429), result.failures(),
+				result.shed());
 		result.failureCounts().forEach((cause, count) -> System.out.printf("  %6d × %s%n", count, cause));
 
 		// Drain inside the allocation window, as in measure(): a burst deliberately
 		// stores most of its rows after the offered load has stopped.
 		awaitDrain(Duration.ofMinutes(2));
-		REPORT.add(new BenchReport.Row("burst", rate + "/s", result, Double.NaN, depth, waitP99, allocation.stop()));
+		double waitAverage = queueWaitAverageMillis("error", waitBefore);
+		REPORT.add(new BenchReport.Row("burst", step.ratePerSecond() + "/s for " + step.duration().toSeconds() + "s",
+				result, Double.NaN, depth, waitAverage, allocation.stop()));
 
 		long serverErrors = result.statusCounts()
 			.entrySet()
@@ -221,6 +232,7 @@ class IngestBenchmark {
 			.filter(entry -> entry.getKey() >= 500)
 			.mapToLong(Map.Entry::getValue)
 			.sum();
+		assertDriverHealthy(result, "burst");
 		assertThat(serverErrors).as("server errors under burst").isZero();
 		assertThat(result.status(429)).as("429s: the buffer must shed once full").isPositive();
 		assertThat(readiness).as("readiness under a full buffer").isEqualTo(200);
@@ -255,24 +267,27 @@ class IngestBenchmark {
 			throws InterruptedException {
 		long rowsBefore = rowCount(table);
 		Instant startedAt = Instant.now();
+		QueueWaitMark waitBefore = queueWaitMark(signalOf(table));
 		allocation.start();
 		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), requests);
+		allocation.finishAcceptPhase();
 		double elapsedSeconds = Duration.between(startedAt, Instant.now()).toMillis() / 1000.0;
 		// Read the queue and the row count before draining: depth at the end of the
 		// plateau is the leading indicator and moves long before the first 429, and
 		// stored/s is a rate over the offered window, not over the drain.
 		long depth = queue.size();
 		double stored = (rowCount(table) - rowsBefore) / elapsedSeconds;
-		double waitP99 = queueWaitP99Millis(signalOf(table));
 		// Allocation, unlike the rates above, spans the drain too. Past the knee most
 		// of a plateau's store work happens after the offered load stops, and closing
 		// the window here would bill it to the next step. Free in wall clock: the same
 		// drain would otherwise be paid by the next drainAndClear().
 		awaitDrain(Duration.ofMinutes(2));
+		double waitAverage = queueWaitAverageMillis(signalOf(table), waitBefore);
 		long allocated = allocation.stop();
 		System.out.printf("%-14s %5d/s offered → %6d ok, %6d 429, depth %5d, %.0f rows/s, %.0f MB allocated%n", scenario,
 				rate, result.status(200), result.status(429), depth, stored, allocated / (1024.0 * 1024.0));
-		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitP99, allocated);
+		assertDriverHealthy(result, scenario + " @ " + rate + "/s");
+		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitAverage, allocated);
 	}
 
 	/**
@@ -282,6 +297,12 @@ class IngestBenchmark {
 	 */
 	private int contendedRate() {
 		return ERROR_RATES[ERROR_RATES.length - 1];
+	}
+
+	static LoadDriver.Step burstStep(int queueCapacity) {
+		long offered = Math.multiplyExact((long) queueCapacity, BURST_QUEUE_MULTIPLE);
+		long seconds = Math.ceilDiv(offered, BURST_RATE);
+		return new LoadDriver.Step(BURST_RATE, Duration.ofSeconds(seconds));
 	}
 
 	// ------------------------------------------------------------------ helpers
@@ -316,8 +337,10 @@ class IngestBenchmark {
 
 	/** JIT, connection pool and — importantly — partition DDL, which is a one-off cost. */
 	private void warmUp(Supplier<String> envelope, int projectIndex) throws InterruptedException {
-		driver.run(new LoadDriver.Step(50, Duration.ofSeconds(5)), request(projectIndex, envelope));
+		LoadDriver.Result result = driver.run(new LoadDriver.Step(50, Duration.ofSeconds(5)),
+				request(projectIndex, envelope));
 		awaitDrain(Duration.ofSeconds(60));
+		assertDriverHealthy(result, "warm-up");
 	}
 
 	private void drainAndClear() throws InterruptedException {
@@ -326,18 +349,23 @@ class IngestBenchmark {
 	}
 
 	private void awaitDrain(Duration timeout) throws InterruptedException {
-		Instant deadline = Instant.now().plus(timeout);
-		while (Instant.now().isBefore(deadline)) {
-			if (queue.size() == 0) {
-				// One linger beyond empty, so the final batch has been stored.
-				Thread.sleep(1500);
-				if (queue.size() == 0) {
-					return;
-				}
+		awaitIdle(queue::outstanding, timeout);
+	}
+
+	static void awaitIdle(IntSupplier outstanding, Duration timeout) throws InterruptedException {
+		long deadline = System.nanoTime() + timeout.toNanos();
+		while (true) {
+			int remaining = outstanding.getAsInt();
+			if (remaining == 0) {
+				return;
 			}
-			Thread.sleep(200);
+			long nanosLeft = deadline - System.nanoTime();
+			if (nanosLeft <= 0) {
+				throw new AssertionError(remaining + (remaining == 1 ? " item" : " items")
+						+ " still queued or in flight after " + timeout);
+			}
+			Thread.sleep(Math.min(200, Math.max(1, Duration.ofNanos(nanosLeft).toMillis())));
 		}
-		System.out.println("warning: queue did not drain within " + timeout + ", depth " + queue.size());
 	}
 
 	private void clearTelemetry() {
@@ -361,18 +389,25 @@ class IngestBenchmark {
 		};
 	}
 
-	private double queueWaitP99Millis(String signal) {
-		ValueAtPercentile[] percentiles = meters.get("outpost.ingest.queue.wait")
+	private QueueWaitMark queueWaitMark(String signal) {
+		Timer timer = meters.get("outpost.ingest.queue.wait")
 			.tag("signal", signal)
-			.timer()
-			.takeSnapshot()
-			.percentileValues();
-		for (ValueAtPercentile value : percentiles) {
-			if (value.percentile() == 0.99) {
-				return value.value(TimeUnit.MILLISECONDS);
-			}
-		}
-		return Double.NaN;
+			.timer();
+		return new QueueWaitMark(timer.count(), timer.totalTime(TimeUnit.MILLISECONDS));
+	}
+
+	private double queueWaitAverageMillis(String signal, QueueWaitMark before) {
+		QueueWaitMark after = queueWaitMark(signal);
+		long count = after.count() - before.count();
+		return count == 0 ? Double.NaN : (after.totalMillis() - before.totalMillis()) / count;
+	}
+
+	private static void assertDriverHealthy(LoadDriver.Result result, String scenario) {
+		assertThat(result.failures()).as("driver/socket failures during " + scenario).isZero();
+		assertThat(result.shed()).as("requests shed by the load driver during " + scenario).isZero();
+	}
+
+	private record QueueWaitMark(long count, double totalMillis) {
 	}
 
 	private int readyz() throws Exception {

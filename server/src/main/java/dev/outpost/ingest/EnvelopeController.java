@@ -2,20 +2,17 @@ package dev.outpost.ingest;
 
 import dev.outpost.config.OutpostProperties;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
-import java.io.ByteArrayInputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.EnumMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -26,10 +23,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The Sentry-compatible telemetry ingest endpoint. Parses + buffers,
- * responds immediately; processing is async in the ingest workers. Unknown item
- * types are skipped silently — that is the compatibility contract that keeps
- * newer SDKs from breaking ingest.
+ * The Sentry-compatible telemetry ingest endpoint. It validates and spools each
+ * envelope, then responds as soon as the fixed-size spool reference is queued.
  */
 @RestController
 @RequestMapping("/api/{projectId:\\d+}")
@@ -39,119 +34,90 @@ public class EnvelopeController {
 	private static final int RETRY_AFTER_SECONDS = 30;
 
 	private final EnvelopeParser parser;
+	private final EnvelopeSpool spool;
 	private final IngestAuthenticator authenticator;
 	private final IngestQueue queue;
 	private final ClientReportCounters clientReports;
-	private final ObjectMapper mapper;
 	private final IngestMetrics metrics;
 	private final OutpostProperties properties;
-	private final int maxEnvelopeWireBytes;
-	private final int maxEnvelopeDecompressedBytes;
 
-	public EnvelopeController(EnvelopeParser parser, IngestAuthenticator authenticator, IngestQueue queue,
-			ClientReportCounters clientReports, ObjectMapper mapper, IngestMetrics metrics,
-			OutpostProperties properties,
-			@Value("${outpost.ingest.max-envelope-wire-bytes:4194304}") int maxEnvelopeWireBytes,
-			@Value("${outpost.ingest.max-envelope-decompressed-bytes:20971520}") int maxEnvelopeDecompressedBytes) {
+	public EnvelopeController(EnvelopeParser parser, EnvelopeSpool spool, IngestAuthenticator authenticator,
+			IngestQueue queue, ClientReportCounters clientReports, IngestMetrics metrics,
+			OutpostProperties properties) {
 		this.parser = parser;
+		this.spool = spool;
 		this.authenticator = authenticator;
 		this.queue = queue;
 		this.clientReports = clientReports;
-		this.mapper = mapper;
 		this.metrics = metrics;
 		this.properties = properties;
-		if (maxEnvelopeWireBytes <= 0) {
-			throw new IllegalArgumentException("outpost.ingest.max-envelope-wire-bytes must be positive");
-		}
-		if (maxEnvelopeDecompressedBytes <= 0) {
-			throw new IllegalArgumentException("outpost.ingest.max-envelope-decompressed-bytes must be positive");
-		}
-		this.maxEnvelopeWireBytes = maxEnvelopeWireBytes;
-		this.maxEnvelopeDecompressedBytes = maxEnvelopeDecompressedBytes;
 	}
 
 	@PostMapping(path = "/envelope/", consumes = { "application/x-sentry-envelope", "text/plain", "*/*" })
 	public ResponseEntity<Map<String, String>> envelope(@PathVariable long projectId,
-			@RequestParam(name = "sentry_key", required = false) String sentryKeyParam, HttpServletRequest request)
-			throws IOException {
-		byte[] body = readBody(request);
-		Envelope envelope = parser.parse(body);
-
-		String key = authenticator.extractKey(request.getHeader("X-Sentry-Auth"), sentryKeyParam, envelope.header());
-		if (!authenticator.isValidKey(projectId, key)) {
-			metrics.envelope(IngestMetrics.Outcome.FORBIDDEN);
-			return ResponseEntity.status(HttpStatus.FORBIDDEN)
-				.body(Map.of("detail", "invalid or inactive DSN key", "dsn", properties.dsn(key, projectId)));
-		}
-
+			@RequestParam(name = "sentry_key", required = false) String sentryKeyParam, HttpServletRequest request) {
 		Instant receivedAt = Instant.now();
-		List<IngestItem.Attachment> attachments = new ArrayList<>();
-		List<JsonNode> events = new ArrayList<>();
-		List<JsonNode> logBatches = new ArrayList<>();
-		List<JsonNode> transactions = new ArrayList<>();
-		for (Envelope.Item item : envelope.items()) {
-			switch (item.type()) {
-				case "event" -> {
-					JsonNode event = parseItemJson(item);
-					if (event != null) {
-						events.add(event);
-					}
-				}
-				case "log" -> {
-					JsonNode batch = parseItemJson(item);
-					if (batch != null) {
-						logBatches.add(batch);
-					}
-				}
-				case "transaction" -> {
-					JsonNode transaction = parseItemJson(item);
-					if (transaction != null) {
-						transactions.add(transaction);
-					}
-				}
-				case "attachment" -> attachments.add(new IngestItem.Attachment(
-						item.header().path("filename").asText("attachment"),
-						item.header().path("content_type").asText("application/octet-stream"), item.payload()));
-				case "client_report" -> {
-					JsonNode report = parseItemJson(item);
-					if (report != null) {
-						clientReports.record(projectId, report);
-					}
-				}
-				// session, sessions, check_in, profile, replay_*, statsd, metric_buckets,
-				// span (until span-streaming) and anything unknown: skip silently.
-				default -> {
-				}
-			}
+		SpoolFile spoolFile;
+		try {
+			spoolFile = spool.write(request);
+		}
+		catch (EnvelopeSpool.SpoolWriteException e) {
+			log.error("failed to spool envelope for project {}", projectId, e.getCause());
+			throw e;
 		}
 
-		List<IngestItem> queued = new ArrayList<>();
-		for (JsonNode event : events) {
-			// Attachments in an envelope belong to its (single) event; multi-event
-			// envelopes don't occur in practice, so attach to each parsed event.
-			queued.add(new IngestItem.ErrorEvent(projectId, receivedAt, event, attachments));
-		}
-		for (JsonNode batch : logBatches) {
-			queued.add(new IngestItem.LogBatch(projectId, receivedAt, batch));
-		}
-		for (JsonNode transaction : transactions) {
-			queued.add(new IngestItem.TransactionEvent(projectId, receivedAt, transaction));
-		}
-		for (IngestItem item : queued) {
-			IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
-			if (!queue.offer(item)) {
-				metrics.itemRejected(signal);
+		boolean queued = false;
+		try {
+			Inspection inspection = inspect(spoolFile);
+			String key = authenticator.extractKey(request.getHeader("X-Sentry-Auth"), sentryKeyParam,
+					inspection.header());
+			if (!authenticator.isValidKey(projectId, key)) {
+				metrics.envelope(IngestMetrics.Outcome.FORBIDDEN);
+				return ResponseEntity.status(HttpStatus.FORBIDDEN)
+					.body(Map.of("detail", "invalid or inactive DSN key", "dsn", properties.dsn(key, projectId)));
+			}
+
+			if (inspection.itemCounts().isEmpty()) {
+				if (inspection.hasClientReport()) {
+					recordClientReports(projectId, spoolFile);
+				}
+				metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
+				return ResponseEntity.ok(Map.of("id", eventId(inspection)));
+			}
+
+			QueuedEnvelope envelope = new QueuedEnvelope(projectId, receivedAt, spoolFile);
+			if (!queue.offer(envelope)) {
+				if (inspection.hasClientReport()) {
+					recordClientReports(projectId, spoolFile);
+				}
+				recordItems(inspection, false);
 				metrics.envelope(IngestMetrics.Outcome.REJECTED);
 				return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
 					.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS))
 					.header("X-Sentry-Rate-Limits", RETRY_AFTER_SECONDS + ":all:organization")
 					.body(Map.of("detail", "ingest buffer full"));
 			}
-			metrics.itemQueued(signal);
+			queued = true;
+			recordItems(inspection, true);
+			metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
+			return ResponseEntity.ok(Map.of("id", eventId(inspection)));
 		}
-
-		metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
-		return ResponseEntity.ok(Map.of("id", eventId(envelope, events)));
+		catch (EOFException | ZipException e) {
+			if (!spoolFile.gzip()) {
+				log.error("failed to read spooled envelope for project {} from {}", projectId, spoolFile.path(), e);
+				throw new EnvelopeSpool.SpoolReadException(e);
+			}
+			throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
+		}
+		catch (IOException e) {
+			log.error("failed to read spooled envelope for project {} from {}", projectId, spoolFile.path(), e);
+			throw new EnvelopeSpool.SpoolReadException(e);
+		}
+		finally {
+			if (!queued) {
+				spool.delete(spoolFile);
+			}
+		}
 	}
 
 	@PostMapping({ "/security/", "/minidump/" })
@@ -159,59 +125,48 @@ public class EnvelopeController {
 		return ResponseEntity.notFound().build();
 	}
 
-	private byte[] readBody(HttpServletRequest request) throws IOException {
-		boolean gzip = "gzip".equalsIgnoreCase(request.getHeader("Content-Encoding"));
-		int encodedLimit = gzip ? maxEnvelopeWireBytes
-				: Math.min(maxEnvelopeWireBytes, maxEnvelopeDecompressedBytes);
-		String encodedLimitName = encodedLimit == maxEnvelopeWireBytes ? "wire" : "decompressed";
-		if (request.getContentLengthLong() > encodedLimit) {
-			throw oversize(encodedLimitName, encodedLimit);
+	private Inspection inspect(SpoolFile spoolFile) throws IOException {
+		InspectionBuilder inspection = new InspectionBuilder();
+		JsonNode header;
+		try (InputStream in = spool.open(spoolFile)) {
+			header = parser.parse(in, inspection::accept);
 		}
-		byte[] wireBody = readLimited(request.getInputStream(), encodedLimit, encodedLimitName);
-		if (!gzip) {
-			return wireBody;
-		}
+		return inspection.build(header);
+	}
 
-		try (InputStream decompressed = new GZIPInputStream(new ByteArrayInputStream(wireBody))) {
-			return readLimited(decompressed, maxEnvelopeDecompressedBytes, "decompressed");
-		}
-		catch (IOException e) {
-			throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
+	private void recordClientReports(long projectId, SpoolFile spoolFile) throws IOException {
+		try (InputStream in = spool.open(spoolFile)) {
+			parser.parse(in, item -> {
+				if (item.kind() != Envelope.ItemKind.CLIENT_REPORT) {
+					return;
+				}
+				JsonNode report = parser.parseObjectPayload(item);
+				if (report != null) {
+					clientReports.record(projectId, report);
+				}
+			});
 		}
 	}
 
-	private byte[] readLimited(InputStream in, int limit, String limitName) throws IOException {
-		byte[] body = in.readNBytes(limit);
-		if (body.length == limit && in.read() >= 0) {
-			throw oversize(limitName, limit);
-		}
-		return body;
-	}
-
-	private EnvelopeParser.OversizeException oversize(String limitName, int limit) {
-		return new EnvelopeParser.OversizeException(
-				"envelope exceeds " + limitName + " size limit of " + limit + " bytes");
-	}
-
-	private JsonNode parseItemJson(Envelope.Item item) {
-		try {
-			JsonNode node = mapper.readTree(item.payload());
-			return node != null && node.isObject() ? node : null;
-		}
-		catch (tools.jackson.core.JacksonException e) {
-			log.debug("dropping item with malformed JSON payload: {}", e.getMessage());
-			return null;
-		}
-	}
-
-	private String eventId(Envelope envelope, List<JsonNode> events) {
-		if (envelope.header().hasNonNull("event_id")) {
-			return envelope.header().get("event_id").asText();
-		}
-		for (JsonNode event : events) {
-			if (event.hasNonNull("event_id")) {
-				return event.get("event_id").asText();
+	private void recordItems(Inspection inspection, boolean accepted) {
+		for (IngestMetrics.Signal signal : IngestMetrics.Signal.values()) {
+			for (int i = 0; i < inspection.itemCounts().getOrDefault(signal, 0); i++) {
+				if (accepted) {
+					metrics.itemQueued(signal);
+				}
+				else {
+					metrics.itemRejected(signal);
+				}
 			}
+		}
+	}
+
+	private String eventId(Inspection inspection) {
+		if (inspection.header().hasNonNull("event_id")) {
+			return inspection.header().get("event_id").asText();
+		}
+		if (inspection.itemEventId() != null) {
+			return inspection.itemEventId();
 		}
 		return UUID.randomUUID().toString().replace("-", "");
 	}
@@ -226,5 +181,57 @@ public class EnvelopeController {
 	public ResponseEntity<Map<String, String>> oversize(EnvelopeParser.OversizeException e) {
 		metrics.envelope(IngestMetrics.Outcome.OVERSIZE);
 		return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(Map.of("detail", e.getMessage()));
+	}
+
+	@ExceptionHandler(EnvelopeSpool.SpoolWriteException.class)
+	public ResponseEntity<Map<String, String>> spoolWriteFailure() {
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+			.body(Map.of("detail", "unable to spool envelope"));
+	}
+
+	@ExceptionHandler(EnvelopeSpool.SpoolReadException.class)
+	public ResponseEntity<Map<String, String>> spoolReadFailure() {
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+			.body(Map.of("detail", "unable to read spooled envelope"));
+	}
+
+	private class InspectionBuilder {
+
+		private final EnumMap<IngestMetrics.Signal, Integer> itemCounts =
+				new EnumMap<>(IngestMetrics.Signal.class);
+		private String itemEventId;
+		private boolean hasClientReport;
+
+		void accept(Envelope.Item item) {
+			if (item.kind() == Envelope.ItemKind.CLIENT_REPORT) {
+				hasClientReport = true;
+				return;
+			}
+			IngestMetrics.Signal signal = switch (item.kind()) {
+				case EVENT -> IngestMetrics.Signal.ERROR;
+				case LOG -> IngestMetrics.Signal.LOG;
+				case TRANSACTION -> IngestMetrics.Signal.TRANSACTION;
+				default -> null;
+			};
+			if (signal == null) {
+				return;
+			}
+			JsonNode payload = parser.parseObjectPayload(item);
+			if (payload == null) {
+				return;
+			}
+			itemCounts.merge(signal, 1, Integer::sum);
+			if (signal == IngestMetrics.Signal.ERROR && itemEventId == null && payload.hasNonNull("event_id")) {
+				itemEventId = payload.get("event_id").asText();
+			}
+		}
+
+		Inspection build(JsonNode header) {
+			return new Inspection(header, itemEventId, Map.copyOf(itemCounts), hasClientReport);
+		}
+	}
+
+	private record Inspection(JsonNode header, String itemEventId,
+			Map<IngestMetrics.Signal, Integer> itemCounts, boolean hasClientReport) {
 	}
 }

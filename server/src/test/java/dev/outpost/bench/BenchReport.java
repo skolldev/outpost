@@ -33,7 +33,7 @@ public final class BenchReport {
 	 * plateau <em>and its drain</em> — see {@link AllocationProbe}
 	 */
 	public record Row(String scenario, String step, LoadDriver.Result load, double storedPerSecond, long queueDepthAtEnd,
-			double queueWaitP99Millis, long allocatedBytes) {
+			double queueWaitAverageMillis, long allocatedBytes) {
 	}
 
 	private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
@@ -97,7 +97,7 @@ public final class BenchReport {
 				than ingesting, and `stored/s` is the honest capacity number.
 
 				`alloc KB/env` counts bytes allocated on Tomcat's request threads and the ingest
-				workers, divided by the envelopes they handled (200s and 429s alike — a shed
+				workers, divided by the envelopes they handled (200s and 429s alike — a rejected
 				envelope was still parsed). It covers the plateau *and* the drain that follows it,
 				so the store-side cost of a backlog is attributed to the step that created it.
 				Unlike `stored/s` it is not a rate, and it is GC-independent, so it is the column to
@@ -107,21 +107,23 @@ public final class BenchReport {
 		out.append("## Conditions\n\n");
 		conditions.forEach((key, value) -> out.append("- `").append(key).append("`: ").append(value).append('\n'));
 		out.append("\n## Results\n\n");
-		out.append("`other` counts everything that was neither a 200 nor a 429 — driver-side failures included. "
-				+ "Any non-zero value there is explained under Failures below, and usually means the load "
-				+ "generator or the socket layer gave out before ingest did.\n\n");
-		out.append("| scenario | step | offered/s | sent/s | 200 | 429 | other | accepted/s | stored/s "
-				+ "| p50 ms | p95 ms | p99 ms | max ms | queue depth | queue wait p99 ms | alloc MB | alloc KB/env |\n");
-		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
+		out.append("`scheduled/s` is the pace requested by the benchmark; `dispatched/s` excludes work the load "
+				+ "driver shed before opening a connection. Any non-zero `failed` or `shed` value invalidates a "
+				+ "server-capacity comparison.\n\n");
+		out.append("| scenario | step | offered/s | scheduled/s | dispatched/s | 200 | 429 | failed | shed "
+				+ "| accepted/s | stored/s | p50 ms | p95 ms | p99 ms | max ms | queue depth "
+				+ "| queue wait avg ms | alloc MB | alloc KB/env |\n");
+		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
 		for (Row row : rows) {
 			LoadDriver.Result load = row.load();
-			long other = load.completed() - load.status(200) - load.status(429);
 			out.append("| ").append(row.scenario()).append(" | ").append(row.step());
 			out.append(" | ").append(load.targetRate());
-			out.append(" | ").append(round(load.achievedSendRate()));
+			out.append(" | ").append(round(load.achievedOfferRate()));
+			out.append(" | ").append(round(load.achievedDispatchRate()));
 			out.append(" | ").append(load.status(200));
 			out.append(" | ").append(load.status(429));
-			out.append(" | ").append(other + load.failures() + load.shed());
+			out.append(" | ").append(load.failures());
+			out.append(" | ").append(load.shed());
 			out.append(" | ").append(round(load.status(200) / seconds(load)));
 			out.append(" | ").append(round(row.storedPerSecond()));
 			out.append(" | ").append(round(load.p50Millis()));
@@ -129,7 +131,7 @@ public final class BenchReport {
 			out.append(" | ").append(round(load.p99Millis()));
 			out.append(" | ").append(round(load.maxMillis()));
 			out.append(" | ").append(row.queueDepthAtEnd() < 0 ? "—" : row.queueDepthAtEnd());
-			out.append(" | ").append(round(row.queueWaitP99Millis()));
+			out.append(" | ").append(round(row.queueWaitAverageMillis()));
 			out.append(" | ").append(round(allocatedMegabytes(row)));
 			out.append(" | ").append(round(allocatedKilobytesPerEnvelope(row)));
 			out.append(" |\n");
@@ -188,7 +190,8 @@ public final class BenchReport {
 			out.append("\"scenario\": ").append(quote(row.scenario()));
 			out.append(", \"step\": ").append(quote(row.step()));
 			out.append(", \"offered_per_second\": ").append(load.targetRate());
-			out.append(", \"sent_per_second\": ").append(number(load.achievedSendRate()));
+			out.append(", \"scheduled_per_second\": ").append(number(load.achievedOfferRate()));
+			out.append(", \"dispatched_per_second\": ").append(number(load.achievedDispatchRate()));
 			out.append(", \"status_200\": ").append(load.status(200));
 			out.append(", \"status_429\": ").append(load.status(429));
 			out.append(", \"failures\": ").append(load.failures());
@@ -199,7 +202,7 @@ public final class BenchReport {
 			out.append(", \"p99_ms\": ").append(number(load.p99Millis()));
 			out.append(", \"max_ms\": ").append(number(load.maxMillis()));
 			out.append(", \"queue_depth_at_end\": ").append(row.queueDepthAtEnd());
-			out.append(", \"queue_wait_p99_ms\": ").append(number(row.queueWaitP99Millis()));
+			out.append(", \"queue_wait_average_ms\": ").append(number(row.queueWaitAverageMillis()));
 			out.append(", \"allocated_bytes\": ").append(row.allocatedBytes());
 			out.append(", \"allocated_kb_per_envelope\": ").append(number(allocatedKilobytesPerEnvelope(row)));
 			out.append('}');

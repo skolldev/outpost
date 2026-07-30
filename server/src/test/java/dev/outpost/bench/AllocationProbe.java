@@ -43,17 +43,23 @@ import java.util.Map;
  */
 final class AllocationProbe {
 
-	/**
-	 * Tomcat's request threads and the ingest workers. If Tomcat is ever switched
-	 * to virtual threads ({@code spring.threads.virtual.enabled}) the first prefix
-	 * stops matching and the probe reports nothing rather than something wrong —
-	 * see {@link #stop()}.
-	 */
-	private static final String[] SERVER_THREADS = { "http-nio-", "ingest-worker-" };
+	private static final String REQUEST_THREAD_PREFIX = "http-nio-";
+
+	private static final String WORKER_THREAD_PREFIX = "ingest-worker-";
 
 	private final com.sun.management.ThreadMXBean threads = threadBean();
 
-	private Map<Long, Long> baseline;
+	private Map<Long, Long> requestBaseline;
+
+	private Map<Long, Long> workerBaseline;
+
+	private long requestAllocated;
+
+	private boolean active;
+
+	private boolean requestPhaseFinished;
+
+	private boolean matched;
 
 	/** Null on a JVM without the {@code com.sun.management} extension. */
 	private static com.sun.management.ThreadMXBean threadBean() {
@@ -67,7 +73,33 @@ final class AllocationProbe {
 
 	/** Begins a window. Cheap enough to sit inside a measured plateau. */
 	void start() {
-		baseline = (this.threads == null) ? null : sample();
+		if (this.threads == null) {
+			active = false;
+			return;
+		}
+		Sample baseline = sample();
+		requestBaseline = baseline.requests();
+		workerBaseline = baseline.workers();
+		requestAllocated = 0;
+		active = true;
+		requestPhaseFinished = false;
+		matched = !requestBaseline.isEmpty() || !workerBaseline.isEmpty();
+	}
+
+	/**
+	 * Captures accept-side allocation as soon as every HTTP response has arrived.
+	 * Request threads may time out while a deep queue drains, taking their monotonic
+	 * JVM allocation counters with them; sampling here preserves that part of the
+	 * measurement while worker allocation continues until {@link #stop()}.
+	 */
+	void finishAcceptPhase() {
+		if (!active || requestPhaseFinished) {
+			return;
+		}
+		Sample end = sample();
+		matched |= !end.requests().isEmpty();
+		requestAllocated = allocatedBetween(requestBaseline, end.requests(), "request");
+		requestPhaseFinished = true;
 	}
 
 	/**
@@ -78,15 +110,23 @@ final class AllocationProbe {
 	 * sight of its subject is worse than one reporting nothing.
 	 */
 	long stop() {
-		if (baseline == null) {
+		if (!active) {
 			return -1;
 		}
-		Map<Long, Long> end = sample();
-		if (end.isEmpty()) {
+		finishAcceptPhase();
+		Sample end = sample();
+		matched |= !end.workers().isEmpty();
+		long total = requestAllocated + allocatedBetween(workerBaseline, end.workers(), "worker");
+		active = false;
+		if (!matched) {
 			System.out.println("warning: allocation probe matched no server threads; "
-					+ "the names in AllocationProbe.SERVER_THREADS are stale");
+					+ "the request/worker thread prefixes in AllocationProbe are stale");
 			return -1;
 		}
+		return total;
+	}
+
+	private long allocatedBetween(Map<Long, Long> baseline, Map<Long, Long> end, String group) {
 		long total = 0;
 		for (Map.Entry<Long, Long> thread : end.entrySet()) {
 			Long before = baseline.get(thread.getKey());
@@ -97,35 +137,37 @@ final class AllocationProbe {
 		long vanished = baseline.keySet().stream().filter(id -> !end.containsKey(id)).count();
 		if (vanished > 0) {
 			// Their share since the baseline died with them, so the total is a floor.
-			System.out.printf("warning: %d sampled thread(s) exited mid-window; allocation is understated%n", vanished);
+			System.out.printf("warning: %d sampled %s thread(s) exited mid-window; allocation is understated%n",
+					vanished, group);
 		}
-		baseline = null;
 		return total;
 	}
 
-	private Map<Long, Long> sample() {
+	private Sample sample() {
 		long[] ids = this.threads.getAllThreadIds();
 		// maxDepth 0: names only. Walking stacks here would cost more than it tells us.
 		ThreadInfo[] infos = this.threads.getThreadInfo(ids, 0);
 		long[] allocated = this.threads.getThreadAllocatedBytes(ids);
-		Map<Long, Long> sampled = new HashMap<>();
+		Map<Long, Long> requests = new HashMap<>();
+		Map<Long, Long> workers = new HashMap<>();
 		for (int i = 0; i < ids.length; i++) {
 			// A null info is a thread that died between the two calls; -1 bytes is a
 			// thread the JVM will not account for. Neither can contribute a delta.
-			if (infos[i] != null && allocated[i] >= 0 && isServerThread(infos[i].getThreadName())) {
-				sampled.put(ids[i], allocated[i]);
+			if (infos[i] == null || allocated[i] < 0) {
+				continue;
+			}
+			String name = infos[i].getThreadName();
+			if (name.startsWith(REQUEST_THREAD_PREFIX)) {
+				requests.put(ids[i], allocated[i]);
+			}
+			else if (name.startsWith(WORKER_THREAD_PREFIX)) {
+				workers.put(ids[i], allocated[i]);
 			}
 		}
-		return sampled;
+		return new Sample(requests, workers);
 	}
 
-	private static boolean isServerThread(String name) {
-		for (String prefix : SERVER_THREADS) {
-			if (name.startsWith(prefix)) {
-				return true;
-			}
-		}
-		return false;
+	private record Sample(Map<Long, Long> requests, Map<Long, Long> workers) {
 	}
 
 }

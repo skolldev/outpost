@@ -2,20 +2,23 @@ package dev.outpost.ingest;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.io.InputStream;
+import java.io.PushbackInputStream;
+import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Parses the newline-delimited Sentry envelope format: one JSON envelope
- * header line, then per item one JSON item-header line followed by the payload —
- * either exactly {@code length} bytes, or up to the next newline when no length
- * is given.
+ * Streams the newline-delimited Sentry envelope format. At most one item payload
+ * is materialized at a time, so parsing never retains the whole envelope.
  */
 @Component
 public class EnvelopeParser {
+
+	private static final Logger log = LoggerFactory.getLogger(EnvelopeParser.class);
 
 	public static final int MAX_ITEM_BYTES = 1024 * 1024;
 
@@ -25,68 +28,115 @@ public class EnvelopeParser {
 		this.mapper = mapper;
 	}
 
-	public Envelope parse(byte[] body) {
-		int pos = indexOfNewline(body, 0);
-		int headerEnd = pos < 0 ? body.length : pos;
-		JsonNode header = parseJson(body, 0, headerEnd, "envelope header");
-		pos = headerEnd + 1;
+	/**
+	 * Parses one envelope, invoking {@code items} as each bounded payload is read.
+	 * Returns the envelope header after the entire body has been validated.
+	 */
+	public JsonNode parse(InputStream input, Consumer<Envelope.Item> items) throws IOException {
+		PushbackInputStream in = new PushbackInputStream(input, 1);
+		byte[] headerLine = readLine(in, "envelope header");
+		if (headerLine == null) {
+			headerLine = new byte[0];
+		}
+		JsonNode header = parseJson(headerLine, "envelope header");
 
-		List<Envelope.Item> items = new ArrayList<>();
-		while (pos < body.length) {
-			int itemHeaderEnd = indexOfNewline(body, pos);
-			if (itemHeaderEnd < 0) {
-				itemHeaderEnd = body.length;
-			}
-			if (itemHeaderEnd == pos) { // blank line (trailing newline) — skip
-				pos++;
+		byte[] itemHeaderLine;
+		while ((itemHeaderLine = readLine(in, "item header")) != null) {
+			if (itemHeaderLine.length == 0) {
 				continue;
 			}
-			JsonNode itemHeader = parseJson(body, pos, itemHeaderEnd, "item header");
-			pos = itemHeaderEnd + 1;
-
-			byte[] payload;
+			JsonNode itemHeader = parseJson(itemHeaderLine, "item header");
 			JsonNode length = itemHeader.get("length");
-			if (length != null && length.isNumber()) {
-				long len = length.asLong();
-				if (len < 0 || pos + len > body.length) {
+			if (length != null) {
+				if (!length.isIntegralNumber() || !length.canConvertToLong()) {
 					throw new MalformedEnvelopeException("item length out of bounds");
 				}
-				if (len > MAX_ITEM_BYTES) {
-					// Oversize attachments are dropped; anything else is a client error.
+				long payloadLength = length.longValue();
+				if (payloadLength < 0) {
+					throw new MalformedEnvelopeException("item length out of bounds");
+				}
+				if (payloadLength > MAX_ITEM_BYTES) {
 					if (!"attachment".equals(itemHeader.path("type").asText())) {
 						throw new OversizeException("item exceeds " + MAX_ITEM_BYTES + " bytes");
 					}
-					pos += (int) len;
-					if (pos < body.length && body[pos] == '\n') {
-						pos++;
-					}
+					skipExactly(in, payloadLength);
+					consumeOptionalNewline(in);
 					continue;
 				}
-				payload = Arrays.copyOfRange(body, pos, pos + (int) len);
-				pos += (int) len;
-				if (pos < body.length && body[pos] == '\n') {
-					pos++;
+				byte[] payload = in.readNBytes((int) payloadLength);
+				if (payload.length != payloadLength) {
+					throw new MalformedEnvelopeException("item length out of bounds");
 				}
+				consumeOptionalNewline(in);
+				items.accept(new Envelope.Item(itemHeader, payload));
 			}
 			else {
-				int payloadEnd = indexOfNewline(body, pos);
-				if (payloadEnd < 0) {
-					payloadEnd = body.length;
-				}
-				if (payloadEnd - pos > MAX_ITEM_BYTES) {
-					throw new OversizeException("item exceeds " + MAX_ITEM_BYTES + " bytes");
-				}
-				payload = Arrays.copyOfRange(body, pos, payloadEnd);
-				pos = payloadEnd + 1;
+				byte[] payload = readLine(in, "item");
+				items.accept(new Envelope.Item(itemHeader, payload == null ? new byte[0] : payload));
 			}
-			items.add(new Envelope.Item(itemHeader, payload));
 		}
-		return new Envelope(header, items);
+		return header;
 	}
 
-	private JsonNode parseJson(byte[] body, int from, int to, String what) {
+	public JsonNode parseObjectPayload(Envelope.Item item) {
 		try {
-			JsonNode node = mapper.readTree(body, from, to - from);
+			JsonNode node = mapper.readTree(item.payload());
+			return node != null && node.isObject() ? node : null;
+		}
+		catch (tools.jackson.core.JacksonException e) {
+			log.debug("dropping item with malformed JSON payload: {}", e.getMessage());
+			return null;
+		}
+	}
+
+	private byte[] readLine(InputStream in, String what) throws IOException {
+		ByteArrayOutputStream line = new ByteArrayOutputStream();
+		boolean oversize = false;
+		while (true) {
+			int value = in.read();
+			if (value < 0) {
+				if (oversize) {
+					throw new OversizeException(what + " exceeds " + MAX_ITEM_BYTES + " bytes");
+				}
+				return line.size() == 0 ? null : line.toByteArray();
+			}
+			if (value == '\n') {
+				if (oversize) {
+					throw new OversizeException(what + " exceeds " + MAX_ITEM_BYTES + " bytes");
+				}
+				return line.toByteArray();
+			}
+			if (line.size() == MAX_ITEM_BYTES) {
+				oversize = true;
+			}
+			if (!oversize) {
+				line.write(value);
+			}
+		}
+	}
+
+	private void skipExactly(InputStream in, long length) throws IOException {
+		byte[] buffer = new byte[8192];
+		long remaining = length;
+		while (remaining > 0) {
+			int read = in.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+			if (read < 0) {
+				throw new MalformedEnvelopeException("item length out of bounds");
+			}
+			remaining -= read;
+		}
+	}
+
+	private void consumeOptionalNewline(PushbackInputStream in) throws IOException {
+		int value = in.read();
+		if (value >= 0 && value != '\n') {
+			in.unread(value);
+		}
+	}
+
+	private JsonNode parseJson(byte[] bytes, String what) {
+		try {
+			JsonNode node = mapper.readTree(bytes);
 			if (node == null || !node.isObject()) {
 				throw new MalformedEnvelopeException(what + " is not a JSON object");
 			}
@@ -95,15 +145,6 @@ public class EnvelopeParser {
 		catch (tools.jackson.core.JacksonException e) {
 			throw new MalformedEnvelopeException(what + " is not valid JSON");
 		}
-	}
-
-	private static int indexOfNewline(byte[] body, int from) {
-		for (int i = from; i < body.length; i++) {
-			if (body[i] == '\n') {
-				return i;
-			}
-		}
-		return -1;
 	}
 
 	public static class MalformedEnvelopeException extends RuntimeException {

@@ -134,7 +134,7 @@ public class IngestMetrics {
 			.description("Events already stored under their event id, so not stored again")
 			.register(registry);
 		this.batchSize = DistributionSummary.builder("outpost.ingest.batch.size")
-			.description("Items drained per worker batch")
+			.description("Envelope references drained per worker batch")
 			.publishPercentiles(0.5, 0.95)
 			.register(registry);
 	}
@@ -196,6 +196,10 @@ public class IngestMetrics {
 
 	public void dropped(DropStage stage) {
 		dropped.get(stage).increment();
+	}
+
+	public void dropped(DropStage stage, int count) {
+		dropped.get(stage).increment(count);
 	}
 
 	public void duplicates(int count) {

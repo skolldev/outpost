@@ -54,10 +54,9 @@ tasks.register('ingestBenchmark', Test) {
 		includeTags 'benchmark'
 	}
 	// Gradle's 512 MB default is not a realistic server heap, and it matters more
-	// than it looks: outpost.ingest.queue-capacity bounds the number of queued
-	// items, not their size, and a log envelope holds up to 100 records. At 512 MB
-	// the JVM dies with the buffer 15% full, before any 429 is issued. Override
-	// with -Pbench.heap=4g to explore that boundary deliberately.
+	// than it looks: the workers still materialize one envelope at a time while
+	// digesting it, and the benchmark also measures allocation rather than only
+	// retained heap. Override with -Pbench.heap=4g for larger experiments.
 	maxHeapSize = project.findProperty('bench.heap') ?: '2g'
 	// Always rerun: the point is a fresh measurement, not a cached verdict.
 	outputs.upToDateWhen { false }

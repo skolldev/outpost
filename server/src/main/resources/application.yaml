@@ -24,6 +24,9 @@ outpost:
     # afterward. Uncompressed envelopes use the smaller of the two caps.
     max-envelope-wire-bytes: ${OUTPOST_INGEST_MAX_ENVELOPE_WIRE_BYTES:4194304}
     max-envelope-decompressed-bytes: ${OUTPOST_INGEST_MAX_ENVELOPE_DECOMPRESSED_BYTES:20971520}
+    # Queue entries point at raw wire bodies in this ephemeral directory.
+    spool-directory: ${OUTPOST_INGEST_SPOOL_DIRECTORY:${java.io.tmpdir}/outpost-ingest}
+    queue-capacity: ${OUTPOST_INGEST_QUEUE_CAPACITY:50000}
     # Kept below the shutdown-phase timeout so residual work can be reported.
     shutdown-timeout: ${OUTPOST_INGEST_SHUTDOWN_TIMEOUT:25s}
   retention:

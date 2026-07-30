@@ -5,9 +5,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.support.EnvelopeFactory;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,7 +49,8 @@ import org.springframework.web.client.RestTemplate;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
 				"outpost.ingest.workers=0", "outpost.ingest.queue-capacity=" + IngestBackpressureIntegrationTest.CAPACITY,
-				"outpost.ingest.shutdown-timeout=10ms" })
+				"outpost.ingest.shutdown-timeout=10ms",
+				"outpost.ingest.spool-directory=build/test-spool/backpressure" })
 @Import(TestcontainersConfiguration.class)
 @ExtendWith(OutputCaptureExtension.class)
 class IngestBackpressureIntegrationTest {
@@ -66,6 +71,9 @@ class IngestBackpressureIntegrationTest {
 
 	@Autowired
 	MeterRegistry meters;
+
+	@Autowired
+	ClientReportCounters clientReports;
 
 	final RestTemplate rest = new RestTemplate();
 
@@ -89,6 +97,11 @@ class IngestBackpressureIntegrationTest {
 			.param(projectId)
 			.param(publicKey)
 			.update();
+		drainQueue();
+	}
+
+	@AfterEach
+	void tearDown() {
 		drainQueue();
 	}
 
@@ -147,12 +160,65 @@ class IngestBackpressureIntegrationTest {
 	}
 
 	@Test
-	void shutdownTimeoutLogsTheNumberOfOutstandingItems(CapturedOutput output) {
+	void shutdownTimeoutLogsTheNumberOfOutstandingItems(CapturedOutput output) throws IOException {
 		assertThat(post(envelopes.error("prod")).getStatusCode()).isEqualTo(HttpStatus.OK);
 
 		workers.stop();
 
 		assertThat(output).contains("ingest shutdown timed out with 1 item still queued or in flight");
+		assertThat(SpoolTestFiles.count(Path.of("build/test-spool/backpressure"))).isZero();
+	}
+
+	@Test
+	void rejectedEnvelopeStillRecordsItsClientReport() {
+		for (int i = 0; i < CAPACITY; i++) {
+			post(envelopes.error("prod"));
+		}
+		String key = projectId + ":queue_overflow:error";
+		long before = clientReports.snapshot().getOrDefault(key, 0L);
+		String report = """
+				{}
+				{"type":"client_report"}
+				{"discarded_events":[{"reason":"queue_overflow","category":"error","quantity":3}]}
+				{"type":"event"}
+				{"event_id":"0123456789abcdef0123456789abcdef"}
+				""";
+
+		ResponseEntity<String> response = post(report);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+		assertThat(clientReports.snapshot().getOrDefault(key, 0L) - before).isEqualTo(3);
+	}
+
+	@Test
+	void clientReportOnlyEnvelopeDoesNotUseTheQueue() {
+		String key = projectId + ":queue_overflow:error";
+		long before = clientReports.snapshot().getOrDefault(key, 0L);
+		String report = """
+				{}
+				{"type":"client_report"}
+				{"discarded_events":[{"reason":"queue_overflow","category":"error","quantity":3}]}
+				""";
+
+		ResponseEntity<String> response = post(report);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(queue.size()).isZero();
+		assertThat(clientReports.snapshot().getOrDefault(key, 0L) - before).isEqualTo(3);
+	}
+
+	@Test
+	void ignoredEnvelopeDoesNotUseTheQueue() {
+		String session = """
+				{}
+				{"type":"session"}
+				{}
+				""";
+
+		ResponseEntity<String> response = post(session);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(queue.size()).isZero();
 	}
 
 	// ------------------------------------------------------------------ helpers
@@ -183,8 +249,16 @@ class IngestBackpressureIntegrationTest {
 	/** No workers run, so the queue survives between tests in the shared context. */
 	private void drainQueue() {
 		try {
-			List<IngestItem> batch;
+			List<QueuedEnvelope> batch;
 			while (!(batch = queue.nextBatch(CAPACITY, 0)).isEmpty()) {
+				for (QueuedEnvelope envelope : batch) {
+					try {
+						Files.deleteIfExists(envelope.spoolFile().path());
+					}
+					catch (java.io.IOException e) {
+						throw new AssertionError(e);
+					}
+				}
 				queue.completed(batch.size());
 			}
 		}
