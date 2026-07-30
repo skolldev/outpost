@@ -3,6 +3,7 @@ package dev.outpost.ingest;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
@@ -14,6 +15,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -42,15 +44,21 @@ public class EnvelopeController {
 	private final ClientReportCounters clientReports;
 	private final ObjectMapper mapper;
 	private final IngestMetrics metrics;
+	private final int maxEnvelopeWireBytes;
+	private final int maxEnvelopeDecompressedBytes;
 
 	public EnvelopeController(EnvelopeParser parser, IngestAuthenticator authenticator, IngestQueue queue,
-			ClientReportCounters clientReports, ObjectMapper mapper, IngestMetrics metrics) {
+			ClientReportCounters clientReports, ObjectMapper mapper, IngestMetrics metrics,
+			@Value("${outpost.ingest.max-envelope-wire-bytes:4194304}") int maxEnvelopeWireBytes,
+			@Value("${outpost.ingest.max-envelope-decompressed-bytes:20971520}") int maxEnvelopeDecompressedBytes) {
 		this.parser = parser;
 		this.authenticator = authenticator;
 		this.queue = queue;
 		this.clientReports = clientReports;
 		this.mapper = mapper;
 		this.metrics = metrics;
+		this.maxEnvelopeWireBytes = maxEnvelopeWireBytes;
+		this.maxEnvelopeDecompressedBytes = maxEnvelopeDecompressedBytes;
 	}
 
 	@PostMapping(path = "/envelope/", consumes = { "application/x-sentry-envelope", "text/plain", "*/*" })
@@ -142,20 +150,38 @@ public class EnvelopeController {
 	}
 
 	private byte[] readBody(HttpServletRequest request) throws IOException {
-		InputStream in = request.getInputStream();
-		if ("gzip".equalsIgnoreCase(request.getHeader("Content-Encoding"))) {
-			try {
-				in = new GZIPInputStream(in);
-			}
-			catch (ZipException e) {
-				throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
-			}
+		boolean gzip = "gzip".equalsIgnoreCase(request.getHeader("Content-Encoding"));
+		int encodedLimit = gzip ? maxEnvelopeWireBytes
+				: Math.min(maxEnvelopeWireBytes, maxEnvelopeDecompressedBytes);
+		String encodedLimitName = encodedLimit == maxEnvelopeWireBytes ? "wire" : "decompressed";
+		if (request.getContentLengthLong() > encodedLimit) {
+			throw oversize(encodedLimitName, encodedLimit);
 		}
-		byte[] body = in.readNBytes(EnvelopeParser.MAX_ENVELOPE_BYTES + 1);
-		if (body.length > EnvelopeParser.MAX_ENVELOPE_BYTES) {
-			throw new EnvelopeParser.OversizeException("envelope exceeds size limit");
+		byte[] wireBody = readLimited(request.getInputStream(), encodedLimit, encodedLimitName);
+		if (!gzip) {
+			return wireBody;
+		}
+
+		try {
+			InputStream decompressed = new GZIPInputStream(new ByteArrayInputStream(wireBody));
+			return readLimited(decompressed, maxEnvelopeDecompressedBytes, "decompressed");
+		}
+		catch (ZipException e) {
+			throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
+		}
+	}
+
+	private byte[] readLimited(InputStream in, int limit, String limitName) throws IOException {
+		byte[] body = in.readNBytes(limit);
+		if (body.length == limit && in.read() >= 0) {
+			throw oversize(limitName, limit);
 		}
 		return body;
+	}
+
+	private EnvelopeParser.OversizeException oversize(String limitName, int limit) {
+		return new EnvelopeParser.OversizeException(
+				"envelope exceeds " + limitName + " size limit of " + limit + " bytes");
 	}
 
 	private JsonNode parseItemJson(Envelope.Item item) {
@@ -190,6 +216,6 @@ public class EnvelopeController {
 	@ExceptionHandler(EnvelopeParser.OversizeException.class)
 	public ResponseEntity<Map<String, String>> oversize(EnvelopeParser.OversizeException e) {
 		metrics.envelope(IngestMetrics.Outcome.OVERSIZE);
-		return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of("detail", e.getMessage()));
+		return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(Map.of("detail", e.getMessage()));
 	}
 }
