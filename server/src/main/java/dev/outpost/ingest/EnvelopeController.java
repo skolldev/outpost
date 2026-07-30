@@ -12,7 +12,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.ZipException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,6 +56,12 @@ public class EnvelopeController {
 		this.clientReports = clientReports;
 		this.mapper = mapper;
 		this.metrics = metrics;
+		if (maxEnvelopeWireBytes <= 0) {
+			throw new IllegalArgumentException("outpost.ingest.max-envelope-wire-bytes must be positive");
+		}
+		if (maxEnvelopeDecompressedBytes <= 0) {
+			throw new IllegalArgumentException("outpost.ingest.max-envelope-decompressed-bytes must be positive");
+		}
 		this.maxEnvelopeWireBytes = maxEnvelopeWireBytes;
 		this.maxEnvelopeDecompressedBytes = maxEnvelopeDecompressedBytes;
 	}
@@ -162,11 +167,10 @@ public class EnvelopeController {
 			return wireBody;
 		}
 
-		try {
-			InputStream decompressed = new GZIPInputStream(new ByteArrayInputStream(wireBody));
+		try (InputStream decompressed = new GZIPInputStream(new ByteArrayInputStream(wireBody))) {
 			return readLimited(decompressed, maxEnvelopeDecompressedBytes, "decompressed");
 		}
-		catch (ZipException e) {
+		catch (IOException e) {
 			throw new EnvelopeParser.MalformedEnvelopeException("invalid gzip body");
 		}
 	}

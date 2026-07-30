@@ -14,6 +14,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -106,6 +107,27 @@ class EnvelopeRequestLimitsIntegrationTest {
 
 		assertThat(response.getStatusCode().value()).isEqualTo(413);
 		assertThat(response.getBody()).contains("decompressed size limit");
+	}
+
+	@Test
+	void truncatedGzipBodyIsMalformedRatherThanAnInternalError() {
+		byte[] gzip = gzipZeros(128);
+		byte[] truncated = Arrays.copyOf(gzip, gzip.length - 4);
+
+		ResponseEntity<String> response = post(truncated, true);
+
+		assertThat(response.getStatusCode().value()).isEqualTo(400);
+		assertThat(response.getBody()).contains("invalid gzip body");
+	}
+
+	@Test
+	void nonPositiveLimitsAreRejectedAtStartup() {
+		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, 0, 1))
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("max-envelope-wire-bytes");
+		assertThatThrownBy(() -> new EnvelopeController(null, null, null, null, null, null, 1, -1))
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("max-envelope-decompressed-bytes");
 	}
 
 	@Test

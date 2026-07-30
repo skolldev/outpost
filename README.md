@@ -250,8 +250,8 @@ All configuration is environment variables.
 | `OUTPOST_PUBLIC_URL`                              | `http://localhost:8080`                    | public base URL of this instance - rendered into the DSNs shown in the UI and into notification deep links |
 | `OUTPOST_ADMIN_EMAIL`                             | -                                          | first-run admin seed                                                                                       |
 | `OUTPOST_ADMIN_PASSWORD`                          | -                                          | first-run admin seed                                                                                       |
-| `OUTPOST_INGEST_MAX_ENVELOPE_WIRE_BYTES`          | `4194304` (4 MiB)                          | maximum envelope bytes read before decoding; applies to compressed and uncompressed requests               |
-| `OUTPOST_INGEST_MAX_ENVELOPE_DECOMPRESSED_BYTES`  | `20971520` (20 MiB)                        | maximum bytes retained after gzip decoding                                                                 |
+| `OUTPOST_INGEST_MAX_ENVELOPE_WIRE_BYTES`          | `4194304` (4 MiB)                          | maximum request bytes read before decoding; uncompressed requests use the smaller of both envelope limits   |
+| `OUTPOST_INGEST_MAX_ENVELOPE_DECOMPRESSED_BYTES`  | `20971520` (20 MiB)                        | maximum decoded envelope bytes; uncompressed requests use the smaller of both envelope limits               |
 
 **UI**
 
