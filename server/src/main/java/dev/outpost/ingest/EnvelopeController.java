@@ -77,9 +77,19 @@ public class EnvelopeController {
 					.body(Map.of("detail", "invalid or inactive DSN key", "dsn", properties.dsn(key, projectId)));
 			}
 
+			if (inspection.itemCounts().isEmpty()) {
+				if (inspection.hasClientReport()) {
+					recordClientReports(projectId, spoolFile);
+				}
+				metrics.envelope(IngestMetrics.Outcome.ACCEPTED);
+				return ResponseEntity.ok(Map.of("id", eventId(inspection)));
+			}
+
 			QueuedEnvelope envelope = new QueuedEnvelope(projectId, receivedAt, spoolFile);
 			if (!queue.offer(envelope)) {
-				recordClientReports(projectId, spoolFile);
+				if (inspection.hasClientReport()) {
+					recordClientReports(projectId, spoolFile);
+				}
 				recordItems(inspection, false);
 				metrics.envelope(IngestMetrics.Outcome.REJECTED);
 				return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -190,8 +200,13 @@ public class EnvelopeController {
 		private final EnumMap<IngestMetrics.Signal, Integer> itemCounts =
 				new EnumMap<>(IngestMetrics.Signal.class);
 		private String itemEventId;
+		private boolean hasClientReport;
 
 		void accept(Envelope.Item item) {
+			if (item.kind() == Envelope.ItemKind.CLIENT_REPORT) {
+				hasClientReport = true;
+				return;
+			}
 			IngestMetrics.Signal signal = switch (item.kind()) {
 				case EVENT -> IngestMetrics.Signal.ERROR;
 				case LOG -> IngestMetrics.Signal.LOG;
@@ -212,11 +227,11 @@ public class EnvelopeController {
 		}
 
 		Inspection build(JsonNode header) {
-			return new Inspection(header, itemEventId, Map.copyOf(itemCounts));
+			return new Inspection(header, itemEventId, Map.copyOf(itemCounts), hasClientReport);
 		}
 	}
 
 	private record Inspection(JsonNode header, String itemEventId,
-			Map<IngestMetrics.Signal, Integer> itemCounts) {
+			Map<IngestMetrics.Signal, Integer> itemCounts, boolean hasClientReport) {
 	}
 }

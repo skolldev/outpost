@@ -180,12 +180,45 @@ class IngestBackpressureIntegrationTest {
 				{}
 				{"type":"client_report"}
 				{"discarded_events":[{"reason":"queue_overflow","category":"error","quantity":3}]}
+				{"type":"event"}
+				{"event_id":"0123456789abcdef0123456789abcdef"}
 				""";
 
 		ResponseEntity<String> response = post(report);
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
 		assertThat(clientReports.snapshot().getOrDefault(key, 0L) - before).isEqualTo(3);
+	}
+
+	@Test
+	void clientReportOnlyEnvelopeDoesNotUseTheQueue() {
+		String key = projectId + ":queue_overflow:error";
+		long before = clientReports.snapshot().getOrDefault(key, 0L);
+		String report = """
+				{}
+				{"type":"client_report"}
+				{"discarded_events":[{"reason":"queue_overflow","category":"error","quantity":3}]}
+				""";
+
+		ResponseEntity<String> response = post(report);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(queue.size()).isZero();
+		assertThat(clientReports.snapshot().getOrDefault(key, 0L) - before).isEqualTo(3);
+	}
+
+	@Test
+	void ignoredEnvelopeDoesNotUseTheQueue() {
+		String session = """
+				{}
+				{"type":"session"}
+				{}
+				""";
+
+		ResponseEntity<String> response = post(session);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(queue.size()).isZero();
 	}
 
 	// ------------------------------------------------------------------ helpers
