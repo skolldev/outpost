@@ -10,10 +10,13 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -41,8 +44,10 @@ import org.springframework.web.client.RestTemplate;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
-				"outpost.ingest.workers=0", "outpost.ingest.queue-capacity=" + IngestBackpressureIntegrationTest.CAPACITY })
+				"outpost.ingest.workers=0", "outpost.ingest.queue-capacity=" + IngestBackpressureIntegrationTest.CAPACITY,
+				"outpost.ingest.shutdown-timeout=10ms" })
 @Import(TestcontainersConfiguration.class)
+@ExtendWith(OutputCaptureExtension.class)
 class IngestBackpressureIntegrationTest {
 
 	static final int CAPACITY = 5;
@@ -55,6 +60,9 @@ class IngestBackpressureIntegrationTest {
 
 	@Autowired
 	IngestQueue queue;
+
+	@Autowired
+	IngestWorkers workers;
 
 	@Autowired
 	MeterRegistry meters;
@@ -138,6 +146,15 @@ class IngestBackpressureIntegrationTest {
 		assertThat(itemCount("error", "rejected") - itemsRejectedBefore).isEqualTo(1);
 	}
 
+	@Test
+	void shutdownTimeoutLogsTheNumberOfOutstandingItems(CapturedOutput output) {
+		assertThat(post(envelopes.error("prod")).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+		workers.stop();
+
+		assertThat(output).contains("ingest shutdown timed out with 1 item still queued or in flight");
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	private ResponseEntity<String> post(String envelope) {
@@ -166,8 +183,9 @@ class IngestBackpressureIntegrationTest {
 	/** No workers run, so the queue survives between tests in the shared context. */
 	private void drainQueue() {
 		try {
-			while (!queue.nextBatch(CAPACITY, 0).isEmpty()) {
-				// discard
+			List<IngestItem> batch;
+			while (!(batch = queue.nextBatch(CAPACITY, 0)).isEmpty()) {
+				queue.completed(batch.size());
 			}
 		}
 		catch (InterruptedException e) {
