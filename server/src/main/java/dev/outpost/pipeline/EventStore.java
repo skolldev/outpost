@@ -7,10 +7,14 @@ import dev.outpost.ingest.IngestMetrics;
 import dev.outpost.notifications.NotificationOccurrence;
 import dev.outpost.notifications.NotificationPublisher;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +32,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * fingerprint's first Event — but only after the storing transaction commits, so
  * a notification is never sent for an Issue that rolled back. Repeats and
  * regressions do not publish.
+ *
+ * <p>Redelivered events are dropped before anything is written (#95): an SDK
+ * that retries a failed request sends the same {@code event_id} again, and the
+ * aggregates must count what was stored, not what arrived.
  */
 @Component
 public class EventStore {
@@ -35,6 +43,10 @@ public class EventStore {
 	private static final Logger log = LoggerFactory.getLogger(EventStore.class);
 
 	private record IssueUpsert(long id, boolean inserted) {
+	}
+
+	/** An event's storage identity: the {@code event} primary key. */
+	private record EventKey(UUID id, Instant timestamp) {
 	}
 
 	// xmax = 0 marks a row this statement just inserted; a row updated via ON
@@ -59,6 +71,16 @@ public class EventStore {
 			                   message, exception_type, user_ident, data, raw, symbolication_status)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?)
 			ON CONFLICT DO NOTHING
+			""";
+
+	// Which of the batch's events are already stored, probed on exactly the key
+	// EVENT_INSERT conflicts on — so "found here" and "would not insert there" are
+	// the same question, and each probe prunes to the one partition it can be in.
+	private static final String STORED_EVENTS = """
+			SELECT e.id, e."timestamp"
+			FROM event e
+			JOIN unnest(string_to_array(?, ',')::uuid[], string_to_array(?, ',')::timestamptz[]) AS probe (id, ts)
+			  ON e.id = probe.id AND e."timestamp" = probe.ts
 			""";
 
 	private final JdbcTemplate jdbc;
@@ -130,8 +152,14 @@ public class EventStore {
 		}
 	}
 
-	private void storeAll(List<ProcessedEvent> batch, List<NotificationOccurrence> newIssues) {
-		eventIssueLock.acquire(batch.getFirst().projectId());
+	private void storeAll(List<ProcessedEvent> unfiltered, List<NotificationOccurrence> newIssues) {
+		eventIssueLock.acquire(unfiltered.getFirst().projectId());
+		// Under the lock, so no concurrent writer can land an event between this
+		// lookup and the insert below: what is missing here does insert there.
+		List<ProcessedEvent> batch = firstDeliveries(unfiltered);
+		if (batch.isEmpty()) {
+			return;
+		}
 		for (ProcessedEvent event : batch) {
 			jdbc.update("""
 					INSERT INTO environment (project_id, name) VALUES (?, ?)
@@ -168,6 +196,36 @@ public class EventStore {
 		}).toList();
 
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);
+	}
+
+	/**
+	 * The batch minus every event already stored, and minus repeats within the
+	 * batch itself. Everything downstream — the issue counter, the per-environment
+	 * stats, the regression flip — keys off this list, so an aggregate can only
+	 * move for an event that actually inserts.
+	 *
+	 * <p>A redelivery is absorbed rather than raised: by the time a worker stores,
+	 * the SDK has long had its 200 and there is no caller left to fail. The
+	 * duplicate counter is where it shows up.
+	 */
+	private List<ProcessedEvent> firstDeliveries(List<ProcessedEvent> batch) {
+		Set<EventKey> seen = storedKeys(batch);
+		List<ProcessedEvent> fresh = new ArrayList<>(batch.size());
+		for (ProcessedEvent event : batch) {
+			if (seen.add(new EventKey(event.id(), event.timestamp()))) {
+				fresh.add(event);
+			}
+		}
+		metrics.duplicates(batch.size() - fresh.size());
+		return fresh;
+	}
+
+	private Set<EventKey> storedKeys(List<ProcessedEvent> batch) {
+		String ids = batch.stream().map(event -> event.id().toString()).collect(Collectors.joining(","));
+		String timestamps = batch.stream().map(event -> event.timestamp().toString()).collect(Collectors.joining(","));
+		return new HashSet<>(jdbc.query(STORED_EVENTS,
+				(rs, i) -> new EventKey(rs.getObject("id", UUID.class), rs.getTimestamp("timestamp").toInstant()), ids,
+				timestamps));
 	}
 
 	private String json(ProcessedEvent event) {

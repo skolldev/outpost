@@ -102,6 +102,8 @@ public class IngestMetrics {
 
 	private final Map<DropStage, Counter> dropped = new EnumMap<>(DropStage.class);
 
+	private final Counter duplicates;
+
 	private final DistributionSummary batchSize;
 
 	public IngestMetrics(MeterRegistry registry) {
@@ -125,6 +127,12 @@ public class IngestMetrics {
 				.tag("stage", stage.tag)
 				.register(registry));
 		}
+		// Deliberately not a `dropped` stage: a redelivery is a healthy SDK retry,
+		// not a loss, and folding it into the drop counter would poison any alert
+		// on drop rate.
+		this.duplicates = Counter.builder("outpost.ingest.duplicates")
+			.description("Events already stored under their event id, so not stored again")
+			.register(registry);
 		this.batchSize = DistributionSummary.builder("outpost.ingest.batch.size")
 			.description("Items drained per worker batch")
 			.publishPercentiles(0.5, 0.95)
@@ -188,6 +196,10 @@ public class IngestMetrics {
 
 	public void dropped(DropStage stage) {
 		dropped.get(stage).increment();
+	}
+
+	public void duplicates(int count) {
+		duplicates.increment(count);
 	}
 
 }
