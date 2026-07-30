@@ -5,11 +5,18 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 
 /**
  * SDK timestamp handling shared by the error and log pipelines: parse the two
  * wire formats (epoch seconds or ISO-8601) and clamp wildly skewed client
  * clocks to the server's received-at.
+ *
+ * <p>Clamping also truncates to microseconds, Postgres {@code timestamptz}'s
+ * own resolution. An in-memory nanosecond an SDK sent could never survive a
+ * round trip, so dropping it here keeps a processed timestamp equal to the one
+ * that comes back out — which is what lets {@code EventStore} recognise a
+ * redelivered event by its stored key.
  */
 final class Timestamps {
 
@@ -43,8 +50,8 @@ final class Timestamps {
 	static Instant clamp(Instant timestamp, Instant receivedAt) {
 		if (timestamp == null || timestamp.isBefore(receivedAt.minus(MAX_PAST_SKEW))
 				|| timestamp.isAfter(receivedAt.plus(MAX_FUTURE_SKEW))) {
-			return receivedAt;
+			return receivedAt.truncatedTo(ChronoUnit.MICROS);
 		}
-		return timestamp;
+		return timestamp.truncatedTo(ChronoUnit.MICROS);
 	}
 }
