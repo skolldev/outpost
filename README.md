@@ -252,6 +252,8 @@ All configuration is environment variables.
 | `OUTPOST_ADMIN_PASSWORD`                          | -                                          | first-run admin seed                                                                                       |
 | `OUTPOST_INGEST_MAX_ENVELOPE_WIRE_BYTES`          | `4194304` (4 MiB)                          | maximum request bytes read before decoding; uncompressed requests use the smaller of both envelope limits   |
 | `OUTPOST_INGEST_MAX_ENVELOPE_DECOMPRESSED_BYTES`  | `20971520` (20 MiB)                        | maximum decoded envelope bytes; uncompressed requests use the smaller of both envelope limits               |
+| `OUTPOST_INGEST_SHUTDOWN_TIMEOUT`                 | `25s`                                      | maximum time to drain acknowledged telemetry during graceful shutdown                                      |
+| `OUTPOST_SHUTDOWN_PHASE_TIMEOUT`                  | `30s`                                      | maximum time Spring allows each graceful-shutdown lifecycle phase                                           |
 
 **UI**
 

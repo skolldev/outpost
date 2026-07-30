@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,8 @@ public class IngestQueue {
 
 	private final int capacity;
 
+	private final AtomicInteger outstanding = new AtomicInteger();
+
 	public IngestQueue(@Value("${outpost.ingest.queue-capacity:10000}") int capacity, IngestMetrics metrics) {
 		this.queue = new ArrayBlockingQueue<>(capacity);
 		this.capacity = capacity;
@@ -33,7 +36,12 @@ public class IngestQueue {
 
 	/** Non-blocking; false when the buffer is full (backpressure path). */
 	public boolean offer(IngestItem item) {
-		return queue.offer(item);
+		outstanding.incrementAndGet();
+		if (queue.offer(item)) {
+			return true;
+		}
+		outstanding.decrementAndGet();
+		return false;
 	}
 
 	/**
@@ -57,5 +65,15 @@ public class IngestQueue {
 
 	public int capacity() {
 		return capacity;
+	}
+
+	/** Marks accepted items as no longer queued or in flight. */
+	void completed(int count) {
+		outstanding.addAndGet(-count);
+	}
+
+	/** Accepted items that are still queued or being processed by a worker. */
+	int outstanding() {
+		return outstanding.get();
 	}
 }
