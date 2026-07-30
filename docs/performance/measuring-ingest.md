@@ -9,7 +9,7 @@ send what they send, and the only lever we have is shedding.
 ```
 POST /api/{project}/envelope/
   → parse envelope
-  → validate DSN key            (one DB query, uncached)
+  → validate Project Key        (bounded in-memory cache; one DB query on miss)
   → IngestQueue.offer()         ← ArrayBlockingQueue, outpost.ingest.queue-capacity (10 000)
       full? → 429 + Retry-After + X-Sentry-Rate-Limits
   → 200
@@ -23,7 +23,7 @@ POST /api/{project}/envelope/
 The accept side and the drain side fail in completely different ways, and
 conflating them is the main way to get a wrong answer:
 
-- **Accept side** is cheap — a parse, one query, an enqueue. It will happily
+- **Accept side** is cheap — a parse, a cached Project Key lookup, an enqueue. It will happily
   acknowledge far more than the system can store.
 - **Drain side** is where the work is. `EventStore` takes
   `pg_advisory_xact_lock` for the project and then issues several individual

@@ -2,6 +2,8 @@ package dev.outpost.ingest;
 
 import tools.jackson.databind.JsonNode;
 import java.net.URI;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -15,9 +17,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class IngestAuthenticator {
 
-	private static final Pattern SENTRY_KEY = Pattern.compile("sentry_key\\s*=\\s*([0-9a-fA-F]{32})");
+	private static final Pattern SENTRY_KEY = Pattern.compile("sentry_key\\s*=\\s*([^,\\s]+)");
+	private static final int KEY_CACHE_SIZE = 1_024;
 
 	private final JdbcClient jdbc;
+	// Cache negative results too, but keep the map bounded against random-key traffic.
+	private final Map<ProjectKey, Boolean> keyValidityCache = new LinkedHashMap<>(KEY_CACHE_SIZE, 0.75f, true) {
+		@Override
+		protected boolean removeEldestEntry(Map.Entry<ProjectKey, Boolean> eldest) {
+			return size() > KEY_CACHE_SIZE;
+		}
+	};
 
 	public IngestAuthenticator(JdbcClient jdbc) {
 		this.jdbc = jdbc;
@@ -52,10 +62,22 @@ public class IngestAuthenticator {
 		if (publicKey == null) {
 			return false;
 		}
-		return jdbc.sql("SELECT count(*) FROM project_key WHERE project_id = ? AND public_key = ? AND is_active")
-			.param(projectId)
-			.param(publicKey)
-			.query(Long.class)
-			.single() > 0;
+		synchronized (keyValidityCache) {
+			return keyValidityCache.computeIfAbsent(new ProjectKey(projectId, publicKey),
+					key -> jdbc.sql("SELECT count(*) FROM project_key WHERE project_id = ? AND public_key = ? AND is_active")
+						.param(key.projectId())
+						.param(key.publicKey())
+						.query(Long.class)
+						.single() > 0);
+		}
+	}
+
+	public void invalidateProjectKeys(long projectId) {
+		synchronized (keyValidityCache) {
+			keyValidityCache.keySet().removeIf(key -> key.projectId() == projectId);
+		}
+	}
+
+	private record ProjectKey(long projectId, String publicKey) {
 	}
 }

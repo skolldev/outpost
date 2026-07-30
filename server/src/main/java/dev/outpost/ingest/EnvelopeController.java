@@ -1,5 +1,6 @@
 package dev.outpost.ingest;
 
+import dev.outpost.config.OutpostProperties;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -43,11 +44,13 @@ public class EnvelopeController {
 	private final ClientReportCounters clientReports;
 	private final ObjectMapper mapper;
 	private final IngestMetrics metrics;
+	private final OutpostProperties properties;
 	private final int maxEnvelopeWireBytes;
 	private final int maxEnvelopeDecompressedBytes;
 
 	public EnvelopeController(EnvelopeParser parser, IngestAuthenticator authenticator, IngestQueue queue,
 			ClientReportCounters clientReports, ObjectMapper mapper, IngestMetrics metrics,
+			OutpostProperties properties,
 			@Value("${outpost.ingest.max-envelope-wire-bytes:4194304}") int maxEnvelopeWireBytes,
 			@Value("${outpost.ingest.max-envelope-decompressed-bytes:20971520}") int maxEnvelopeDecompressedBytes) {
 		this.parser = parser;
@@ -56,6 +59,7 @@ public class EnvelopeController {
 		this.clientReports = clientReports;
 		this.mapper = mapper;
 		this.metrics = metrics;
+		this.properties = properties;
 		if (maxEnvelopeWireBytes <= 0) {
 			throw new IllegalArgumentException("outpost.ingest.max-envelope-wire-bytes must be positive");
 		}
@@ -76,7 +80,8 @@ public class EnvelopeController {
 		String key = authenticator.extractKey(request.getHeader("X-Sentry-Auth"), sentryKeyParam, envelope.header());
 		if (!authenticator.isValidKey(projectId, key)) {
 			metrics.envelope(IngestMetrics.Outcome.FORBIDDEN);
-			return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("detail", "invalid or inactive DSN key"));
+			return ResponseEntity.status(HttpStatus.FORBIDDEN)
+				.body(Map.of("detail", "invalid or inactive DSN key", "dsn", properties.dsn(key, projectId)));
 		}
 
 		Instant receivedAt = Instant.now();

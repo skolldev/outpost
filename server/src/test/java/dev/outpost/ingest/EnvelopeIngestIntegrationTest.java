@@ -34,7 +34,7 @@ import org.springframework.web.client.RestTemplate;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
-		"outpost.ingest.linger-millis=50" })
+		"outpost.ingest.linger-millis=50", "outpost.public-url=https://errors.example.test/outpost/" })
 @Import(TestcontainersConfiguration.class)
 class EnvelopeIngestIntegrationTest {
 
@@ -144,6 +144,49 @@ class EnvelopeIngestIntegrationTest {
 	}
 
 	@Test
+	void forbiddenResponseEchoesTheRequestDsnWithoutDistinguishingTheAuthFailure() {
+		String wrongKey = "ffffffffffffffffffffffffffffffff";
+		String malformedHeaderKey = "not-a-valid-project-key";
+		ResponseEntity<String> wrongKeyResponse = postEnvelope(projectId, jsEventEnvelope("prod", "x"), wrongKey);
+		ResponseEntity<String> wrongProjectResponse = postEnvelope(999_999_999, jsEventEnvelope("prod", "x"),
+				publicKey);
+		ResponseEntity<String> malformedHeaderResponse = postEnvelope(jsEventEnvelope("prod", "x"),
+				"Sentry sentry_version=7, sentry_key=" + malformedHeaderKey, "", false);
+
+		assertThat(wrongKeyResponse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+		assertThat(wrongKeyResponse.getBody())
+			.contains("\"detail\":\"invalid or inactive DSN key\"",
+					"\"dsn\":\"https://" + wrongKey + "@errors.example.test/outpost/" + projectId + "\"");
+		assertThat(wrongProjectResponse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+		assertThat(wrongProjectResponse.getBody())
+			.contains("\"detail\":\"invalid or inactive DSN key\"",
+					"\"dsn\":\"https://" + publicKey + "@errors.example.test/outpost/999999999\"");
+		assertThat(malformedHeaderResponse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+		assertThat(malformedHeaderResponse.getBody())
+			.contains("\"detail\":\"invalid or inactive DSN key\"",
+					"\"dsn\":\"https://" + malformedHeaderKey + "@errors.example.test/outpost/" + projectId + "\"");
+	}
+
+	@Test
+	void keyCacheIsInvalidatedWhenAKeyIsDeactivatedAndReactivated() {
+		assertThat(postEnvelope(projectId, jsEventEnvelope("prod", "x"), publicKey).getStatusCode())
+			.isEqualTo(HttpStatus.OK);
+		long keyId = jdbc.sql("SELECT id FROM project_key WHERE project_id = ? AND public_key = ?")
+			.param(projectId)
+			.param(publicKey)
+			.query(Long.class)
+			.single();
+
+		setKeyActive(keyId, false);
+		assertThat(postEnvelope(projectId, jsEventEnvelope("prod", "x"), publicKey).getStatusCode())
+			.isEqualTo(HttpStatus.FORBIDDEN);
+
+		setKeyActive(keyId, true);
+		assertThat(postEnvelope(projectId, jsEventEnvelope("prod", "x"), publicKey).getStatusCode())
+			.isEqualTo(HttpStatus.OK);
+	}
+
+	@Test
 	void skipsUnknownItemTypesSilently() {
 		String envelope = """
 				{"event_id":"%s"}
@@ -196,6 +239,13 @@ class EnvelopeIngestIntegrationTest {
 		}
 		return rest.exchange(url("/api/" + projectId + "/envelope/" + query), HttpMethod.POST,
 				new HttpEntity<>(body, headers), String.class);
+	}
+
+	private ResponseEntity<String> postEnvelope(long targetProjectId, String envelope, String key) {
+		HttpHeaders headers = new HttpHeaders();
+		headers.set("Content-Type", "application/x-sentry-envelope");
+		return rest.exchange(url("/api/" + targetProjectId + "/envelope/?sentry_key=" + key), HttpMethod.POST,
+				new HttpEntity<>(envelope.getBytes(StandardCharsets.UTF_8), headers), String.class);
 	}
 
 	private String jsEventEnvelope(String environment, String function) {
@@ -275,6 +325,16 @@ class EnvelopeIngestIntegrationTest {
 		headers.set("Content-Type", "application/json");
 		ResponseEntity<String> response = rest.exchange(url("/api/internal/issues/" + issueId), HttpMethod.PATCH,
 				new HttpEntity<>("{\"status\":\"" + status + "\"}", headers), String.class);
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+	}
+
+	private void setKeyActive(long keyId, boolean active) {
+		HttpHeaders headers = new HttpHeaders();
+		headers.set(HttpHeaders.COOKIE, sessionCookie);
+		headers.set("Content-Type", "application/json");
+		ResponseEntity<String> response = rest.exchange(
+				url("/api/internal/projects/" + projectId + "/keys/" + keyId), HttpMethod.PATCH,
+				new HttpEntity<>("{\"is_active\":" + active + "}", headers), String.class);
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 	}
 
