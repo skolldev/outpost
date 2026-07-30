@@ -290,6 +290,7 @@ class IngestBenchmark {
 
 	private static HttpRequest post(URI uri, String envelope) {
 		return HttpRequest.newBuilder(uri)
+			.timeout(LoadDriver.REQUEST_TIMEOUT)
 			.header("Content-Type", "application/x-sentry-envelope")
 			.POST(HttpRequest.BodyPublishers.ofByteArray(envelope.getBytes(StandardCharsets.UTF_8)))
 			.build();

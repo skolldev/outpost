@@ -90,6 +90,7 @@ class RemoteIngestBenchmark {
 		URI uri = URI.create(target + "/api/" + projectId + "/envelope/?sentry_key=" + key);
 		Supplier<String> envelope = () -> envelopes.error("prod");
 		return () -> HttpRequest.newBuilder(uri)
+			.timeout(LoadDriver.REQUEST_TIMEOUT)
 			.header("Content-Type", "application/x-sentry-envelope")
 			.POST(HttpRequest.BodyPublishers.ofByteArray(envelope.get().getBytes(StandardCharsets.UTF_8)))
 			.build();

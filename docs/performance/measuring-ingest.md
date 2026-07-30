@@ -57,7 +57,7 @@ deliberately **not** published by `docker-compose.yml` — `SecurityConfig` ends
 | Meter | What it tells you |
 | --- | --- |
 | `outpost_ingest_envelopes_total{outcome}` | `accepted` / `rejected` / `forbidden` / `malformed` / `oversize` |
-| `outpost_ingest_items_total{signal,outcome}` | The same split per signal, since one envelope can carry several items |
+| `outpost_ingest_items_total{signal,outcome}` | Items reaching the buffer, `accepted` / `rejected` per signal — one envelope can carry several. The envelope-level outcomes reject before an item exists, so they never appear here |
 | `outpost_ingest_queue_depth` / `_capacity` | **The leading indicator.** Depth climbs long before the first 429 |
 | `outpost_ingest_queue_wait_seconds{signal}` | Dwell time in the buffer. The delay an SDK cannot see |
 | `outpost_ingest_batch_size` | Items per worker drain — small batches mean the linger is dominating |

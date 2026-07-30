@@ -116,7 +116,7 @@ public class IngestMetrics {
 			itemsQueued.put(signal, items(signal, Outcome.ACCEPTED));
 			itemsRejected.put(signal, items(signal, Outcome.REJECTED));
 			queueWait.put(signal, timer("outpost.ingest.queue.wait", "Time an item waited in the ingest buffer", signal));
-			process.put(signal, timer("outpost.ingest.process", "Pipeline processing time for a batch", signal));
+			process.put(signal, timer("outpost.ingest.process", "Pipeline processing time per item", signal));
 			store.put(signal, timer("outpost.ingest.store", "Batch persistence time", signal));
 		}
 		for (DropStage stage : DropStage.values()) {

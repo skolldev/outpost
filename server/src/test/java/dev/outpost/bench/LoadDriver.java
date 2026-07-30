@@ -40,7 +40,13 @@ public final class LoadDriver implements AutoCloseable {
 	/** Enough backlog to expose a real stall, small enough not to OOM the driver. */
 	private static final int MAX_IN_FLIGHT = 20_000;
 
-	private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
+	/**
+	 * Bounds a stall per request rather than per run: without it a wedged server
+	 * holds an in-flight permit until the latch gives up at the end of the step,
+	 * by which point that plateau's shed count and percentiles are already wrong.
+	 * Callers must apply it to the requests they build.
+	 */
+	public static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
 
 	/** One rate plateau: offer {@code ratePerSecond} for {@code duration}. */
 	public record Step(int ratePerSecond, Duration duration) {

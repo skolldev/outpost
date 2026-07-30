@@ -10,6 +10,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -139,7 +140,7 @@ public final class BenchReport {
 	}
 
 	private static String round(double value) {
-		return Double.isNaN(value) ? "—" : String.format("%.1f", value);
+		return Double.isNaN(value) ? "—" : String.format(Locale.ROOT, "%.1f", value);
 	}
 
 	private String json() {
@@ -179,8 +180,9 @@ public final class BenchReport {
 		return out.toString();
 	}
 
+	/** {@link Locale#ROOT}, or a comma-decimal default locale emits invalid JSON. */
 	private static String number(double value) {
-		return Double.isNaN(value) ? "null" : String.format("%.3f", value);
+		return Double.isNaN(value) ? "null" : String.format(Locale.ROOT, "%.3f", value);
 	}
 
 	private static String quote(String value) {
