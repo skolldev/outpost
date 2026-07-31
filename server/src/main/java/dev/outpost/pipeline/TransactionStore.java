@@ -6,8 +6,10 @@ import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
 import dev.outpost.ingest.IngestMetrics;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -45,14 +47,16 @@ public class TransactionStore {
 	private final PartitionManager partitions;
 	private final ObjectMapper mapper;
 	private final IngestMetrics metrics;
+	private final TelemetryOrigins origins;
 
 	public TransactionStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
-			PartitionManager partitions, ObjectMapper mapper, IngestMetrics metrics) {
+			PartitionManager partitions, ObjectMapper mapper, IngestMetrics metrics, TelemetryOrigins origins) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.mapper = mapper;
 		this.metrics = metrics;
+		this.origins = origins;
 	}
 
 	/**
@@ -66,11 +70,12 @@ public class TransactionStore {
 		// Partition DDL runs in its own transaction, before the insert transaction.
 		// txn and span partition on start_ts; spans of a transaction can straddle a
 		// week boundary from the root, so ensure partitions for every span too.
-		batch.forEach(txn -> {
-			partitions.ensurePartition(PartitionManager.TXN, txn.startTs());
-			partitions.ensurePartition(PartitionManager.SPAN, txn.startTs());
-			txn.spans().forEach(span -> partitions.ensurePartition(PartitionManager.SPAN, span.startTs()));
-		});
+		List<Instant> txnStarts = batch.stream().map(ProcessedTransaction::startTs).toList();
+		partitions.ensurePartitions(PartitionManager.TXN, txnStarts);
+		partitions.ensurePartitions(PartitionManager.SPAN,
+				Stream.concat(txnStarts.stream(),
+						batch.stream().flatMap(txn -> txn.spans().stream()).map(ProcessedSpan::startTs))
+					.toList());
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 		}
@@ -88,18 +93,7 @@ public class TransactionStore {
 	}
 
 	private void storeAll(List<ProcessedTransaction> batch) {
-		for (ProcessedTransaction txn : batch) {
-			jdbc.update("""
-					INSERT INTO environment (project_id, name) VALUES (?, ?)
-					ON CONFLICT (project_id, name) DO NOTHING
-					""", txn.projectId(), txn.environment());
-			if (txn.release() != null) {
-				jdbc.update("""
-						INSERT INTO release (project_id, version) VALUES (?, ?)
-						ON CONFLICT (project_id, version) DO NOTHING
-						""", txn.projectId(), txn.release());
-			}
-		}
+		origins.ensure(batch);
 		List<Object[]> txnRows = batch.stream()
 			.map(txn -> new Object[] { txn.id(), txn.projectId(), txn.environment(), txn.release(), txn.traceId(),
 					txn.spanId(), txn.parentSpanId(), txn.name(), txn.op(), Timestamp.from(txn.startTs()),

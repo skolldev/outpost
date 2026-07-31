@@ -90,10 +90,11 @@ public class EventStore {
 	private final EventIssueLock eventIssueLock;
 	private final NotificationPublisher notifications;
 	private final IngestMetrics metrics;
+	private final TelemetryOrigins origins;
 
 	public EventStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
 			ObjectMapper mapper, EventIssueLock eventIssueLock, NotificationPublisher notifications,
-			IngestMetrics metrics) {
+			IngestMetrics metrics, TelemetryOrigins origins) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
@@ -101,6 +102,7 @@ public class EventStore {
 		this.eventIssueLock = eventIssueLock;
 		this.notifications = notifications;
 		this.metrics = metrics;
+		this.origins = origins;
 	}
 
 	/**
@@ -113,10 +115,7 @@ public class EventStore {
 			return;
 		}
 		// Partition DDL runs in its own transaction, before the insert transaction.
-		batch.stream()
-			.map(ProcessedEvent::timestamp)
-			.distinct()
-			.forEach(timestamp -> partitions.ensurePartition(PartitionManager.EVENT, timestamp));
+		partitions.ensurePartitions(PartitionManager.EVENT, batch.stream().map(ProcessedEvent::timestamp).toList());
 		Map<Long, List<ProcessedEvent>> byProject = batch.stream()
 			.collect(Collectors.groupingBy(ProcessedEvent::projectId, LinkedHashMap::new, Collectors.toList()));
 		byProject.values().forEach(this::storeProject);
@@ -160,18 +159,7 @@ public class EventStore {
 		if (batch.isEmpty()) {
 			return;
 		}
-		for (ProcessedEvent event : batch) {
-			jdbc.update("""
-					INSERT INTO environment (project_id, name) VALUES (?, ?)
-					ON CONFLICT (project_id, name) DO NOTHING
-					""", event.projectId(), event.environment());
-			if (event.release() != null) {
-				jdbc.update("""
-						INSERT INTO release (project_id, version) VALUES (?, ?)
-						ON CONFLICT (project_id, version) DO NOTHING
-						""", event.projectId(), event.release());
-			}
-		}
+		origins.ensure(batch);
 		List<Object[]> eventRows = batch.stream().map(event -> {
 			IssueUpsert upsert = jdbc.queryForObject(ISSUE_UPSERT,
 					(rs, i) -> new IssueUpsert(rs.getLong("id"), rs.getBoolean("inserted")), event.projectId(),

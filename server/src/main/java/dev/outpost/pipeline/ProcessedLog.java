@@ -10,5 +10,6 @@ import java.util.UUID;
  * {@code GET /logs} endpoint returns.
  */
 public record ProcessedLog(UUID id, long projectId, String environment, String release, Instant timestamp,
-		String traceId, String spanId, String level, Integer severityNumber, String body, JsonNode attributes) {
+		String traceId, String spanId, String level, Integer severityNumber, String body,
+		JsonNode attributes) implements ProcessedTelemetry {
 }

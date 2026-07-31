@@ -30,7 +30,8 @@ Validation**; SQL is written inline with `JdbcClient`.
   class. Ingest (`/api/{projectId}/**`) self-authenticates by DSN key;
   `/api/0/**` uses bearer-token scopes.
 - Environments and releases are auto-created on ingest (upserts in
-  `EventStore`), not managed via admin endpoints.
+  `pipeline/TelemetryOrigins`, called by each store), not managed via admin
+  endpoints.
 
 ## Background work
 
