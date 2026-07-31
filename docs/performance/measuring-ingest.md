@@ -21,6 +21,9 @@ POST /api/{project}/envelope/
   → pipeline.process per item
   → store.store per signal      ← per-project advisory lock, then the inserts
   → remove successfully digested spools
+
+  ingest-spool-reaper           ← outpost.ingest.spool-sweep-interval (5 min)
+  → remove spool files with no live queue entry, untouched for spool-max-age (1 h)
 ```
 
 The accept side and the drain side fail in completely different ways, and
@@ -39,7 +42,10 @@ So *accepted per second is not capacity*. Stored rows per second is.
 > attachment bytes exist only while a worker digests one envelope, so queued
 > heap use no longer scales with envelope size. Disk capacity is now the
 > variable-size bound; an unwritable or full spool filesystem returns 500 and
-> logs the failure.
+> logs the failure. Crashes and drain timeouts leave spool files with no queue
+> entry behind, so a periodic sweep reclaims anything untouched for
+> `spool-max-age` — watch `outpost.ingest.spool.reaped.files`, since a steady
+> non-zero reap rate means envelopes are being spooled and then abandoned.
 
 ## Metrics
 
@@ -66,6 +72,7 @@ deliberately **not** published by `docker-compose.yml` — `SecurityConfig` ends
 | `outpost_ingest_process_seconds{signal}` | Pipeline cost |
 | `outpost_ingest_store_seconds{signal}` | Persistence cost — usually where the time is |
 | `outpost_ingest_dropped_total{stage}` | Items lost at `pipeline` or `store`. Should be zero |
+| `outpost_ingest_spool_reaped_files_total` / `_bytes_total` | Orphaned spool files swept and disk reclaimed. Should be zero in steady state — a non-zero rate means envelopes are spooled and then abandoned |
 
 Watch **queue depth and queue wait together**. A rising wait under a flat accept
 rate means the drain side is the constraint, which is the distinction a 429 alone

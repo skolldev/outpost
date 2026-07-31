@@ -255,6 +255,8 @@ All configuration is environment variables.
 | `OUTPOST_INGEST_SPOOL_DIRECTORY`                  | `${java.io.tmpdir}/outpost-ingest`         | ephemeral directory for accepted envelope bodies while they await digest                                    |
 | `OUTPOST_INGEST_QUEUE_CAPACITY`                   | `50000`                                    | maximum envelope spool references buffered before SDK backpressure                                           |
 | `OUTPOST_INGEST_SHUTDOWN_TIMEOUT`                 | `25s`                                      | maximum time to drain acknowledged telemetry during graceful shutdown                                      |
+| `OUTPOST_INGEST_SPOOL_MAX_AGE`                    | `1h`                                       | how long a spool file sits untouched before the sweep reaps it; must exceed the shutdown timeout           |
+| `OUTPOST_INGEST_SPOOL_SWEEP_INTERVAL`             | `5m`                                       | how often the spool directory is swept for orphaned files                                                  |
 | `OUTPOST_SHUTDOWN_PHASE_TIMEOUT`                  | `30s`                                      | maximum time Spring allows each graceful-shutdown lifecycle phase                                           |
 
 **UI**

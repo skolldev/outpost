@@ -104,6 +104,10 @@ public class IngestMetrics {
 
 	private final Counter duplicates;
 
+	private final Counter reapedFiles;
+
+	private final Counter reapedBytes;
+
 	private final DistributionSummary batchSize;
 
 	public IngestMetrics(MeterRegistry registry) {
@@ -132,6 +136,16 @@ public class IngestMetrics {
 		// on drop rate.
 		this.duplicates = Counter.builder("outpost.ingest.duplicates")
 			.description("Events already stored under their event id, so not stored again")
+			.register(registry);
+		// A steady non-zero reap rate means envelopes are being spooled and then
+		// abandoned — a crash loop or a digest that never completes — not just
+		// disk being reclaimed.
+		this.reapedFiles = Counter.builder("outpost.ingest.spool.reaped.files")
+			.description("Orphaned spool files removed by the sweep")
+			.register(registry);
+		this.reapedBytes = Counter.builder("outpost.ingest.spool.reaped.bytes")
+			.description("Disk reclaimed by the spool sweep")
+			.baseUnit("bytes")
 			.register(registry);
 		this.batchSize = DistributionSummary.builder("outpost.ingest.batch.size")
 			.description("Envelope references drained per worker batch")
@@ -204,6 +218,11 @@ public class IngestMetrics {
 
 	public void duplicates(int count) {
 		duplicates.increment(count);
+	}
+
+	public void spoolReaped(int files, long bytes) {
+		reapedFiles.increment(files);
+		reapedBytes.increment(bytes);
 	}
 
 }
