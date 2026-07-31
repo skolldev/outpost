@@ -32,6 +32,8 @@ public class IngestWorkers implements SmartLifecycle {
 
 	private static final Logger log = LoggerFactory.getLogger(IngestWorkers.class);
 	private static final int LIFECYCLE_PHASE = 2_147_481_598;
+	/** Shared with {@link SpoolReaper}, which validates its max age against this. */
+	static final String DEFAULT_SHUTDOWN_TIMEOUT = "25s";
 
 	private final IngestQueue queue;
 	private final EnvelopeSpool spool;
@@ -57,7 +59,7 @@ public class IngestWorkers implements SmartLifecycle {
 			IngestMetrics metrics, @Value("${outpost.ingest.workers:2}") int workerCount,
 			@Value("${outpost.ingest.max-batch:500}") int maxBatch,
 			@Value("${outpost.ingest.linger-millis:1000}") long lingerMillis,
-			@Value("${outpost.ingest.shutdown-timeout:25s}") Duration shutdownTimeout) {
+			@Value("${outpost.ingest.shutdown-timeout:" + DEFAULT_SHUTDOWN_TIMEOUT + "}") Duration shutdownTimeout) {
 		this.queue = queue;
 		this.spool = spool;
 		this.parser = parser;

@@ -5,12 +5,17 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +35,14 @@ public class EnvelopeSpool {
 			PosixFilePermissions.fromString("rwx------");
 	private static final Set<PosixFilePermission> FILE_PERMISSIONS =
 			PosixFilePermissions.fromString("rw-------");
+	private static final String FILE_GLOB = "envelope-*.spool";
+
+	/**
+	 * Files this process has written and not yet deleted — queued, in flight, or
+	 * mid-write. A crash or a digest that never completes leaves the file on disk
+	 * with no entry here, which is what {@link #reap(Duration)} sweeps.
+	 */
+	private final Set<Path> live = ConcurrentHashMap.newKeySet();
 
 	private final Path directory;
 	private final int maxEnvelopeWireBytes;
@@ -62,6 +75,7 @@ public class EnvelopeSpool {
 		try {
 			ensureDirectory();
 			path = createTempFile();
+			live.add(path);
 		}
 		catch (IOException e) {
 			throw new SpoolWriteException(e);
@@ -143,12 +157,78 @@ public class EnvelopeSpool {
 	}
 
 	private void delete(Path path) {
+		live.remove(path);
 		try {
 			Files.deleteIfExists(path);
 		}
 		catch (IOException e) {
 			log.warn("failed to remove ingest spool file {}: {}", path, e.toString());
 		}
+	}
+
+	/**
+	 * Removes spool files that no live queue entry points at and that have not
+	 * been touched for {@code maxAge}. Both conditions must hold: the liveness
+	 * check is what makes the sweep safe within this process, and the age gate
+	 * covers the window it cannot — a file created but not yet registered.
+	 */
+	public Sweep reap(Duration maxAge) {
+		Instant cutoff = Instant.now().minus(maxAge);
+		int files = 0;
+		long bytes = 0;
+		try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory, FILE_GLOB)) {
+			for (Path path : entries) {
+				OptionalLong size = reapableSize(path, cutoff);
+				if (size.isEmpty()) {
+					continue;
+				}
+				try {
+					if (Files.deleteIfExists(path)) {
+						files++;
+						bytes += size.getAsLong();
+					}
+				}
+				catch (IOException e) {
+					log.warn("failed to reap orphaned ingest spool file {}: {}", path, e.toString());
+				}
+			}
+		}
+		catch (NoSuchFileException e) {
+			// Nothing has been spooled yet, so the directory does not exist.
+		}
+		catch (IOException e) {
+			log.warn("failed to sweep ingest spool directory {}: {}", directory, e.toString());
+		}
+		return new Sweep(files, bytes);
+	}
+
+	/** The file's size when it should be reaped, empty when it should be kept. */
+	private OptionalLong reapableSize(Path path, Instant cutoff) {
+		if (live.contains(path)) {
+			return OptionalLong.empty();
+		}
+		try {
+			if (Files.getLastModifiedTime(path).toInstant().isAfter(cutoff)) {
+				return OptionalLong.empty();
+			}
+			return OptionalLong.of(Files.size(path));
+		}
+		catch (NoSuchFileException e) {
+			return OptionalLong.empty(); // A worker finished with it between the listing and now.
+		}
+		catch (IOException e) {
+			log.warn("failed to inspect ingest spool file {}: {}", path, e.toString());
+			return OptionalLong.empty();
+		}
+	}
+
+	/** What one sweep removed. */
+	public record Sweep(int files, long bytes) {
+
+		public boolean isEmpty() {
+			return files == 0;
+		}
+
 	}
 
 	private void copyLimited(InputStream in, OutputStream out, int limit, String limitName) throws IOException {

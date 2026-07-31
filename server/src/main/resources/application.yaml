@@ -29,6 +29,14 @@ outpost:
     queue-capacity: ${OUTPOST_INGEST_QUEUE_CAPACITY:50000}
     # Kept below the shutdown-phase timeout so residual work can be reported.
     shutdown-timeout: ${OUTPOST_INGEST_SHUTDOWN_TIMEOUT:25s}
+    # Crashes and drain timeouts leave spool files with no queue entry behind.
+    # The sweep reclaims them once untouched for spool-max-age. Files this
+    # process still holds are tracked in memory and skipped whatever their age,
+    # so this threshold protects the creation-to-registration window rather than
+    # imposing a queue-residency budget.
+    # Startup rejects a value at or below shutdown-timeout.
+    spool-max-age: ${OUTPOST_INGEST_SPOOL_MAX_AGE:1h}
+    spool-sweep-interval: ${OUTPOST_INGEST_SPOOL_SWEEP_INTERVAL:5m}
   retention:
     event-chunk-size: ${OUTPOST_RETENTION_EVENT_CHUNK_SIZE:10000}
     chunk-timeout-seconds: ${OUTPOST_RETENTION_CHUNK_TIMEOUT_SECONDS:30}
