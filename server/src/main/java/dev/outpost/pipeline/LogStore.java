@@ -36,15 +36,17 @@ public class LogStore {
 	private final LogTail tail;
 	private final ObjectMapper mapper;
 	private final IngestMetrics metrics;
+	private final TelemetryOrigins origins;
 
 	public LogStore(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, PartitionManager partitions,
-			LogTail tail, ObjectMapper mapper, IngestMetrics metrics) {
+			LogTail tail, ObjectMapper mapper, IngestMetrics metrics, TelemetryOrigins origins) {
 		this.jdbc = jdbc;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.partitions = partitions;
 		this.tail = tail;
 		this.mapper = mapper;
 		this.metrics = metrics;
+		this.origins = origins;
 	}
 
 	/**
@@ -56,10 +58,8 @@ public class LogStore {
 			return;
 		}
 		// Partition DDL runs in its own transaction, before the insert transaction.
-		batch.stream()
-			.map(ProcessedLog::timestamp)
-			.distinct()
-			.forEach(timestamp -> partitions.ensurePartition(PartitionManager.LOG_RECORD, timestamp));
+		partitions.ensurePartitions(PartitionManager.LOG_RECORD,
+				batch.stream().map(ProcessedLog::timestamp).toList());
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 			tail.publish(batch);
@@ -78,18 +78,7 @@ public class LogStore {
 	}
 
 	private void storeAll(List<ProcessedLog> batch) {
-		for (ProcessedLog record : batch) {
-			jdbc.update("""
-					INSERT INTO environment (project_id, name) VALUES (?, ?)
-					ON CONFLICT (project_id, name) DO NOTHING
-					""", record.projectId(), record.environment());
-			if (record.release() != null) {
-				jdbc.update("""
-						INSERT INTO release (project_id, version) VALUES (?, ?)
-						ON CONFLICT (project_id, version) DO NOTHING
-						""", record.projectId(), record.release());
-			}
-		}
+		origins.ensure(batch);
 		List<Object[]> rows = batch.stream()
 			.map(record -> new Object[] { record.id(), record.projectId(), record.environment(),
 					Timestamp.from(record.timestamp()), record.traceId(), record.spanId(), record.level(),

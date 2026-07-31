@@ -6,6 +6,8 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +60,18 @@ public class PartitionManager {
 	/** Cheap when the partition is already known; creates it otherwise. */
 	public void ensurePartition(String table, Instant timestamp) {
 		ensureWeek(table, weekStart(timestamp));
+	}
+
+	/**
+	 * Ensures the partition of every week {@code timestamps} falls in. Partitions
+	 * are weekly, so a batch of 50,000 log records — whose timestamps are all
+	 * distinct — still names only one or two weeks; deduping on the raw instant
+	 * would collapse nothing (#107).
+	 */
+	public void ensurePartitions(String table, Collection<Instant> timestamps) {
+		for (LocalDate week : weeksOf(timestamps)) {
+			ensureWeek(table, week);
+		}
 	}
 
 	/**
@@ -159,5 +173,13 @@ public class PartitionManager {
 
 	static LocalDate weekStart(Instant timestamp) {
 		return timestamp.atZone(ZoneOffset.UTC).toLocalDate().with(DayOfWeek.MONDAY);
+	}
+
+	static Set<LocalDate> weeksOf(Collection<Instant> timestamps) {
+		Set<LocalDate> weeks = new LinkedHashSet<>();
+		for (Instant timestamp : timestamps) {
+			weeks.add(weekStart(timestamp));
+		}
+		return weeks;
 	}
 }
