@@ -7,7 +7,6 @@ import dev.outpost.support.EnvelopeFactory;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -251,15 +250,7 @@ class IngestBackpressureIntegrationTest {
 		try {
 			List<QueuedEnvelope> batch;
 			while (!(batch = queue.nextBatch(CAPACITY, 0)).isEmpty()) {
-				for (QueuedEnvelope envelope : batch) {
-					try {
-						Files.deleteIfExists(envelope.spoolFile().path());
-					}
-					catch (java.io.IOException e) {
-						throw new AssertionError(e);
-					}
-				}
-				queue.completed(batch.size());
+				queue.release(batch);
 			}
 		}
 		catch (InterruptedException e) {

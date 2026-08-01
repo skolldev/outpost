@@ -27,8 +27,8 @@ import org.springframework.web.client.RestTemplate;
 /**
  * Guards {@link IngestQueue#outstanding()} against drift. The counter is
  * incremented in {@code offer} and decremented in three separate places —
- * {@code completed} after a digest, {@code offer}'s own rollback when the buffer
- * is full, and {@code drainRemaining} at shutdown — so a new path that removes
+ * {@code release} after a digest, {@code offer}'s own rollback when the buffer
+ * is full, and {@code releaseRemaining} at shutdown — so a new path that removes
  * work without decrementing leaks a count silently. Nothing throws and no
  * envelope is lost; the damage shows up later, because {@code outstanding} is
  * what {@code IngestWorkers.stop()} reports as residual work. A counter stuck

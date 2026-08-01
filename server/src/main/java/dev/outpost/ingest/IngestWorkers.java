@@ -135,10 +135,7 @@ public class IngestWorkers implements SmartLifecycle {
 			storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
 		}
 		finally {
-			for (QueuedEnvelope envelope : batch) {
-				spool.delete(envelope.spoolFile());
-			}
-			queue.completed(batch.size());
+			queue.release(batch);
 		}
 	}
 
@@ -243,9 +240,7 @@ public class IngestWorkers implements SmartLifecycle {
 				worker.interrupt();
 			}
 		}
-		for (QueuedEnvelope envelope : queue.drainRemaining()) {
-			spool.delete(envelope.spoolFile());
-		}
+		queue.releaseRemaining();
 		workers.clear();
 		if (interrupted) {
 			Thread.currentThread().interrupt();
