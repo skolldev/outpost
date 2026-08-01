@@ -34,6 +34,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @EnabledIfSystemProperty(named = "outpost.bench.target", matches = ".+")
 @Tag("benchmark")
+@Tag("ingest")
 class RemoteIngestBenchmark {
 
 	private static final int[] STEP_RATES = { 200, 400, 800, 1600, 3200 };

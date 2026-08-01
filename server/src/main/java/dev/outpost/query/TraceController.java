@@ -80,13 +80,9 @@ public class TraceController {
 		return body;
 	}
 
-	record SearchQuery(String sql, List<Object> params) {
-	}
-
 	/**
 	 * Extracted so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact
-	 * query the controller runs — a regression guard holding a copy of the SQL would
-	 * keep passing if the real query regressed.
+	 * query the controller runs — see {@link SearchQuery}.
 	 *
 	 * <p>One row per trace_id. A distributed trace has many transactions sharing a
 	 * trace_id (browser pageload + backend request…); each trace is represented by

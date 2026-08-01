@@ -3,13 +3,12 @@ package dev.outpost.query;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.outpost.TestcontainersConfiguration;
-import dev.outpost.query.TraceController.SearchQuery;
+import dev.outpost.db.PartitionManager;
+import dev.outpost.support.PlanFacts;
+import dev.outpost.support.TelemetrySeeder;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,16 +24,22 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * 634k shared-buffer hits on a production-sized dataset, versus ~20ms / ~1.8k
  * once the counts were moved after pagination.
  *
- * <p>The guard seeds a production-shaped dataset, then {@code EXPLAIN (ANALYZE,
- * BUFFERS)}es the <b>controller's own SQL</b> (via {@link
- * TraceController#buildSearchQuery}, not a copy — a copy would keep passing if
- * the real query regressed) and asserts the shared-buffer hit count stays under
- * a ceiling. Buffer count is chosen over wall-clock deliberately: it is
- * machine-independent, so a slow or loaded CI box cannot flake it, and it is the
- * quantity that actually blew up in the regression (350x). Both {@code
- * has_errors} branches are guarded: the default path and the one that adds the
- * {@code EXISTS} filter (which Postgres de-correlates into a hash semi-join, so
- * it stays cheap — this locks that in).
+ * <p>The guard seeds a production-shaped dataset, then {@code EXPLAIN}s the
+ * <b>controller's own SQL</b> (via {@link TraceController#buildSearchQuery}, not
+ * a copy — a copy would keep passing if the real query regressed) and asserts the
+ * blocks it touched stay under a ceiling. Logical I/O is chosen over wall-clock
+ * deliberately: it is machine-independent, so a slow or loaded CI box cannot
+ * flake it, and it is the quantity that actually blew up in the regression
+ * (350x). Both {@code has_errors} branches are guarded: the default path and the
+ * one that adds the {@code EXISTS} filter (which Postgres de-correlates into a
+ * hash semi-join, so it stays cheap — this locks that in).
+ *
+ * <p>This test predates the rest of {@code dev.outpost.query}'s guards and keeps
+ * its own hand-written seeding: the dataset was built to make an O(rows)
+ * subquery unmistakable, and swapping it for {@link
+ * dev.outpost.support.TelemetrySeeder} would change what the 50 000 means.
+ * Parsing moved onto {@link PlanFacts} — same numbers, no regex, and the
+ * partition and temp-I/O facts the other guards need come along for free.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -45,6 +50,12 @@ class TraceSearchPerformanceTest {
 	 * Healthy is ~1.8k shared hits; the regression was ~634k. 50k sits ~12x above
 	 * healthy (absorbing dataset/plan drift) and ~12x below the bug, so it fails
 	 * loudly on an O(rows) reintroduction without flaking on a well-behaved query.
+	 *
+	 * <p>The constant is unchanged from when it was derived against that regression;
+	 * re-deriving it from a formula would trade evidence for tidiness. What did
+	 * change is that {@link PlanFacts#logicalIo()} counts blocks <em>read</em>
+	 * alongside blocks hit, which is strictly more conservative — a cold cache can no
+	 * longer turn a runaway plan into a passing guard.
 	 */
 	private static final long MAX_SHARED_BUFFER_HITS = 50_000;
 
@@ -54,18 +65,18 @@ class TraceSearchPerformanceTest {
 	/** Many transactions per trace, so dedup discards most rows (as in production). */
 	private static final int TXNS_PER_TRACE = 4;
 
-	private static final Pattern SHARED_HIT = Pattern.compile("shared hit=(\\d+)");
-
 	@Autowired
 	JdbcClient jdbc;
 
+	@Autowired
+	PartitionManager partitions;
+
 	@BeforeEach
 	void seed() {
-		jdbc.sql("DELETE FROM span").update();
-		jdbc.sql("DELETE FROM txn").update();
-		jdbc.sql("DELETE FROM event").update();
-		jdbc.sql("DELETE FROM issue").update();
-		jdbc.sql("DELETE FROM project").update();
+		// Through TelemetrySeeder rather than a local DELETE list: it truncates, and a
+		// DELETE would leave whatever a neighbouring guard seeded occupying its pages,
+		// so this test's buffer counts would carry another test's dataset.
+		new TelemetrySeeder(jdbc, partitions).clear();
 
 		long project = jdbc.sql("INSERT INTO project (slug, name) VALUES ('perf', 'Perf') RETURNING id")
 			.query(Long.class)
@@ -140,27 +151,16 @@ class TraceSearchPerformanceTest {
 		assertBufferHitsUnderCeiling(searchSql(true));
 	}
 
-	private void assertBufferHitsUnderCeiling(SearchQuery search) {
-		List<String> plan = jdbc.sql("EXPLAIN (ANALYZE, BUFFERS) " + search.sql())
-			.params(search.params())
-			.query(String.class)
-			.list();
+	private void assertBufferHitsUnderCeiling(QueryPlans.Built search) {
+		PlanFacts facts = search.explain(jdbc);
 
-		long totalSharedHits = 0;
-		for (String line : plan) {
-			Matcher m = SHARED_HIT.matcher(line);
-			while (m.find()) {
-				totalSharedHits += Long.parseLong(m.group(1));
-			}
-		}
-		assertThat(totalSharedHits)
-			.as("shared-buffer hits for trace search (regression was ~634k, healthy ~1.8k)\n%s",
-					String.join("\n", plan))
+		assertThat(facts.logicalIo())
+			.as("shared blocks touched by trace search (regression was ~634k, healthy ~1.8k)%n%s", facts.plan())
 			.isLessThan(MAX_SHARED_BUFFER_HITS);
 	}
 
-	private SearchQuery searchSql(Boolean hasErrors) {
-		return TraceController.buildSearchQuery(null, null, null, null, null, null, hasErrors, null, null, null);
+	private QueryPlans.Built searchSql(Boolean hasErrors) {
+		return QueryPlans.traceSearch(null, null, null, null, null, null, hasErrors, null, null, null);
 	}
 
 }

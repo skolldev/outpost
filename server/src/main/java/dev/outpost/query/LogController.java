@@ -58,6 +58,43 @@ public class LogController {
 			@RequestParam(required = false) Instant to,
 			@RequestParam(required = false) String cursor) {
 
+		SearchQuery search = buildLogQuery(project, environment, level, traceId, release, query, attr, from, to, cursor);
+
+		List<Map<String, Object>> rows = jdbc.query(search.sql(), (rs, i) -> {
+			Map<String, Object> row = new LinkedHashMap<>();
+			row.put("id", rs.getObject("id", UUID.class));
+			row.put("project_id", rs.getLong("project_id"));
+			row.put("environment", rs.getString("environment"));
+			row.put("timestamp", rs.getTimestamp("timestamp").toInstant());
+			row.put("trace_id", rs.getString("trace_id"));
+			row.put("span_id", rs.getString("span_id"));
+			row.put("level", rs.getString("level"));
+			row.put("severity_number", rs.getObject("severity_number", Integer.class));
+			row.put("body", rs.getString("body"));
+			row.put("attributes", QuerySupport.parseJson(mapper, rs.getString("attributes")));
+			row.put("release", rs.getString("release"));
+			return row;
+		}, search.params().toArray());
+
+		KeysetPage.Page page = PAGE.paginate(rows);
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("logs", page.rows());
+		body.put("next_cursor", page.nextCursor());
+		return body;
+	}
+
+	/**
+	 * The keyset the log stream is paged by. Package-visible so a guard can walk
+	 * real cursors to a deep page rather than synthesize one.
+	 */
+	static KeysetPage logPage() {
+		return PAGE;
+	}
+
+	/** The log-list query the controller runs, extracted per {@link SearchQuery}. */
+	static SearchQuery buildLogQuery(List<Long> project, List<String> environment, List<String> level, String traceId,
+			String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
+
 		StringBuilder sql = new StringBuilder("""
 				SELECT id, project_id, environment, "timestamp", trace_id, span_id, level, severity_number,
 				       body, attributes, release
@@ -102,28 +139,7 @@ public class LogController {
 		KeysetPage.Tail tail = PAGE.build(cursor);
 		sql.append(tail.sql());
 		params.addAll(tail.params());
-
-		List<Map<String, Object>> rows = jdbc.query(sql.toString(), (rs, i) -> {
-			Map<String, Object> row = new LinkedHashMap<>();
-			row.put("id", rs.getObject("id", UUID.class));
-			row.put("project_id", rs.getLong("project_id"));
-			row.put("environment", rs.getString("environment"));
-			row.put("timestamp", rs.getTimestamp("timestamp").toInstant());
-			row.put("trace_id", rs.getString("trace_id"));
-			row.put("span_id", rs.getString("span_id"));
-			row.put("level", rs.getString("level"));
-			row.put("severity_number", rs.getObject("severity_number", Integer.class));
-			row.put("body", rs.getString("body"));
-			row.put("attributes", QuerySupport.parseJson(mapper, rs.getString("attributes")));
-			row.put("release", rs.getString("release"));
-			return row;
-		}, params.toArray());
-
-		KeysetPage.Page page = PAGE.paginate(rows);
-		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("logs", page.rows());
-		body.put("next_cursor", page.nextCursor());
-		return body;
+		return new SearchQuery(sql.toString(), params);
 	}
 
 	/** SSE live tail — same filters, applied in-process to newly stored records. */

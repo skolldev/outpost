@@ -67,6 +67,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 @Import(TestcontainersConfiguration.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("benchmark")
+@Tag("ingest")
 class IngestBenchmark {
 
 	/**

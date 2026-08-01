@@ -39,36 +39,55 @@ dependencies {
 }
 
 tasks.named('test') {
-	// The load benchmark is wall-clock and minutes long — opt in via `ingestBenchmark`.
+	// The benchmarks are wall-clock and minutes long — opt in via `ingestBenchmark`
+	// or `retrievalBenchmark`. The pass/fail half of both questions lives in tagless
+	// tests that do run here: IngestBackpressureIntegrationTest for shedding, and
+	// dev.outpost.query's *PerformanceTest guards for retrieval.
 	useJUnitPlatform {
 		excludeTags 'benchmark'
 	}
 }
 
-tasks.register('ingestBenchmark', Test) {
-	description = 'Opt-in ingest load benchmark. Not run by `build`. Requires Docker.'
-	group = 'verification'
-	testClassesDirs = sourceSets.test.output.classesDirs
-	classpath = sourceSets.test.runtimeClasspath
-	useJUnitPlatform {
-		includeTags 'benchmark'
-	}
-	// Gradle's 512 MB default is not a realistic server heap, and it matters more
-	// than it looks: the workers still materialize one envelope at a time while
-	// digesting it, and the benchmark also measures allocation rather than only
-	// retained heap. Override with -Pbench.heap=4g for larger experiments.
-	maxHeapSize = project.findProperty('bench.heap') ?: '2g'
-	// Always rerun: the point is a fresh measurement, not a cached verdict.
-	outputs.upToDateWhen { false }
-	testLogging {
-		showStandardStreams = true
-		exceptionFormat = 'full'
-	}
-	// -Pbench.target=http://host:8080 drives a real deployment instead of the
-	// embedded app; -Pbench.projectId / -Pbench.key name the DSN to post to.
-	['target', 'projectId', 'key'].each { name ->
-		if (project.hasProperty("bench.${name}")) {
-			systemProperty "outpost.bench.${name}", project.property("bench.${name}")
+/**
+ * Shared configuration for the opt-in benchmark tasks. Both want the same heap,
+ * the same logging and the same refusal to be cached; only the tag selector and
+ * the properties they forward differ.
+ */
+def benchmarkTask = { String name, String tags, String description, List<String> properties ->
+	tasks.register(name, Test) {
+		it.description = description
+		group = 'verification'
+		testClassesDirs = sourceSets.test.output.classesDirs
+		classpath = sourceSets.test.runtimeClasspath
+		useJUnitPlatform {
+			includeTags tags
+		}
+		// Gradle's 512 MB default is not a realistic server heap, and it matters more
+		// than it looks: the ingest workers still materialize one envelope at a time
+		// while digesting it, and that benchmark measures allocation rather than only
+		// retained heap. Override with -Pbench.heap=4g for larger experiments.
+		maxHeapSize = project.findProperty('bench.heap') ?: '2g'
+		// Always rerun: the point is a fresh measurement, not a cached verdict.
+		outputs.upToDateWhen { false }
+		testLogging {
+			showStandardStreams = true
+			exceptionFormat = 'full'
+		}
+		properties.each { property ->
+			if (project.hasProperty("bench.${property}")) {
+				systemProperty "outpost.bench.${property}", project.property("bench.${property}")
+			}
 		}
 	}
 }
+
+// -Pbench.target=http://host:8080 drives a real deployment instead of the
+// embedded app; -Pbench.projectId / -Pbench.key name the DSN to post to.
+benchmarkTask('ingestBenchmark', 'benchmark & ingest',
+		'Opt-in ingest load benchmark. Not run by `build`. Requires Docker.',
+		['target', 'projectId', 'key'])
+
+// -Pbench.scale=0.1 seeds a tenth of the default dataset for a ~1 minute smoke run.
+benchmarkTask('retrievalBenchmark', 'benchmark & retrieval',
+		'Opt-in retrieval latency benchmark. Not run by `build`. Requires Docker.',
+		['scale'])

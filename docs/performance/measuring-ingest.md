@@ -84,6 +84,9 @@ cannot make: by the time a 429 appears, the buffer has been full for a while.
 cd server && ./gradlew ingestBenchmark      # Docker must be running
 ```
 
+(The sibling task is `retrievalBenchmark`; both are excluded from `test` by the
+`benchmark` tag and separated from each other by an `ingest` / `retrieval` tag.)
+
 It is excluded from `./gradlew test` and therefore from CI, because throughput on
 a shared machine is not something you can put a threshold on without flaking. The
 pass/fail half of the question — that a full buffer sheds correctly, with the
@@ -250,6 +253,10 @@ reproduce elsewhere. The five findings are structural and will.**
 
 ## Related
 
+- [`measuring-retrieval.md`](measuring-retrieval.md) — the read path, measured on
+  the same two-tier split: CI guards that assert logical I/O and plan shape, and
+  an opt-in `retrievalBenchmark` that reports latency. It reuses `LoadDriver` and
+  the report plumbing here verbatim.
 - `docs/adr/0002-best-effort-ingestion.md` — why the buffer is bounded and in
   memory, and why 429 is the shedding mechanism.
 - `docs/adr/0001-single-instance-deployment.md` — why in-process percentiles are
