@@ -76,6 +76,16 @@ public class TransactionStore {
 				Stream.concat(txnStarts.stream(),
 						batch.stream().flatMap(txn -> txn.spans().stream()).map(ProcessedSpan::startTs))
 					.toList());
+		storeBatch(batch);
+	}
+
+	/**
+	 * The retry recurses here rather than into {@link #store}: the whole batch's
+	 * txn and span partitions are prepared above, and re-checking them per
+	 * transaction would cost two round trips each on the one path that is already
+	 * degraded.
+	 */
+	private void storeBatch(List<ProcessedTransaction> batch) {
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 		}
@@ -87,7 +97,7 @@ public class TransactionStore {
 			}
 			log.warn("batch insert of {} transactions failed ({}), retrying individually", batch.size(), e.toString());
 			for (ProcessedTransaction txn : batch) {
-				store(List.of(txn));
+				storeBatch(List.of(txn));
 			}
 		}
 	}

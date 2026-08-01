@@ -60,6 +60,15 @@ public class LogStore {
 		// Partition DDL runs in its own transaction, before the insert transaction.
 		partitions.ensurePartitions(PartitionManager.LOG_RECORD,
 				batch.stream().map(ProcessedLog::timestamp).toList());
+		storeBatch(batch);
+	}
+
+	/**
+	 * The retry recurses here rather than into {@link #store}: the whole batch's
+	 * partitions are prepared above, and re-checking them per record would cost a
+	 * round trip each on the one path that is already degraded.
+	 */
+	private void storeBatch(List<ProcessedLog> batch) {
 		try {
 			transaction.executeWithoutResult(status -> storeAll(batch));
 			tail.publish(batch);
@@ -72,7 +81,7 @@ public class LogStore {
 			}
 			log.warn("batch insert of {} log records failed ({}), retrying individually", batch.size(), e.toString());
 			for (ProcessedLog record : batch) {
-				store(List.of(record));
+				storeBatch(List.of(record));
 			}
 		}
 	}

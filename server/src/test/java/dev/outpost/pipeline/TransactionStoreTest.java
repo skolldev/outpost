@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -57,6 +58,19 @@ class TransactionStoreTest {
 		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.SPAN), spanStarts.capture());
 		// Spans can straddle the root's week boundary, so their own starts count too.
 		assertThat(spanStarts.getValue()).hasSize(400);
+	}
+
+	@Test
+	void theIndividualRetryDoesNotRecheckPartitions() {
+		when(jdbc.batchUpdate(contains("INTO txn"), any(List.class)))
+			.thenThrow(new DataIntegrityViolationException("poison transaction"));
+
+		store.store(batch(3));
+
+		// One check each covering the whole batch, none for the three retries under it.
+		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.TXN), any(Collection.class));
+		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.SPAN), any(Collection.class));
+		verify(jdbc, times(4)).batchUpdate(contains("INTO txn"), any(List.class));
 	}
 
 	private List<ProcessedTransaction> batch(int size) {
