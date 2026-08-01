@@ -207,21 +207,14 @@ public class EnvelopeController {
 				hasClientReport = true;
 				return;
 			}
-			IngestMetrics.Signal signal = switch (item.kind()) {
-				case EVENT -> IngestMetrics.Signal.ERROR;
-				case LOG -> IngestMetrics.Signal.LOG;
-				case TRANSACTION -> IngestMetrics.Signal.TRANSACTION;
-				default -> null;
-			};
-			if (signal == null) {
+			Envelope.SignalItem signalItem = parser.signalItem(item);
+			if (signalItem == null) {
 				return;
 			}
-			JsonNode payload = parser.parseObjectPayload(item);
-			if (payload == null) {
-				return;
-			}
-			itemCounts.merge(signal, 1, Integer::sum);
-			if (signal == IngestMetrics.Signal.ERROR && itemEventId == null && payload.hasNonNull("event_id")) {
+			itemCounts.merge(signalItem.signal(), 1, Integer::sum);
+			JsonNode payload = signalItem.payload();
+			if (signalItem.signal() == IngestMetrics.Signal.ERROR && itemEventId == null
+					&& payload.hasNonNull("event_id")) {
 				itemEventId = payload.get("event_id").asText();
 			}
 		}

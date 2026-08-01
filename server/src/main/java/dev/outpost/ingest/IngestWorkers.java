@@ -165,29 +165,25 @@ public class IngestWorkers implements SmartLifecycle {
 
 		try (InputStream in = spool.open(queued.spoolFile())) {
 			parser.parse(in, item -> {
-				JsonNode payload = switch (item.kind()) {
-					case EVENT, LOG, TRANSACTION -> parser.parseObjectPayload(item);
-					default -> null;
-				};
-				if (payload == null) {
+				Envelope.SignalItem signalItem = parser.signalItem(item);
+				if (signalItem == null) {
 					return;
 				}
-				IngestItem ingestItem = switch (item.kind()) {
-					case EVENT -> new IngestItem.ErrorEvent(queued.projectId(), queued.receivedAt(), payload,
+				JsonNode payload = signalItem.payload();
+				IngestItem ingestItem = switch (signalItem.signal()) {
+					case ERROR -> new IngestItem.ErrorEvent(queued.projectId(), queued.receivedAt(), payload,
 							attachments);
 					case LOG -> new IngestItem.LogBatch(queued.projectId(), queued.receivedAt(), payload);
 					case TRANSACTION ->
 						new IngestItem.TransactionEvent(queued.projectId(), queued.receivedAt(), payload);
-					default -> throw new IllegalStateException("unexpected non-signal item");
 				};
-				process(ingestItem, dequeuedAt, events, logs, transactions);
+				process(signalItem.signal(), ingestItem, dequeuedAt, events, logs, transactions);
 			});
 		}
 	}
 
-	private void process(IngestItem item, Instant dequeuedAt, List<ProcessedEvent> events,
+	private void process(IngestMetrics.Signal signal, IngestItem item, Instant dequeuedAt, List<ProcessedEvent> events,
 			List<ProcessedLog> logs, List<ProcessedTransaction> transactions) {
-		IngestMetrics.Signal signal = IngestMetrics.Signal.of(item);
 		metrics.queueWait(signal, item.receivedAt(), dequeuedAt);
 		long startedAt = System.nanoTime();
 		try {

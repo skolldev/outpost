@@ -25,5 +25,25 @@ public final class Envelope {
 				default -> ItemKind.OTHER;
 			};
 		}
+
+		/**
+		 * The telemetry signal this item carries, or null when it carries none —
+		 * an attachment, a client report, or a type this version does not know.
+		 */
+		IngestMetrics.Signal signal() {
+			return switch (kind()) {
+				case EVENT -> IngestMetrics.Signal.ERROR;
+				case LOG -> IngestMetrics.Signal.LOG;
+				case TRANSACTION -> IngestMetrics.Signal.TRANSACTION;
+				case ATTACHMENT, CLIENT_REPORT, OTHER -> null;
+			};
+		}
+	}
+
+	/**
+	 * A signal-bearing item whose payload parsed as a JSON object — the shape
+	 * both the endpoint and the workers act on.
+	 */
+	public record SignalItem(IngestMetrics.Signal signal, JsonNode payload) {
 	}
 }
