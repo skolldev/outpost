@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -61,6 +62,18 @@ class LogStoreTest {
 		ArgumentCaptor<Collection<Instant>> timestamps = ArgumentCaptor.forClass(Collection.class);
 		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.LOG_RECORD), timestamps.capture());
 		assertThat(timestamps.getValue()).hasSize(500);
+	}
+
+	@Test
+	void theIndividualRetryDoesNotRecheckPartitions() {
+		when(jdbc.batchUpdate(contains("INTO log_record"), any(List.class)))
+			.thenThrow(new DataIntegrityViolationException("poison record"));
+
+		store.store(batch(3));
+
+		// One check covering the whole batch, none for the three retries under it.
+		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.LOG_RECORD), any(Collection.class));
+		verify(jdbc, times(4)).batchUpdate(contains("INTO log_record"), any(List.class));
 	}
 
 	private List<ProcessedLog> batch(int size) {

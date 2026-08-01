@@ -73,9 +73,7 @@ class EnvelopeSpoolingIntegrationTest {
 
 	@AfterEach
 	void tearDown() throws IOException, InterruptedException {
-		for (QueuedEnvelope queued : clearQueue()) {
-			Files.deleteIfExists(queued.spoolFile().path());
-		}
+		clearQueue();
 		SpoolTestFiles.clear(spoolDirectory());
 	}
 
@@ -94,7 +92,7 @@ class EnvelopeSpoolingIntegrationTest {
 			assertThat(item.spoolFile().path()).exists();
 			assertThat(read(item.spoolFile().path())).containsExactly(body);
 		});
-		queue.completed(queued.size());
+		queue.release(queued);
 		assertThat(queue.outstanding()).isZero();
 	}
 
@@ -110,7 +108,7 @@ class EnvelopeSpoolingIntegrationTest {
 			assertThat(item.spoolFile().gzip()).isTrue();
 			assertThat(read(item.spoolFile().path())).containsExactly(wireBody);
 		});
-		queue.completed(queued.size());
+		queue.release(queued);
 	}
 
 	@Test
@@ -137,7 +135,7 @@ class EnvelopeSpoolingIntegrationTest {
 			.containsExactlyInAnyOrderElementsOf(PosixFilePermissions.fromString("rwx------"));
 		assertThat(Files.getPosixFilePermissions(queued.getFirst().spoolFile().path()))
 			.containsExactlyInAnyOrderElementsOf(PosixFilePermissions.fromString("rw-------"));
-		queue.completed(queued.size());
+		queue.release(queued);
 	}
 
 	@Test
@@ -146,7 +144,7 @@ class EnvelopeSpoolingIntegrationTest {
 			.isEqualTo(HttpStatus.OK);
 		List<QueuedEnvelope> first = queue.nextBatch(10, 0);
 		Files.delete(first.getFirst().spoolFile().path());
-		queue.completed(first.size());
+		queue.release(first);
 		Files.delete(spoolDirectory());
 
 		assertThat(post(envelopes.error("prod").getBytes(StandardCharsets.UTF_8)).getStatusCode())
@@ -170,9 +168,7 @@ class EnvelopeSpoolingIntegrationTest {
 
 	private List<QueuedEnvelope> clearQueue() throws InterruptedException {
 		List<QueuedEnvelope> queued = queue.nextBatch(100, 0);
-		if (!queued.isEmpty()) {
-			queue.completed(queued.size());
-		}
+		queue.release(queued);
 		return queued;
 	}
 

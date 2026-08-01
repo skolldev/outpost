@@ -76,20 +76,20 @@ public class TransactionStore {
 				Stream.concat(txnStarts.stream(),
 						batch.stream().flatMap(txn -> txn.spans().stream()).map(ProcessedSpan::startTs))
 					.toList());
-		try {
-			transaction.executeWithoutResult(status -> storeAll(batch));
-		}
-		catch (RuntimeException e) {
-			if (batch.size() == 1) {
-				metrics.dropped(IngestMetrics.DropStage.STORE);
-				log.warn("dropping unstorable transaction {}: {}", batch.get(0).id(), e.toString());
-				return;
-			}
-			log.warn("batch insert of {} transactions failed ({}), retrying individually", batch.size(), e.toString());
-			for (ProcessedTransaction txn : batch) {
-				store(List.of(txn));
-			}
-		}
+		storeWithPreparedPartitions(batch);
+	}
+
+	/**
+	 * Requires every txn and span partition to exist already — which is why the
+	 * retry recurses here and not into {@link #store}: re-checking per transaction
+	 * would cost two round trips each on the one path that is already degraded.
+	 */
+	private void storeWithPreparedPartitions(List<ProcessedTransaction> batch) {
+		PoisonIsolation.run(log, batch, txns -> transaction.executeWithoutResult(status -> storeAll(txns)),
+				(txn, failure) -> {
+					metrics.dropped(IngestMetrics.DropStage.STORE);
+					log.warn("dropping unstorable transaction {}: {}", txn.id(), failure.toString());
+				});
 	}
 
 	private void storeAll(List<ProcessedTransaction> batch) {

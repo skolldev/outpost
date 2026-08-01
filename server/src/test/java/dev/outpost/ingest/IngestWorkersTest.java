@@ -34,8 +34,10 @@ class IngestWorkersTest {
 
 	private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 	private final IngestMetrics metrics = new IngestMetrics(registry);
-	private final IngestQueue queue = new IngestQueue(10, metrics);
+	// The spool is declared first: the queue releases through it, so field
+	// initialization order decides whether it gets the mock or null.
 	private final EnvelopeSpool spool = mock(EnvelopeSpool.class);
+	private final IngestQueue queue = new IngestQueue(10, metrics, spool);
 	private final ErrorPipeline pipeline = mock(ErrorPipeline.class);
 	private final EventStore store = mock(EventStore.class);
 	private final SpoolFile spoolFile = new SpoolFile(Path.of("envelope.spool"), false);

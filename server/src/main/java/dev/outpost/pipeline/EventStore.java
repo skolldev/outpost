@@ -122,33 +122,26 @@ public class EventStore {
 	}
 
 	private void storeProject(List<ProcessedEvent> batch) {
-		List<NotificationOccurrence> newIssues = new ArrayList<>();
-		try {
-			transaction.executeWithoutResult(status -> storeAll(batch, newIssues));
-		}
-		catch (RuntimeException e) {
-			if (batch.size() == 1) {
-				metrics.dropped(IngestMetrics.DropStage.STORE);
-				log.warn("dropping unstorable event {}: {}", batch.get(0).id(), e.toString());
-				return;
+		PoisonIsolation.run(log, batch, events -> {
+			List<NotificationOccurrence> newIssues = new ArrayList<>();
+			transaction.executeWithoutResult(status -> storeAll(events, newIssues));
+			// Published after commit, so a rolled-back Issue never notifies — which
+			// is also why this sits inside the attempt: a failed try leaves its
+			// half-filled list behind with it. The seam is fire-and-forget (ADR
+			// 0005) and never throws, but guard anyway so a notification hiccup
+			// can't fail an already-stored batch.
+			for (NotificationOccurrence occurrence : newIssues) {
+				try {
+					notifications.publish(occurrence);
+				}
+				catch (RuntimeException e) {
+					log.warn("failed to publish new-issue notification: {}", e.toString());
+				}
 			}
-			log.warn("batch insert of {} events failed ({}), retrying individually", batch.size(), e.toString());
-			for (ProcessedEvent event : batch) {
-				storeProject(List.of(event));
-			}
-			return;
-		}
-		// After commit, so a rolled-back Issue never notifies. The seam is
-		// fire-and-forget (ADR 0005) and never throws, but guard anyway so a
-		// notification hiccup can't fail an already-stored batch.
-		for (NotificationOccurrence occurrence : newIssues) {
-			try {
-				notifications.publish(occurrence);
-			}
-			catch (RuntimeException e) {
-				log.warn("failed to publish new-issue notification: {}", e.toString());
-			}
-		}
+		}, (event, failure) -> {
+			metrics.dropped(IngestMetrics.DropStage.STORE);
+			log.warn("dropping unstorable event {}: {}", event.id(), failure.toString());
+		});
 	}
 
 	private void storeAll(List<ProcessedEvent> unfiltered, List<NotificationOccurrence> newIssues) {

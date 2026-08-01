@@ -41,14 +41,6 @@ public class IngestMetrics {
 			this.tag = tag;
 		}
 
-		public static Signal of(IngestItem item) {
-			return switch (item) {
-				case IngestItem.ErrorEvent ignored -> ERROR;
-				case IngestItem.LogBatch ignored -> LOG;
-				case IngestItem.TransactionEvent ignored -> TRANSACTION;
-			};
-		}
-
 	}
 
 	/** Terminal outcome of an envelope, mirroring the controller's response codes. */

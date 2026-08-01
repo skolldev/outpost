@@ -60,21 +60,22 @@ public class LogStore {
 		// Partition DDL runs in its own transaction, before the insert transaction.
 		partitions.ensurePartitions(PartitionManager.LOG_RECORD,
 				batch.stream().map(ProcessedLog::timestamp).toList());
-		try {
-			transaction.executeWithoutResult(status -> storeAll(batch));
-			tail.publish(batch);
-		}
-		catch (RuntimeException e) {
-			if (batch.size() == 1) {
-				metrics.dropped(IngestMetrics.DropStage.STORE);
-				log.warn("dropping unstorable log record {}: {}", batch.get(0).id(), e.toString());
-				return;
-			}
-			log.warn("batch insert of {} log records failed ({}), retrying individually", batch.size(), e.toString());
-			for (ProcessedLog record : batch) {
-				store(List.of(record));
-			}
-		}
+		storeWithPreparedPartitions(batch);
+	}
+
+	/**
+	 * Requires every record's partition to exist already — which is why the retry
+	 * recurses here and not into {@link #store}: re-checking per record would cost
+	 * a round trip each on the one path that is already degraded.
+	 */
+	private void storeWithPreparedPartitions(List<ProcessedLog> batch) {
+		PoisonIsolation.run(log, batch, records -> {
+			transaction.executeWithoutResult(status -> storeAll(records));
+			tail.publish(records);
+		}, (record, failure) -> {
+			metrics.dropped(IngestMetrics.DropStage.STORE);
+			log.warn("dropping unstorable log record {}: {}", record.id(), failure.toString());
+		});
 	}
 
 	private void storeAll(List<ProcessedLog> batch) {
