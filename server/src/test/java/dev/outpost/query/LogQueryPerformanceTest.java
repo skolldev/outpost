@@ -21,7 +21,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 /**
  * Performance guards for the log stream. Baselines measured 2026-08-01 against
  * {@link TelemetrySeeder.Scale#GUARD}: 40 010 log records over 10 weekly
- * partitions, where a full scan of {@code log_record} costs 4 653 blocks.
+ * partitions, where a full scan of {@code log_record} costs 5 043 blocks.
  *
  * <p>Two of these are {@code @Disabled}, and the root cause of the first is worth
  * stating up front: {@code log_record} has no index serving the stream's
@@ -47,19 +47,22 @@ class LogQueryPerformanceTest {
 
 	private static final int WINDOW_DAYS = 14;
 
-	/** Healthy is 77 blocks for the indexed trace lookup; 770 is the standard 10x, well under a full scan. */
-	private static final long MAX_TRACE_LOOKUP_BLOCKS = 770;
+	/** Healthy is 79 blocks for the indexed trace lookup; 790 is the standard 10x, well under a full scan. */
+	private static final long MAX_TRACE_LOOKUP_BLOCKS = 790;
 
 	/**
-	 * The target for page 1 (#128), not today's 8 142. An indexed 10-row lookup on
-	 * the same table costs 77 blocks; a 101-row page merged across 10 partitions is
+	 * The target for page 1 (#128), not today's 8 804. An indexed 10-row lookup on
+	 * the same table costs 79 blocks; a 101-row page merged across 10 partitions is
 	 * a larger job but the same shape, and 1 000 leaves room for it while sitting
-	 * ~4.6x below the 4 653 a full scan costs — so it can fail.
+	 * ~5x below the 5 043 a full scan costs — so it can fail.
 	 */
 	private static final long MAX_PAGE_ONE_BLOCKS = 1_000;
 
 	/** A filter that removes 99.9 % of rows should remove most of the work; 4x is the modest floor. */
 	private static final int SELECTIVE_FILTER_SAVING = 4;
+
+	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
+	private static final int DEEP_PAGE_TOLERANCE = 2;
 
 	@Autowired
 	JdbcClient jdbc;
@@ -103,7 +106,7 @@ class LogQueryPerformanceTest {
 		PlanFacts deep = QueryPlans.logs(null, null, null, null, null, null, null, null, null, cursor).explain(jdbc);
 
 		assertThat(deep.logicalIo()).as("blocks for a deep log page against the %d page 1 costs%n%s", pageOneBlocks,
-				deep.plan()).isLessThanOrEqualTo(2 * pageOneBlocks);
+				deep.plan()).isLessThanOrEqualTo(DEEP_PAGE_TOLERANCE * pageOneBlocks);
 	}
 
 	// ---------------------------------------------------------------- lookups
@@ -163,7 +166,7 @@ class LogQueryPerformanceTest {
 		assertThat(facts.logicalIo())
 			.as("blocks for an attribute-presence filter against the %d an unfiltered page costs%n%s", unfiltered,
 					facts.plan())
-			.isLessThanOrEqualTo(2 * unfiltered);
+			.isLessThanOrEqualTo(DEEP_PAGE_TOLERANCE * unfiltered);
 	}
 
 	// ----------------------------------------------------------------- helpers

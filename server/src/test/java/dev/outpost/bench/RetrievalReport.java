@@ -79,7 +79,14 @@ public final class RetrievalReport {
 				- high `shared read` with low `shared hit` → cold cache, and only that.
 
 				`rows` is what the last response actually returned. A deep-pagination scenario that
-				quietly ran out of rows would otherwise report the fastest numbers in the table.
+				quietly ran out of rows would otherwise report the fastest numbers in the table. A `—`
+				in the plan columns means the endpoint has no single statement behind it, not that it
+				read nothing.
+
+				Each scenario's offered rate is derived from its own measured latency to hold a small
+				fixed concurrency, so a three-second endpoint is not buried under a backlog it never
+				had a chance to serve. The rate is in the `step` column of the saturation rows and in
+				the JSON; everywhere else it is whatever kept the endpoint unhurried.
 
 				""");
 		out.append("\n## Results\n\n");
@@ -90,17 +97,20 @@ public final class RetrievalReport {
 			LoadDriver.Result load = row.load();
 			PlanFacts plan = row.plan();
 			out.append("| ").append(row.scenario()).append(" | ").append(row.step());
-			out.append(" | ").append(load.offered());
+			out.append(" | ").append(load.offered()).append(" @ ").append(load.targetRate()).append("/s");
 			out.append(" | ").append(nonSuccess(load));
 			out.append(" | ").append(round(load.p50Millis()));
 			out.append(" | ").append(round(load.p95Millis()));
 			out.append(" | ").append(round(load.p99Millis()));
 			out.append(" | ").append(round(load.maxMillis()));
 			out.append(" | ").append(row.rowsReturned());
-			out.append(" | ").append(plan.sharedHits());
-			out.append(" | ").append(plan.sharedReads());
-			out.append(" | ").append(partitionsScanned(plan));
-			out.append(" | ").append(plan.tempBlocks());
+			// An endpoint with no single statement behind it has no plan facts, and "0
+			// blocks" would read as the fastest row in the table rather than as a gap.
+			boolean known = !plan.equals(PlanFacts.NONE);
+			out.append(" | ").append(known ? plan.sharedHits() : "—");
+			out.append(" | ").append(known ? plan.sharedReads() : "—");
+			out.append(" | ").append(known ? partitionsScanned(plan) : "—");
+			out.append(" | ").append(known ? plan.tempBlocks() : "—");
 			out.append(" |\n");
 		}
 		out.append("\nDataset: ").append(rows.isEmpty() ? 0 : rows.get(0).datasetRows()).append(" telemetry rows.\n");
@@ -117,6 +127,7 @@ public final class RetrievalReport {
 			out.append("\"scenario\": ").append(quote(row.scenario()));
 			out.append(", \"step\": ").append(quote(row.step()));
 			out.append(", \"requests\": ").append(load.offered());
+			out.append(", \"offered_per_second\": ").append(load.targetRate());
 			out.append(", \"non_success\": ").append(nonSuccess(load));
 			out.append(", \"p50_ms\": ").append(number(load.p50Millis()));
 			out.append(", \"p95_ms\": ").append(number(load.p95Millis()));
@@ -124,10 +135,11 @@ public final class RetrievalReport {
 			out.append(", \"max_ms\": ").append(number(load.maxMillis()));
 			out.append(", \"dataset_rows\": ").append(row.datasetRows());
 			out.append(", \"rows_returned\": ").append(row.rowsReturned());
-			out.append(", \"shared_hit_blocks\": ").append(plan.sharedHits());
-			out.append(", \"shared_read_blocks\": ").append(plan.sharedReads());
-			out.append(", \"partitions_scanned\": ").append(partitionsScanned(plan));
-			out.append(", \"temp_blocks\": ").append(plan.tempBlocks());
+			boolean known = !plan.equals(PlanFacts.NONE);
+			out.append(", \"shared_hit_blocks\": ").append(known ? plan.sharedHits() : "null");
+			out.append(", \"shared_read_blocks\": ").append(known ? plan.sharedReads() : "null");
+			out.append(", \"partitions_scanned\": ").append(known ? partitionsScanned(plan) : "null");
+			out.append(", \"temp_blocks\": ").append(known ? plan.tempBlocks() : "null");
 			out.append('}');
 			separator = ",";
 		}

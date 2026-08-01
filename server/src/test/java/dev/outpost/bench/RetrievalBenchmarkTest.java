@@ -32,7 +32,12 @@ class RetrievalBenchmarkTest {
 			assertThat(tenth.txns()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.txns() / 10);
 			// Cardinalities and the window are what make the dataset production-shaped.
 			// Shrinking them with the volume would give a small dataset that is also the
-			// wrong shape, and the run would measure a plan production never gets.
+			// wrong shape, and the run would measure a plan production never gets. Two of
+			// these matter more than the rest: `users` is the divisor of the suspect
+			// count(DISTINCT user_ident), and `issues` decides how many pages deep the
+			// deep-pagination scenario can actually go.
+			assertThat(tenth.users()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.users());
+			assertThat(tenth.issues()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.issues());
 			assertThat(tenth.windowDays()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.windowDays());
 			assertThat(tenth.releases()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.releases());
 			assertThat(tenth.projects()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.projects());
@@ -40,12 +45,12 @@ class RetrievalBenchmarkTest {
 		}
 
 		@Test
-		void neverScalesAwayToNothing() {
+		void neverScalesRowCountsAwayToNothing() {
 			TelemetrySeeder.Scale tiny = TelemetrySeeder.Scale.GUARD.times(0.000001);
 
 			assertThat(tiny.events()).isPositive();
-			assertThat(tiny.issues()).isPositive();
-			assertThat(tiny.users()).isPositive();
+			assertThat(tiny.logs()).isPositive();
+			assertThat(tiny.txns()).isPositive();
 		}
 
 		@Test

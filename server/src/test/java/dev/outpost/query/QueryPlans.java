@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
@@ -111,6 +112,29 @@ public final class QueryPlans {
 
 	public static Built releaseList(long project) {
 		return Built.of(ReleaseController.buildReleaseListQuery(project));
+	}
+
+	/**
+	 * The four statements {@code GET /traces/{id}} fans out into, as the controller
+	 * has them. Returned as a list because the page's cost is their sum — reporting
+	 * one of four would be a number nobody waits for.
+	 */
+	public static List<Built> traceDetail(String traceId) {
+		return TraceController.traceDetailQueries()
+			.stream()
+			.map(sql -> new Built(sql, List.<Object>of(traceId)))
+			.toList();
+	}
+
+	/**
+	 * Event detail: the row itself plus the two neighbour lookups the endpoint
+	 * always issues alongside it, which is where its cost actually is.
+	 */
+	public static List<Built> eventDetail(UUID id, long issueId, Instant timestamp) {
+		List<Object> neighbour = List.of(issueId, Timestamp.from(timestamp), id);
+		return List.of(new Built(IssueController.EVENT_BY_ID, List.of(id)),
+				new Built(IssueController.NEWER_EVENT_IN_ISSUE, neighbour),
+				new Built(IssueController.OLDER_EVENT_IN_ISSUE, neighbour));
 	}
 
 	// ----------------------------------------------------------------- walking

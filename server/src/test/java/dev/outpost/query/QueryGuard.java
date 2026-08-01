@@ -2,6 +2,7 @@ package dev.outpost.query;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.outpost.db.PartitionManager;
 import dev.outpost.support.PlanFacts;
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -10,6 +11,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
@@ -21,7 +23,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <p>A buffer ceiling on its own is a blunt instrument: it cannot tell a query
  * that pruned correctly from one that got lucky on a small dataset, and it
  * changes meaning the moment the dataset does. The plan-shape assertions
- * ({@link #assertPrunesTo}, {@link #assertNoSequentialScanOfTelemetry},
+ * ({@link #assertPrunesFrom}, {@link #assertNoSequentialScanOfTelemetry},
  * {@link #assertNoTempFiles}) are the ones that survive a change of scale; the
  * ceiling sits behind them as a backstop.
  *
@@ -37,11 +39,19 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 final class QueryGuard {
 
-	/** The partitioned tables. A sequential scan of any of them is the failure these guards exist to catch. */
-	static final List<String> TELEMETRY_TABLES = List.of("event", "log_record", "txn", "span");
+	/**
+	 * The partitioned tables, from the one place production registers them. A
+	 * sequential scan of a populated one is the failure these guards exist to catch.
+	 */
+	static final List<String> TELEMETRY_TABLES = PartitionManager.TABLES;
 
-	/** A column of each telemetry table that no index covers, so a full scan really reads the heap. */
-	private static final List<String> FULL_SCAN_COLUMNS = List.of("message", "body", "name", "description");
+	/**
+	 * Per table, a column no index covers — aggregating it forces the heap read that
+	 * makes {@link #fullScanCost} an honest upper bound. {@code count(*)} may be
+	 * answered from an index and would understate it.
+	 */
+	private static final Map<String, String> FULL_SCAN_COLUMNS = Map.of(PartitionManager.EVENT, "message",
+			PartitionManager.LOG_RECORD, "body", PartitionManager.TXN, "name", PartitionManager.SPAN, "description");
 
 	private static final DateTimeFormatter PARTITION_SUFFIX = DateTimeFormatter.BASIC_ISO_DATE;
 
@@ -49,10 +59,6 @@ final class QueryGuard {
 	private static final long MIN_MATERIAL_PARTITION_ROWS = 100;
 
 	private QueryGuard() {
-	}
-
-	static PlanFacts explain(JdbcClient jdbc, QueryPlans.Built built) {
-		return built.explain(jdbc);
 	}
 
 	static void assertUnderCeiling(PlanFacts facts, long ceiling, String what) {
@@ -115,22 +121,16 @@ final class QueryGuard {
 	 * A ceiling above the cost of simply reading the table cannot fail, whatever the
 	 * plan does. Every enabled ceiling has to clear this or it is decoration.
 	 */
-	static void assertCeilingCanFail(JdbcClient jdbc, long ceiling, String... tables) {
-		for (String table : tables) {
-			long fullScan = fullScanCost(jdbc, table);
-			assertThat(ceiling).as("ceiling %d vs the %d blocks a full scan of %s costs on this dataset", ceiling,
-					fullScan, table).isLessThan(fullScan);
-		}
+	static void assertCeilingCanFail(JdbcClient jdbc, long ceiling, String table) {
+		long fullScan = fullScanCost(jdbc, table);
+		assertThat(ceiling).as("ceiling %d vs the %d blocks a full scan of %s costs on this dataset", ceiling, fullScan,
+				table).isLessThan(fullScan);
 	}
 
-	/**
-	 * What reading {@code table} end to end costs here. Aggregating an unindexed
-	 * text column forces the heap read: {@code count(*)} may be answered from an
-	 * index and would understate it.
-	 */
+	/** What reading {@code table} end to end costs on this dataset. */
 	static long fullScanCost(JdbcClient jdbc, String table) {
-		String column = FULL_SCAN_COLUMNS.get(TELEMETRY_TABLES.indexOf(table));
-		return PlanFacts.explain(jdbc, "SELECT count(" + column + ") FROM " + table, List.of()).logicalIo();
+		return PlanFacts.explain(jdbc, "SELECT count(" + FULL_SCAN_COLUMNS.get(table) + ") FROM " + table, List.of())
+			.logicalIo();
 	}
 
 	static long partitionCount(JdbcClient jdbc, String table) {

@@ -80,11 +80,10 @@ class ReportWriterTest {
 	/** The two reports must not write over each other's files. */
 	@Test
 	void keepsEachBenchmarksReportsInItsOwnDirectory() {
-		BenchReport ingest = new BenchReport("i");
-		RetrievalReport retrieval = new RetrievalReport("r");
-
-		assertThat(ingest.write().getParent().getFileName()).hasToString("ingest-benchmark");
-		assertThat(retrieval.write().getParent().getFileName()).hasToString("retrieval-benchmark");
+		assertThat(new ReportWriter("i", "ingest-benchmark").directory().getFileName())
+			.hasToString("ingest-benchmark");
+		assertThat(new ReportWriter("r", "retrieval-benchmark").directory().getFileName())
+			.hasToString("retrieval-benchmark");
 	}
 
 	/** The ingest table's columns are quoted in `measuring-ingest.md`; the split must not have moved them. */

@@ -10,7 +10,7 @@ cost, and does that cost grow with the dataset".
 
 | | `./gradlew test` | `./gradlew retrievalBenchmark` |
 | --- | --- | --- |
-| Dataset | ~90k telemetry rows, 10 weekly partitions | millions of rows, opt-in scale |
+| Dataset | ~112k telemetry rows, 10 weekly partitions | millions of rows, opt-in scale |
 | Measures | logical I/O and plan shape | latency percentiles over real HTTP |
 | Asserts | buffer ceilings, partition pruning, no seq scan, no temp files | correctness and run validity only |
 | Never asserts | anything wall-clock | anything wall-clock |
@@ -48,6 +48,20 @@ blocks. Those four distinguish an O(rows) plan from a pruning failure from a sor
 spilling to disk from plain cold I/O — four different problems that all read as
 "slow" in a latency figure.
 
+Two notes on reading them. Buffer counts are summed across every plan node, and
+Postgres reports them cumulatively up the tree, so the total double-counts a
+child's blocks in each ancestor — it is a comparable *index* of logical I/O, not a
+block count, and it is deliberately the same quantity the text-format regex it
+replaced produced, so `TraceSearchPerformanceTest`'s ceiling keeps its meaning.
+And only *executed* nodes count as scanned: a partition eliminated by runtime
+pruning still appears in the plan, and counting it would make every pruning
+assertion vacuous.
+
+The `uptime/overview` row in the benchmark report has no plan columns. That
+endpoint issues four unrelated statements and none of them was extracted behind
+the seam, so the harness reports a gap rather than a number — `—` in the table
+means "not measured", never "read nothing".
+
 ### How a ceiling is calibrated
 
 For a path whose current plan is healthy: **ten times its measured logical I/O**,
@@ -71,7 +85,7 @@ and re-deriving it from a formula would trade evidence for tidiness.
 
 ```bash
 cd server
-./gradlew retrievalBenchmark                    # ~2M events / 5M logs / 1M txn / 3M spans
+./gradlew retrievalBenchmark                    # 2M events / 5M logs / 1M txn / 3M spans, ~12 min
 ./gradlew retrievalBenchmark -Pbench.scale=0.1  # a tenth of that, ~5 min
 ```
 
@@ -79,15 +93,26 @@ Docker required. Each run writes a Markdown table and a JSON copy to
 `server/build/reports/retrieval-benchmark/`.
 
 The scale factor moves **row counts only**. Cardinalities — 10 000 distinct users,
-20 releases, three environments — and the 60-day retention window stay put,
-because they are what make the dataset production-*shaped*. Scaling them down
-alongside the volume would produce a small dataset that is also the wrong shape,
-and the run would measure a plan production never gets.
+4 000 issues, 20 releases, three environments — and the 60-day retention window
+stay put, because they are what make the dataset production-*shaped*. Two of them
+matter more than the rest: `users` is the divisor of the suspect
+`count(DISTINCT user_ident)`, so scaling it down would make a smoke run understate
+exactly the thing it exists to look at, and `issues` decides how many pages deep
+the deep-pagination scenario can go before it runs out.
 
 Every scenario asserts its own validity as it runs and **fails rather than
 reporting the timing**: 200 status, a full page where the endpoint promises one, a
 non-empty result, and — for the paginated scenarios — no row id repeated across
 adjacent pages. Cursors are *walked*, page by page, exactly as a user gets deep.
+
+Each scenario's offered rate comes from its own measured latency rather than a
+fixed number, held at a small constant concurrency. A fixed rate is only safe for
+endpoints that keep up with it: offering the releases page 20/s open-loop would
+bury it under a backlog and fail the run for a reason that has nothing to do with
+the query. An endpoint slower than half the driver's per-request timeout cannot be
+driven at all, and is measured once and reported as a single sample — losing the
+whole report to say "this endpoint is slow" would be a poor trade for a report
+that was going to say exactly that.
 
 ## Writing a retrieval benchmark that doesn't lie
 
@@ -104,7 +129,7 @@ Seven traps. The harness avoids all of them deliberately; each one produces
    change of dataset scale.
 3. **A dataset that fits in one partition.** Every pruning assertion passes, for
    the wrong reason, forever. Guard scale is small but spans 42 days —
-   `TelemetrySeederIntegrationTest` asserts that every telemetry table really has
+   `TelemetrySeederTest` asserts that every telemetry table really has
    rows in six or more distinct weeks.
 4. **`DELETE` between fixtures.** Deleted rows keep their pages until a `VACUUM`,
    so a sequential scan of an "empty" table still reads every block the old data
@@ -118,7 +143,7 @@ Seven traps. The harness avoids all of them deliberately; each one produces
    evaluates it once and the join replicates that single row. An entire seeded
    dataset can land on one issue at one timestamp and still look seeded. The
    seeder computes per-row draws in a derived table behind an `OFFSET 0` fence,
-   and the tests in `TelemetrySeederIntegrationTest` exist because this failed
+   and the tests in `TelemetrySeederTest` exist because this failed
    silently the first time.
 7. **A cursor that stops advancing.** A benchmark measuring page 1 fifty times is
    fast, worthless, and looks like a good result. `PageWalk` compares adjacent
@@ -132,108 +157,130 @@ nothing about whether an index could have been used. Both seeded filters are
 
 ## Baseline, 2026-08-01
 
-Guard dataset — 40 003 events, 40 010 log records, 8 004 transactions, 24 012
-spans, 200 issues, 10 weekly partitions per table, on a 14-core laptop with
-Postgres in Docker. **The block counts are dataset-specific and will not
-reproduce at another scale. The findings are structural and will.**
+Both tiers measured on a 14-core laptop with Postgres 17 in Docker. **The block
+counts are dataset-specific and will not reproduce at another scale. The findings
+are structural and will.**
 
-Reference costs on that dataset: a full scan of `event` is 15 045 blocks, of
-`log_record` 4 653.
+### Guard tier
 
-| Query | Shared blocks | Partitions read | Verdict |
+40 003 events, 40 010 log records, 8 004 transactions, 24 012 spans, 200 issues,
+10 weekly partitions per table. Reference full-scan costs on that dataset:
+`event` 15 042 blocks, `log_record` 5 043.
+
+| Query | Blocks | Partitions read | Verdict |
 | --- | --: | --: | --- |
-| Issue list, page 1 | 30 | — | healthy, but sorts (#126) |
+| Issue list, page 1 | 30 | — | cheap, but sorts (#126) |
 | Issue list, deep cursor | 30 | — | O(page) holds |
-| Issue list, `environment=` | 132 | — | healthy — answered from the rollup |
-| Issue list, `release=` | **12 527** | 7 of 10 | #127 |
-| Sparkline (14-day bound) | 9 428 | 5 of 10 | prunes correctly |
-| Users affected (unbounded) | **20 045** | **10 of 10** | #131 |
-| Log page 1 | **8 142** | **10 of 10** | #128 — costs more than a full scan |
-| Logs by `trace_id` | 77 | indexed | healthy |
-| Logs, 14-day bound | 4 244 | 3 of 10 | prunes correctly |
-| Logs, `attr=` 0.1% selective | 6 173 | 10 of 10 | #132 — the filter saves nothing |
-| Release list | **240 368** | **10 of 10** | #130 — 16x a full scan of `event` |
-| Trace detail (four tables) | 572 | indexed | healthy |
-| Event detail | 42 | indexed | healthy |
+| Issue list, `environment=` | 133 | — | healthy — answered from the rollup |
+| Issue list, `release=` | **11 852** | 8 of 10 | #127 |
+| Sparkline (14-day bound) | 9 470 | 5 of 10 | prunes correctly |
+| Users affected (unbounded) | **20 041** | **10 of 10** | #131 |
+| Log page 1 | **8 804** | **10 of 10** | #128 — costs more than a full scan |
+| Logs by `trace_id` | 79 | indexed | healthy |
+| Logs, 14-day bound | 4 570 | 5 of 10 | prunes correctly |
+| …plus a 0.1 %-selective `attr=` | **4 570** | 5 of 10 | #132 — the filter saves nothing at all |
+| Release list | **240 299** | **10 of 10** | #130 — 16x a full scan of `event` |
+| Trace detail (four tables) | 745 | indexed | healthy |
+| Event detail (+ 2 neighbours) | 202 | indexed | healthy |
 
-Benchmark dataset at `-Pbench.scale=0.1` — 400 030 events, 500 050 log records,
-200 004 transactions, 600 012 spans, 400 issues, 1.1M telemetry rows total,
-`shared_buffers=1GB`:
+### Benchmark tier
 
-| Scenario | p50 | p99 | Shared blocks |
-| --- | --: | --: | --: |
-| Issue list, page 1 | 68 ms | 92 ms | 142 |
-| Issue list, page 8 (deep) | 26 ms | 33 ms | 57 |
-| Issue list, `release=` | 71 ms | 82 ms | 47 406 |
-| Log page 1 | 33 ms | 41 ms | 104 460 |
-| Logs, `query=` (0.1% selective) | 24 ms | 27 ms | 10 301 |
-| Logs, `attr=` (0.1% selective) | 37 ms | 42 ms | 104 460 |
-| Logs by `trace_id` | 9 ms | 13 ms | 156 |
-| Trace search, page 1 | 174 ms | 182 ms | 97 382 |
-| Trace search, page 20 | 178 ms | 191 ms | 97 378 |
-| Trace detail | 15 ms | 31 ms | 1 355 |
-| **Releases list** | **3 097 ms** | **5 379 ms** | **2 944 686** |
-| Uptime overview | 30 ms | 37 ms | — |
-| Event detail + neighbours | 13 ms | 22 ms | 52 |
+2 000 003 events, 5 000 010 log records, 1 000 004 transactions, 3 000 012 spans,
+4 000 issues — 11 000 029 telemetry rows, seeded in 232 s. `shared_buffers=1GB`,
+`work_mem=32MB`. Latency is same-machine only; the block and temp columns are not.
+
+| Scenario | p50 | p99 | Blocks | Temp |
+| --- | --: | --: | --: | --: |
+| Issue list, page 1 (all four queries) | 719 ms | 1 091 ms | 785 735 | 0 |
+| Issue list, `sort=count` | 1 221 ms | 1 245 ms | 1 217 780 | 0 |
+| Issue list, `release=` | 803 ms | 1 467 ms | 1 304 082 | 0 |
+| Issue list, `environment=` | 756 ms | 910 ms | 786 449 | 0 |
+| Issue list, page 50 | **36 ms** | 42 ms | 94 292 | 0 |
+| Log page 1 | 246 ms | 726 ms | 1 041 950 | 0 |
+| Logs, `query=` (0.1 % selective) | 120 ms | 125 ms | 92 287 | 0 |
+| Logs, `attr=` (0.1 % selective) | 321 ms | 908 ms | 1 041 950 | 0 |
+| Logs by `trace_id` | 9 ms | 16 ms | 157 | 0 |
+| Log page 50 | 313 ms | 887 ms | 1 041 770 | 0 |
+| Trace search, page 1 | 2 060 ms | 2 090 ms | 900 222 | **224 130** |
+| Trace search, page 20 | 2 059 ms | 2 080 ms | 900 190 | **224 130** |
+| Trace search, `has_errors=true` | 1 323 ms | 3 055 ms | 6 174 598 | **256 641** |
+| Trace detail | 15 ms | 24 ms | 1 731 | 0 |
+| **Releases list** | **13 489 ms** | single sample | **28 496 329** | 0 |
+| Uptime overview | 29 ms | 36 ms | — | — |
+| Event detail + neighbours | 13 ms | 26 ms | 290 | 0 |
+
+Issue-list saturation ladder, same dataset:
+
+| Offered | p50 | p99 | non-200 |
+| --: | --: | --: | --: |
+| 1/s | 636 ms | 666 ms | 0 |
+| 2/s | 600 ms | 628 ms | 0 |
+| 4/s | 660 ms | 696 ms | 0 |
+| 8/s | 700 ms | 903 ms | 0 |
+| **16/s** | **3 856 ms** | **12 176 ms** | 0 |
 
 ### Findings
 
-1. **The releases page is the worst query in the product.** Three seconds at a
-   tenth of the target dataset, 2.9M blocks, and it gets linearly worse with both
-   release count and event volume. Structurally identical to the trace-search
-   regression already fixed and guarded: a correlated aggregate over a partitioned
-   telemetry table, run once per output row, with no time bound. (#130)
+1. **The releases page is the worst query in the product, by an order of
+   magnitude.** 13.5 seconds and 28 million blocks to annotate twenty rows —
+   slower than the load driver's own request timeout, so the benchmark reports it
+   as a single sample rather than driving it. It is structurally identical to the
+   trace-search regression already fixed and guarded: a correlated aggregate over a
+   partitioned telemetry table, run once per output row, with no time bound. It
+   gets linearly worse with both release count and event volume. (#130)
 
-2. **The issue list's cost is its aggregates, not its list.** Page 1 costs 68 ms
-   while page 8 costs 26 ms — the *deep* page is cheaper, because the skew puts
-   the busiest issues on page 1 and the two per-page aggregates over `event`
-   dominate. The list query itself is 30–142 blocks either way. Fixing the
-   unbounded users-affected count (#131) is worth more here than anything done to
-   the list. Note that this also means a naive page-1-versus-page-N latency
-   comparison is confounded on this endpoint; the guards compare the list query in
-   isolation for that reason.
+2. **The issue list's cost is its aggregates, not its list.** The list query is
+   558 blocks. The page is 785 735, because the sparkline and the unbounded
+   users-affected count run over `event` for all fifty issues on every load. Page 50
+   costs 36 ms against page 1's 719 ms — the *deep* page is twenty times cheaper,
+   because the skew puts the busiest issues on page 1. Fixing the unbounded count
+   (#131) is worth more here than anything done to the list. It also means a naive
+   page-1-versus-page-N latency comparison is confounded on this endpoint, which is
+   why the guards compare the list query in isolation.
 
-3. **The global log stream reads everything, every time.** `log_record` has no
+3. **Trace search sorts 1.75 GB to disk on every page.** `DISTINCT ON (trace_id)`
+   has to order every transaction in range before the `LIMIT` applies, and at a
+   million transactions that does not fit in `work_mem`. Pagination itself is
+   healthy — page 20 costs what page 1 costs, to within noise — the constant is just
+   enormous. This is the finding the `temp` column exists for: it is invisible in
+   the guard tier, where 8 004 transactions sort comfortably in memory. (#133)
+
+4. **The global log stream reads everything, every time.** `log_record` has no
    index serving `("timestamp", id)` descending, so page 1 sequentially scans all
-   ten partitions and sorts them — costing *more* than reading the table, because
-   it reads it and then sorts it. Time-bounding helps only by pruning partitions;
+   ten partitions and sorts them — costing *more* than reading the table, because it
+   reads it and then sorts it. Time-bounding helps only by pruning partitions;
    within the window it still scans. (#128)
 
-4. **The log ordering problem masks the attribute one.** `attributes->>? = ?`
+5. **The log ordering problem masks the attribute one.** `attributes->>? = ?`
    cannot use the GIN index — the key is a bind parameter, and `jsonb_ops` indexes
-   containment rather than text extraction — but you cannot see that while the
-   plan already reads every row for the sort. At benchmark scale a 0.1%-selective
-   attribute filter costs 104 460 blocks against an unfiltered 104 460: exactly
-   nothing saved. The guard for it is written as a differential assertion for this
-   reason. (#132)
+   containment rather than text extraction. At both scales, adding a 0.1 %-selective
+   attribute filter changes the block count by *nothing at all* (4 570 → 4 570 at
+   guard scale; 1 041 950 → 1 041 950 at benchmark scale). The contrast with
+   `query=` on the same run — 1 041 950 down to 92 287 — is what makes it clear
+   which of the two is broken. (#132)
 
-5. **Neither issue-list sort order has an index.** `(last_seen, id)` and
+6. **Neither issue-list sort order has an index.** `(last_seen, id)` and
    `(event_count, id)` both fall back to a full sort of `issue` on every page.
    `KeysetPage`'s O(page) promise rests on an index that is not there. It does not
-   hurt yet — `issue` is small next to `event` — and it will, which is why the
-   guard asserts the plan shape rather than a block count. (#126)
+   hurt yet — `issue` is small next to `event` — and it will, which is why the guard
+   asserts the plan shape rather than a block count guard scale keeps small. (#126)
 
-6. **Trace search is O(all transactions) but honestly O(page) in depth.** Page 1
-   and page 20 cost the same 97k blocks and the same 175 ms, so pagination is
-   working; the constant is high because `DISTINCT ON (trace_id)` scans every
-   transaction before the limit applies. Not filed: it is a design property of
-   representing traces by their root transaction, and the fix is a `trace` table
-   rather than an index.
+7. **The issue-list knee is between 8 and 16 requests/s.** p50 holds at ~700 ms up
+   to 8/s and jumps to 3 856 ms at 16/s. Each request issues four queries against
+   Spring Boot's default ten-connection Hikari pool, so ~8 concurrent page loads
+   saturates it — and the driver shares the machine with the server, so which of the
+   pool and the CPU binds first is the next experiment rather than a conclusion.
+   Note that the wall moves with finding 2: a page load that stopped scanning
+   `event` twice would raise this ceiling without touching the pool.
 
-7. **The issue-list knee is between 100 and 200 requests/s.** p50 goes from 68 ms
-   at 100/s to 2 121 ms at 200/s. Each issue-list request issues four queries
-   against Spring Boot's default ten-connection Hikari pool, and the driver shares
-   the machine with the server, so which of the pool and the CPU is the wall is
-   the next experiment rather than a conclusion.
-
-**One finding was retracted.** Body-substring search looked broken at guard scale
-— a 0.1%-selective needle saved nothing — and is not: 40 000 rows is small enough
-that Postgres correctly prefers a scan to `idx_log_body_trgm`, and at 500 000 it
-uses the index for a 10x saving. The issue was closed and the guard deleted rather
-than left `@Disabled`, because a disabled guard is a spec for a fix and there was
-nothing to fix. It is a good illustration of why the two tiers exist: the guard
-tier is for plan invariants that hold at any size, and a question whose answer
-depends on dataset size belongs in the benchmark.
+**One candidate finding was retracted.** Body-substring search looked broken at
+guard scale — a 0.1 %-selective needle saved only 13 % — and is not: 40 000 rows is
+small enough that Postgres correctly prefers a scan to `idx_log_body_trgm`, and at
+5 000 000 it uses the index for an 11x saving. The issue was closed and the guard
+deleted rather than left `@Disabled`, because a disabled guard is a spec for a fix
+and there was nothing to fix. It is a good illustration of why the two tiers exist:
+the guard tier is for plan invariants that hold at any size, and a question whose
+answer depends on dataset size belongs in the benchmark.
 
 ## Related
 

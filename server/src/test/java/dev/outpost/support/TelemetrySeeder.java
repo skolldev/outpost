@@ -72,15 +72,20 @@ public final class TelemetrySeeder {
 		public static final Scale GUARD = new Scale(2, 200, 40_000, 40_000, 8_000, 3, 500, 8, 42);
 
 		/**
-		 * Scales the row counts by {@code factor}, leaving the shape alone:
-		 * cardinalities and the time window are what make the data production-shaped,
-		 * and shrinking them along with the volume would produce a small dataset that
-		 * is also the wrong shape.
+		 * Scales the <b>row counts</b> by {@code factor} and nothing else.
+		 *
+		 * <p>Cardinalities and the time window are what make the data
+		 * production-shaped, so they are deliberately left alone. Scaling
+		 * {@code users} down would make {@code count(DISTINCT user_ident)} — the single
+		 * most suspect query in the read path — cheaper on a smaller run, so a smoke
+		 * run would understate exactly the thing it exists to look at. Scaling
+		 * {@code issues} down would take the issue list from eighty pages to eight and
+		 * quietly turn the deep-pagination scenario into a shallow one.
 		 */
 		public Scale times(double factor) {
-			return new Scale(projects, Math.max(1, (int) (issues * factor)), Math.max(1, (long) (events * factor)),
-					Math.max(1, (long) (logs * factor)), Math.max(1, (long) (txns * factor)), spansPerTxn,
-					Math.max(1, (int) (users * factor)), releases, windowDays);
+			return new Scale(projects, issues, Math.max(1, (long) (events * factor)),
+					Math.max(1, (long) (logs * factor)), Math.max(1, (long) (txns * factor)), spansPerTxn, users,
+					releases, windowDays);
 		}
 
 		public long spans() {
@@ -94,8 +99,8 @@ public final class TelemetrySeeder {
 	 * is measuring that round trip too.
 	 */
 	public record Seeded(List<Long> projectIds, int issues, long issueIdBase, long events, long logs, long txns,
-			long spans, String traceId, long issueId, UUID eventId, String release, String environment,
-			String bodyNeedle, String attributeKey, String attributeValue, Instant windowStart,
+			long spans, String traceId, long issueId, UUID eventId, Instant eventTimestamp, String release,
+			String environment, String bodyNeedle, String attributeKey, String attributeValue, Instant windowStart,
 			Map<String, String> settings) {
 
 		public long projectId() {
@@ -172,13 +177,15 @@ public final class TelemetrySeeder {
 		rollUpIssueCounters();
 		analyze();
 
-		UUID eventId = jdbc.sql("SELECT id FROM event WHERE issue_id = ? LIMIT 1")
+		// The event and its timestamp together, because the detail endpoint's neighbour
+		// lookups key on (issue_id, timestamp, id) — an id alone cannot reproduce them.
+		Map.Entry<UUID, Instant> event = jdbc.sql("SELECT id, \"timestamp\" FROM event WHERE issue_id = ? LIMIT 1")
 			.param(issueIdBase)
-			.query(UUID.class)
+			.query((rs, i) -> Map.entry(rs.getObject("id", UUID.class), rs.getTimestamp("timestamp").toInstant()))
 			.single();
 		return new Seeded(projectIds, scale.issues(), issueIdBase, count("event"), count("log_record"), count("txn"),
-				count("span"), KNOWN_TRACE_ID, issueIdBase, eventId, release(0), ENVIRONMENTS.get(0), BODY_NEEDLE,
-				ATTRIBUTE_KEY, "137", windowStart, settings());
+				count("span"), KNOWN_TRACE_ID, issueIdBase, event.getKey(), event.getValue(), release(0),
+				ENVIRONMENTS.get(0), BODY_NEEDLE, ATTRIBUTE_KEY, "137", windowStart, settings());
 	}
 
 	/** The Postgres settings a report has to state, read back rather than assumed. */
@@ -223,8 +230,7 @@ public final class TelemetrySeeder {
 			.plus(7, ChronoUnit.DAYS)) {
 			weeks.add(week);
 		}
-		for (String table : List.of(PartitionManager.EVENT, PartitionManager.LOG_RECORD, PartitionManager.TXN,
-				PartitionManager.SPAN)) {
+		for (String table : PartitionManager.TABLES) {
 			partitions.ensurePartitions(table, weeks);
 		}
 	}
@@ -499,7 +505,8 @@ public final class TelemetrySeeder {
 	}
 
 	private void analyze() {
-		jdbc.sql("ANALYZE event, log_record, txn, span, issue, issue_env_stats, release, uptime_check").update();
+		jdbc.sql("ANALYZE " + String.join(", ", PartitionManager.TABLES)
+				+ ", issue, issue_env_stats, release, uptime_check").update();
 	}
 
 	// ----------------------------------------------------------------- helpers

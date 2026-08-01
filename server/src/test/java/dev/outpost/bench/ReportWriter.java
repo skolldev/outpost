@@ -81,11 +81,16 @@ public final class ReportWriter {
 		return out;
 	}
 
+	/** Where this report's files land, without writing any. */
+	public Path directory() {
+		return Path.of("build", "reports", directory);
+	}
+
 	/** Prints the table and writes it alongside a JSON copy; returns the Markdown path. */
 	public Path write(String markdown, String json) {
 		System.out.println();
 		System.out.println(markdown);
-		Path target = Path.of("build", "reports", directory);
+		Path target = directory();
 		String stamp = STAMP.format(Instant.now());
 		try {
 			Files.createDirectories(target);

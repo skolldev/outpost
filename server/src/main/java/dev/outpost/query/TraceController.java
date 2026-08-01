@@ -156,13 +156,43 @@ public class TraceController {
 	 * Everything sharing a trace_id across all projects, in one payload. Fanning out
 	 * per table beats one mega-join here — each already has a trace_id index.
 	 */
+	/**
+	 * The four fan-out statements, named rather than inlined so a guard can
+	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. None of
+	 * them carries a time predicate, so each probes every partition of its table.
+	 */
+	static final String TRANSACTIONS_BY_TRACE = """
+			SELECT id, project_id, environment, release, trace_id, span_id, parent_span_id, name, op,
+			       start_ts, end_ts, duration_ms, status, data
+			FROM txn WHERE trace_id = ? ORDER BY start_ts
+			""";
+
+	static final String SPANS_BY_TRACE = """
+			SELECT id, txn_id, project_id, trace_id, span_id, parent_span_id, op, description,
+			       start_ts, end_ts, duration_ms, status, data
+			FROM span WHERE trace_id = ? ORDER BY start_ts
+			""";
+
+	static final String EVENTS_BY_TRACE = """
+			SELECT id, project_id, issue_id, environment, "timestamp", trace_id, level, message, exception_type,
+			       data #>> '{contexts,trace,span_id}' AS span_id
+			FROM event WHERE trace_id = ? ORDER BY "timestamp"
+			""";
+
+	static final String LOGS_BY_TRACE = """
+			SELECT id, project_id, environment, "timestamp", trace_id, span_id, level, severity_number,
+			       body, attributes, release
+			FROM log_record WHERE trace_id = ? ORDER BY "timestamp"
+			""";
+
+	/** Every statement {@link #trace} issues, in the order it issues them. */
+	static List<String> traceDetailQueries() {
+		return List.of(TRANSACTIONS_BY_TRACE, SPANS_BY_TRACE, EVENTS_BY_TRACE, LOGS_BY_TRACE);
+	}
+
 	@GetMapping("/traces/{trace_id}")
 	public ResponseEntity<Map<String, Object>> trace(@PathVariable("trace_id") String traceId) {
-		List<Map<String, Object>> transactions = jdbc.query("""
-				SELECT id, project_id, environment, release, trace_id, span_id, parent_span_id, name, op,
-				       start_ts, end_ts, duration_ms, status, data
-				FROM txn WHERE trace_id = ? ORDER BY start_ts
-				""", (rs, i) -> {
+		List<Map<String, Object>> transactions = jdbc.query(TRANSACTIONS_BY_TRACE, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("project_id", rs.getLong("project_id"));
@@ -191,11 +221,7 @@ public class TraceController {
 			}
 		}
 
-		List<Map<String, Object>> spans = jdbc.query("""
-				SELECT id, txn_id, project_id, trace_id, span_id, parent_span_id, op, description,
-				       start_ts, end_ts, duration_ms, status, data
-				FROM span WHERE trace_id = ? ORDER BY start_ts
-				""", (rs, i) -> {
+		List<Map<String, Object>> spans = jdbc.query(SPANS_BY_TRACE, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("txn_id", rs.getObject("txn_id", UUID.class));
@@ -213,11 +239,7 @@ public class TraceController {
 			return row;
 		}, traceId);
 
-		List<Map<String, Object>> errors = jdbc.query("""
-				SELECT id, project_id, issue_id, environment, "timestamp", trace_id, level, message, exception_type,
-				       data #>> '{contexts,trace,span_id}' AS span_id
-				FROM event WHERE trace_id = ? ORDER BY "timestamp"
-				""", (rs, i) -> {
+		List<Map<String, Object>> errors = jdbc.query(EVENTS_BY_TRACE, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("project_id", rs.getLong("project_id"));
@@ -231,11 +253,7 @@ public class TraceController {
 			return row;
 		}, traceId);
 
-		List<Map<String, Object>> logs = jdbc.query("""
-				SELECT id, project_id, environment, "timestamp", trace_id, span_id, level, severity_number,
-				       body, attributes, release
-				FROM log_record WHERE trace_id = ? ORDER BY "timestamp"
-				""", (rs, i) -> {
+		List<Map<String, Object>> logs = jdbc.query(LOGS_BY_TRACE, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("project_id", rs.getLong("project_id"));

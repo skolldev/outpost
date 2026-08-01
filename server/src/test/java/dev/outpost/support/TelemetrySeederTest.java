@@ -6,6 +6,7 @@ import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,7 +24,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
 @Import(TestcontainersConfiguration.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class TelemetrySeederIntegrationTest {
+class TelemetrySeederTest {
 
 	private static final TelemetrySeeder.Scale SCALE = TelemetrySeeder.Scale.GUARD.times(0.25);
 
@@ -35,16 +36,14 @@ class TelemetrySeederIntegrationTest {
 
 	TelemetrySeeder.Seeded seeded;
 
-	TelemetrySeeder.Seeded seeded() {
-		if (seeded == null) {
-			seeded = new TelemetrySeeder(jdbc, partitions).seed(SCALE);
-		}
-		return seeded;
+	@BeforeAll
+	void seed() {
+		seeded = new TelemetrySeeder(jdbc, partitions).seed(SCALE);
 	}
 
 	@Test
 	void seedsTheRowCountsItWasAskedFor() {
-		TelemetrySeeder.Seeded result = seeded();
+		TelemetrySeeder.Seeded result = seeded;
 
 		// The known-trace fixture adds a handful of rows on top of the requested
 		// volume, so this is a floor rather than an equality.
@@ -61,7 +60,6 @@ class TelemetrySeederIntegrationTest {
 	 */
 	@Test
 	void spreadsEveryTelemetryTableOverManyWeeklyPartitions() {
-		seeded();
 		int expectedWeeks = SCALE.windowDays() / 7;
 
 		for (String table : List.of("event", "log_record", "txn", "span")) {
@@ -77,7 +75,7 @@ class TelemetrySeederIntegrationTest {
 	/** Uniform events-per-issue makes every issue equally cheap; production is nothing like that. */
 	@Test
 	void skewsEventsSoAFewIssuesOwnMostOfThem() {
-		TelemetrySeeder.Seeded result = seeded();
+		TelemetrySeeder.Seeded result = seeded;
 
 		long busiest = jdbc.sql("SELECT max(event_count) FROM issue").query(Long.class).single();
 		long uniform = result.events() / result.issues();
@@ -92,7 +90,7 @@ class TelemetrySeederIntegrationTest {
 	 */
 	@Test
 	void seedsRealisticUserAndReleaseCardinality() {
-		TelemetrySeeder.Seeded result = seeded();
+		TelemetrySeeder.Seeded result = seeded;
 
 		long users = jdbc.sql("SELECT count(DISTINCT user_ident) FROM event").query(Long.class).single();
 		long releases = jdbc.sql("SELECT count(DISTINCT release) FROM event").query(Long.class).single();
@@ -104,7 +102,7 @@ class TelemetrySeederIntegrationTest {
 	/** Trace detail fans out across four tables; a trace present in only one measures nothing. */
 	@Test
 	void sharesTheKnownTraceAcrossAllFourTables() {
-		TelemetrySeeder.Seeded result = seeded();
+		TelemetrySeeder.Seeded result = seeded;
 
 		for (String table : List.of("txn", "span", "event", "log_record")) {
 			long rows = jdbc.sql("SELECT count(*) FROM " + table + " WHERE trace_id = ?")
@@ -118,7 +116,6 @@ class TelemetrySeederIntegrationTest {
 	/** Without statistics the planner is blind, and every plan the guards assert on is the wrong one. */
 	@Test
 	void analyzesSoThePlannerHasStatistics() {
-		seeded();
 
 		for (String table : List.of("event", "log_record", "txn", "span", "issue")) {
 			Long analyzed = jdbc

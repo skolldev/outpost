@@ -9,9 +9,12 @@ import org.testcontainers.utility.DockerImageName;
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
 
+	/** Pinned in one place: a benchmark run against a different major version is not a comparison. */
+	public static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse("postgres:17-alpine");
+
 	@Bean
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
-		return new PostgreSQLContainer(DockerImageName.parse("postgres:17-alpine"));
+		return new PostgreSQLContainer(POSTGRES_IMAGE);
 	}
 }

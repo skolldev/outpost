@@ -32,7 +32,8 @@ public class PartitionManager {
 	public static final String TXN = "txn";
 	public static final String SPAN = "span";
 
-	private static final List<String> TABLES = List.of(EVENT, LOG_RECORD, TXN, SPAN);
+	/** Every partitioned table, in one place — a new one is registered by adding it here. */
+	public static final List<String> TABLES = List.of(EVENT, LOG_RECORD, TXN, SPAN);
 	private static final DateTimeFormatter NAME_FORMAT = DateTimeFormatter.BASIC_ISO_DATE;
 	private static final long ADVISORY_LOCK_KEY = 727_572_057L; // unique to partition DDL
 

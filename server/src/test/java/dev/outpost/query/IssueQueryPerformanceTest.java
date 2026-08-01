@@ -32,7 +32,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  *
  * <p>Baselines below were measured on 2026-08-01 against
  * {@link TelemetrySeeder.Scale#GUARD}: 40 003 events over 10 weekly partitions,
- * 200 issues. A full scan of {@code event} costs 15 045 blocks on that dataset,
+ * 200 issues. A full scan of {@code event} costs ~15 000 blocks on that dataset,
  * which is the number every enabled ceiling has to sit below.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -47,8 +47,8 @@ class IssueQueryPerformanceTest {
 	private static final long MAX_LIST_BLOCKS = 300;
 
 	/**
-	 * Healthy is 9 428 blocks — high because at guard scale the 14-day window holds
-	 * most of the events. 10x would be 94 280, above the 15 045 a full scan of
+	 * Healthy is ~9 470 blocks — high because at guard scale the 14-day window holds
+	 * most of the events. 10x would be 94 700, above the ~15 000 a full scan of
 	 * {@code event} costs, and a ceiling above the scan cost cannot fail. 14 000 is
 	 * what fits: 1.5x headroom for plan drift, still under the scan, and comfortably
 	 * under the 20 045 the same aggregate costs once its time bound is removed —
@@ -60,15 +60,15 @@ class IssueQueryPerformanceTest {
 	 * The healthy <em>target</em>, not today's cost: this path is knowingly broken
 	 * (#131). The sparkline is the same aggregate over the same 50 issues with a
 	 * time bound and passes under 14 000, so a bounded users-affected query should
-	 * too. Today it costs 20 045.
+	 * too. Today it costs ~20 040.
 	 */
 	private static final long MAX_USERS_AFFECTED_BLOCKS = MAX_SPARKLINE_BLOCKS;
 
 	/**
 	 * The target for the release filter (#127), derived from the environment filter:
 	 * the same "which issues have signal X" question answered against a rollup costs
-	 * 132 blocks, so 10x that is the class the release filter belongs in. Today it
-	 * costs 12 527.
+	 * ~133 blocks, so 10x that is the class the release filter belongs in. Today it
+	 * costs ~11 850.
 	 */
 	private static final long MAX_RELEASE_FILTER_BLOCKS = 1_320;
 

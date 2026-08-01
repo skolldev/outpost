@@ -23,7 +23,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * bound.
  *
  * <p>Baselines measured 2026-08-01 against {@link TelemetrySeeder.Scale#GUARD}:
- * 40 003 events over 10 weekly partitions, 8 releases on the project.
+ * 40 003 events over 10 weekly partitions, 8 releases on the project. At the
+ * retrieval benchmark's default scale the same page takes 13.5 seconds.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -34,8 +35,8 @@ class ReleaseQueryPerformanceTest {
 	/**
 	 * The bound is computed from the dataset rather than hardcoded, so it means the
 	 * same thing at any scale: annotating a page of releases must not cost more than
-	 * reading {@code event} twice. Today the page costs 240 368 blocks against the
-	 * 15 045 one full scan costs — 16x — because the count runs once per release.
+	 * reading {@code event} twice. Today the page costs ~240 300 blocks against the
+	 * ~15 000 one full scan costs — 16x — because the count runs once per release.
 	 */
 	private static final int FULL_SCANS_ALLOWED = 2;
 

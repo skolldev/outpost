@@ -1,10 +1,10 @@
 package dev.outpost.bench;
 
+import dev.outpost.TestcontainersConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * A Postgres tuned for the retrieval benchmark, replacing the defaults
@@ -26,10 +26,21 @@ import org.testcontainers.utility.DockerImageName;
 @TestConfiguration(proxyBeanMethods = false)
 public class BenchContainerConfiguration {
 
+	/**
+	 * Docker's 64 MB default for {@code /dev/shm} is enough for the guards and not
+	 * for this: a parallel hash or sort over millions of rows allocates its shared
+	 * segment there, and running out surfaces as {@code could not resize shared
+	 * memory segment}, which reads like a Postgres bug rather than a container
+	 * setting.
+	 */
+	private static final long SHARED_MEMORY_BYTES = 2L * 1024 * 1024 * 1024;
+
 	@Bean
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
-		return new PostgreSQLContainer(DockerImageName.parse("postgres:17-alpine")).withCommand("postgres",
+		return new PostgreSQLContainer(TestcontainersConfiguration.POSTGRES_IMAGE)
+			.withSharedMemorySize(SHARED_MEMORY_BYTES)
+			.withCommand("postgres",
 				"-c", "shared_buffers=1GB",
 				"-c", "effective_cache_size=3GB",
 				"-c", "work_mem=32MB",

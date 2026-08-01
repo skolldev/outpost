@@ -272,13 +272,31 @@ public class IssueController {
 		return body;
 	}
 
+	/**
+	 * Event detail's three statements, named rather than inlined so a guard can
+	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. The
+	 * neighbour lookups are what make this page cost more than one row: each is a
+	 * separate probe across every partition of {@code event}.
+	 */
+	static final String EVENT_BY_ID = """
+			SELECT id, project_id, issue_id, environment, release, "timestamp", trace_id, level, message,
+			       exception_type, user_ident, data, symbolication_status
+			FROM event WHERE id = ?
+			""";
+
+	static final String NEWER_EVENT_IN_ISSUE = """
+			SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) > (?, ?)
+			ORDER BY "timestamp" ASC, id ASC LIMIT 1
+			""";
+
+	static final String OLDER_EVENT_IN_ISSUE = """
+			SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) < (?, ?)
+			ORDER BY "timestamp" DESC, id DESC LIMIT 1
+			""";
+
 	@GetMapping("/events/{id}")
 	public ResponseEntity<Map<String, Object>> event(@PathVariable UUID id) {
-		List<Map<String, Object>> rows = jdbc.query("""
-				SELECT id, project_id, issue_id, environment, release, "timestamp", trace_id, level, message,
-				       exception_type, user_ident, data, symbolication_status
-				FROM event WHERE id = ?
-				""", (rs, i) -> {
+		List<Map<String, Object>> rows = jdbc.query(EVENT_BY_ID, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("project_id", rs.getLong("project_id"));
@@ -308,13 +326,7 @@ public class IssueController {
 
 	/** Adjacent event id within the same issue, by (timestamp, id) order. */
 	private UUID neighbor(long issueId, Instant ts, UUID id, boolean newer) {
-		String sql = newer ? """
-				SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) > (?, ?)
-				ORDER BY "timestamp" ASC, id ASC LIMIT 1
-				""" : """
-				SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) < (?, ?)
-				ORDER BY "timestamp" DESC, id DESC LIMIT 1
-				""";
+		String sql = newer ? NEWER_EVENT_IN_ISSUE : OLDER_EVENT_IN_ISSUE;
 		List<UUID> found = jdbc.query(sql, (rs, i) -> rs.getObject("id", UUID.class), issueId,
 				java.sql.Timestamp.from(ts), id);
 		return found.isEmpty() ? null : found.get(0);

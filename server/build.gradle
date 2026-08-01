@@ -87,7 +87,8 @@ benchmarkTask('ingestBenchmark', 'benchmark & ingest',
 		'Opt-in ingest load benchmark. Not run by `build`. Requires Docker.',
 		['target', 'projectId', 'key'])
 
-// -Pbench.scale=0.1 seeds a tenth of the default dataset for a ~1 minute smoke run.
+// -Pbench.scale=0.1 seeds a tenth of the default dataset; ~5 minutes, most of it
+// the fixed per-scenario measurement window rather than the seed.
 benchmarkTask('retrievalBenchmark', 'benchmark & retrieval',
 		'Opt-in retrieval latency benchmark. Not run by `build`. Requires Docker.',
 		['scale'])

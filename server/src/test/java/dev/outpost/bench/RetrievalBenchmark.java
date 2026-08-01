@@ -14,13 +14,18 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -64,24 +69,64 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
 @Import(BenchContainerConfiguration.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Tag("benchmark")
 @Tag("retrieval")
 class RetrievalBenchmark {
 
 	/**
-	 * Reads are a latency-at-scale question, not a throughput one, so most
-	 * scenarios sit at a rate the server can comfortably serve and the interesting
-	 * number is what a single request costs.
+	 * Reads are a latency-at-scale question, not a throughput one, so most scenarios
+	 * sit at a rate the server can comfortably serve and the interesting number is
+	 * what a single request costs. The saturation ladder is the one place that asks
+	 * the other question.
 	 */
-	private static final LoadDriver.Step STEP = new LoadDriver.Step(20, Duration.ofSeconds(10));
+	private static final Duration STEP_DURATION = Duration.ofSeconds(10);
+
+	private static final int MAX_SCENARIO_RATE = 20;
 
 	/**
-	 * The one throughput question worth asking. {@code application.yaml} sets no
-	 * HikariCP tuning, so the pool is Spring Boot's default 10 connections while a
-	 * single issue-list request issues four queries. Where that becomes the wall is
-	 * worth knowing.
+	 * Requests a scenario may have outstanding at once. The rate is derived from
+	 * this and the endpoint's own measured latency rather than fixed, because a
+	 * fixed rate is only safe for endpoints that keep up with it: the releases page
+	 * takes seconds at full scale, and offering it 20/s open-loop would bury it
+	 * under a backlog, blow the driver's request timeout, and fail the run for a
+	 * reason that has nothing to do with the query. The point is to measure what one
+	 * request costs, and a small stable concurrency does that at any speed.
 	 */
-	private static final int[] SATURATION_RATES = { 10, 25, 50, 100, 200 };
+	private static final double TARGET_CONCURRENCY = 4;
+
+	/** Below this a percentile is noise, so a slow scenario buys samples with wall clock. */
+	private static final int MIN_SAMPLES = 20;
+
+	/**
+	 * An endpoint slower than half the driver's per-request timeout cannot be driven
+	 * at all: every request in the step would time out and the run would fail on an
+	 * endpoint being slow — deleting the whole report to tell us something the
+	 * report was going to say anyway. Those are measured once and reported as a
+	 * single sample, loudly marked.
+	 */
+	private static final long DRIVABLE_MILLIS = LoadDriver.REQUEST_TIMEOUT.toMillis() / 2;
+
+	/** Long enough that an endpoint's own slowness is reported rather than thrown. */
+	private static final Duration PROBE_TIMEOUT = Duration.ofMinutes(3);
+
+	/** How long to let the server work off a saturated step before giving up and saying so. */
+	private static final Duration QUIESCE_TIMEOUT = Duration.ofMinutes(3);
+
+	/**
+	 * The one throughput question worth asking, as multiples of what a single
+	 * connection sustains. {@code application.yaml} sets no HikariCP tuning, so the
+	 * pool is Spring Boot's default 10 connections while one issue-list request
+	 * issues four queries; the knee should land inside this ladder whatever the
+	 * dataset.
+	 *
+	 * <p>Multiples rather than absolute rates because the endpoint's own speed moves
+	 * by an order of magnitude with the dataset. A ladder fixed at rates calibrated
+	 * against a tenth-scale run offers a full-scale server a hundred times its
+	 * capacity, which does not find a knee — it builds a backlog that outlives the
+	 * step and contaminates whatever runs next.
+	 */
+	private static final int[] SATURATION_MULTIPLES = { 1, 2, 4, 8, 16 };
 
 	private static final int ISSUE_PAGE_SIZE = 50;
 
@@ -95,6 +140,9 @@ class RetrievalBenchmark {
 	private static final int DEEP_LOG_PAGE = 50;
 
 	private static final int DEEP_TRACE_PAGE = 20;
+
+	/** Matches {@code IssueController}'s sparkline window, so the aggregate plan is the real one. */
+	private static final int SPARKLINE_DAYS = 14;
 
 	/**
 	 * A page whose size the endpoint does not promise. Page 1 of an unfiltered list
@@ -165,29 +213,50 @@ class RetrievalBenchmark {
 	// ------------------------------------------------------------------ issues
 
 	@Test
+	@Order(1)
 	void issueList() throws Exception {
 		measure("issues", "page 1", "/issues", "issues", ISSUE_PAGE_SIZE,
-				QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null),
+						"last_seen", null));
 		measure("issues", "sort=count", "/issues?sort=count", "issues", ISSUE_PAGE_SIZE,
-				QueryPlans.issueList(null, null, null, null, null, null, null, "count", null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "count", null), "count",
+						null));
 		measure("issues", "query=", "/issues?query=order", "issues", ANY_SIZE,
-				QueryPlans.issueList(null, null, null, null, null, null, "order", "last_seen", null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, "order", "last_seen", null),
+						"last_seen", null));
 		measure("issues", "release=", "/issues?release=" + seeded.release(), "issues", ANY_SIZE,
-				QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null));
+				issuePagePlan(
+						QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null),
+						"last_seen", null));
 		measure("issues", "environment=", "/issues?environment=" + seeded.environment(), "issues", ANY_SIZE,
-				QueryPlans.issueList(null, List.of(seeded.environment()), null, null, null, null, null, "last_seen",
-						null));
+				issuePagePlan(QueryPlans.issueList(null, List.of(seeded.environment()), null, null, null, null, null,
+						"last_seen", null), "last_seen", null));
 		measure("issues", "project=", "/issues?project=" + seeded.projectId(), "issues", ANY_SIZE,
-				QueryPlans.issueList(List.of(seeded.projectId()), null, null, null, null, null, null, "last_seen",
-						null));
+				issuePagePlan(QueryPlans.issueList(List.of(seeded.projectId()), null, null, null, null, null, null,
+						"last_seen", null), "last_seen", null));
+	}
+
+	/**
+	 * An issue-list page load is four queries, not one: the list, a 14-day
+	 * sparkline, a distinct-user count, and the environment rollup. Reporting the
+	 * list query's plan next to the whole page's latency would put 558 blocks beside
+	 * half a second and make the machine look slow — the aggregates are where the
+	 * time goes, and the columns have to say so.
+	 */
+	private PlanFacts issuePagePlan(QueryPlans.Built list, String sort, String cursor) {
+		List<Long> ids = QueryPlans.issueIdsOnPage(jdbc, sort, cursor);
+		Instant since = Instant.now().minus(SPARKLINE_DAYS, ChronoUnit.DAYS);
+		return sum(List.of(list, QueryPlans.sparkline(ids, since), QueryPlans.usersAffected(ids)));
 	}
 
 	/** The direct test of {@code KeysetPage}'s O(page) claim against the missing sort indexes. */
 	@Test
+	@Order(2)
 	void issueDeepPagination() throws Exception {
 		Walk walk = walk("/issues", "issues", ISSUE_PAGE_SIZE, DEEP_ISSUE_PAGE);
 		measure("issues", "page " + walk.depth(), "/issues?cursor=" + walk.cursor(), "issues", ISSUE_PAGE_SIZE,
-				QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", walk.cursor()));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen",
+						walk.cursor()), "last_seen", walk.cursor()));
 	}
 
 	// -------------------------------------------------------------------- logs
@@ -232,12 +301,8 @@ class RetrievalBenchmark {
 	/** The four-table fan-out by {@code trace_id}, with no time predicate on any of them. */
 	@Test
 	void traceDetail() throws Exception {
-		PlanFacts fanOut = PlanFacts.NONE;
-		for (String table : List.of("txn", "span", "event", "log_record")) {
-			fanOut = fanOut.merge(PlanFacts.explain(jdbc,
-					"SELECT * FROM " + table + " WHERE trace_id = ?", List.of(seeded.traceId())));
-		}
-		measure("trace detail", "4-table fan-out", "/traces/" + seeded.traceId(), "transactions", ANY_SIZE, fanOut);
+		measure("trace detail", "4-table fan-out", "/traces/" + seeded.traceId(), "transactions", ANY_SIZE,
+				sum(QueryPlans.traceDetail(seeded.traceId())));
 	}
 
 	// ------------------------------------------------------------------- pages
@@ -248,7 +313,7 @@ class RetrievalBenchmark {
 				QueryPlans.releaseList(seeded.projectId()));
 		measure("uptime", "overview", "/uptime/overview", null, ANY_SIZE, PlanFacts.NONE);
 		measure("event detail", "+ 2 neighbours", "/events/" + seeded.eventId(), null, ANY_SIZE,
-				new QueryPlans.Built("SELECT * FROM event WHERE id = ?", List.of(seeded.eventId())));
+				sum(QueryPlans.eventDetail(seeded.eventId(), seeded.issueId(), seeded.eventTimestamp())));
 	}
 
 	// -------------------------------------------------------------- saturation
@@ -259,23 +324,64 @@ class RetrievalBenchmark {
 	 * behind it rather than about any single query.
 	 */
 	@Test
+	@Order(Integer.MAX_VALUE)
 	void issueListSaturationLadder() throws Exception {
 		QueryPlans.Built plan = QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null);
-		for (int rate : SATURATION_RATES) {
-			LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, Duration.ofSeconds(10)),
-					() -> request("/issues"));
+		Probe probe = validate("issues saturation", "/issues", "issues", ISSUE_PAGE_SIZE);
+		int base = Math.max(1, (int) Math.round(1000.0 / Math.max(probe.millis(), 1)));
+
+		for (int multiple : SATURATION_MULTIPLES) {
+			int rate = base * multiple;
+			LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), () -> request("/issues"));
 			// Reported, not asserted: past the knee a saturated step is the finding, and
 			// failing the run on it would delete the answer.
-			System.out.printf("issue list @ %4d/s → p99 %.1f ms, %d non-200%n", rate, result.p99Millis(),
-					result.offered() - result.status(200));
+			System.out.printf("issue list @ %4d/s → p50 %8.1f ms, p99 %8.1f ms, %d non-200%n", rate, result.p50Millis(),
+					result.p99Millis(), result.offered() - result.status(200));
 			REPORT.add(new RetrievalReport.Row("issues saturation", rate + "/s", result, datasetRows, ISSUE_PAGE_SIZE,
 					plan.explain(jdbc)));
+			quiesce(probe);
 		}
+	}
+
+	/**
+	 * Waits for the server to finish whatever the last step left it holding.
+	 *
+	 * <p>{@link LoadDriver} gives up on its in-flight tail after two minutes and
+	 * reports what is outstanding, but the server keeps working through it — so a
+	 * saturated step hands its backlog to the next scenario, which then measures the
+	 * backlog. The ingest benchmark has the same hazard and drains the queue between
+	 * plateaus; there is no queue to read here, so responsiveness is the signal.
+	 */
+	private void quiesce(Probe reference) throws Exception {
+		long deadline = System.nanoTime() + QUIESCE_TIMEOUT.toNanos();
+		while (System.nanoTime() < deadline) {
+			long startedAt = System.nanoTime();
+			http.send(probeRequest("/issues"), HttpResponse.BodyHandlers.discarding());
+			long millis = (System.nanoTime() - startedAt) / 1_000_000;
+			if (millis <= Math.max(reference.millis() * 2, 100)) {
+				return;
+			}
+		}
+		System.out.printf("note: server still slow %s after a saturation step; later rows may carry its backlog%n",
+				QUIESCE_TIMEOUT);
 	}
 
 	// ----------------------------------------------------------------- harness
 
 	private record Walk(String cursor, int depth) {
+	}
+
+	/**
+	 * The combined facts of every statement one endpoint issues. Trace detail fans
+	 * out into four and event detail into three; reporting one of them would be a
+	 * number nobody actually waits for.
+	 */
+	private PlanFacts sum(List<QueryPlans.Built> queries) {
+		PlanFacts total = PlanFacts.NONE;
+		for (QueryPlans.Built query : queries) {
+			total = total.merge(query.explain(jdbc));
+		}
+		return total;
 	}
 
 	/**
@@ -290,26 +396,54 @@ class RetrievalBenchmark {
 
 	private void measure(String scenario, String step, String path, String listKey, int expectedRows, PlanFacts plan)
 			throws Exception {
-		long rows = validate(scenario + " " + step, path, listKey, expectedRows);
-		LoadDriver.Result result = driver.run(STEP, () -> request(path));
+		Probe probe = validate(scenario + " " + step, path, listKey, expectedRows);
+		if (probe.millis() > DRIVABLE_MILLIS) {
+			System.out.printf("%-14s %-18s TOO SLOW TO DRIVE — one request took %d ms; reporting that sample alone%n",
+					scenario, step, probe.millis());
+			REPORT.add(new RetrievalReport.Row(scenario, step + " (single sample)", probe.asResult(), datasetRows,
+					probe.rows(), plan));
+			return;
+		}
+		LoadDriver.Result result = driver.run(stepFor(probe), () -> request(path));
 
 		assertThat(result.failures()).as("driver/socket failures during %s %s", scenario, step).isZero();
 		assertThat(result.shed()).as("requests shed by the load driver during %s %s", scenario, step).isZero();
 		assertThat(result.offered() - result.status(200)).as("non-200 responses during %s %s", scenario, step).isZero();
 
-		System.out.printf("%-14s %-18s p50 %6.1f ms  p99 %6.1f ms  %5d rows  %8d blocks%n", scenario, step,
-				result.p50Millis(), result.p99Millis(), rows, plan.logicalIo());
-		REPORT.add(new RetrievalReport.Row(scenario, step, result, datasetRows, rows, plan));
+		System.out.printf("%-14s %-18s %3d/s  p50 %7.1f ms  p99 %7.1f ms  %5d rows  %9d blocks%n", scenario, step,
+				result.targetRate(), result.p50Millis(), result.p99Millis(), probe.rows(), plan.logicalIo());
+		REPORT.add(new RetrievalReport.Row(scenario, step, result, datasetRows, probe.rows(), plan));
 	}
 
-	/** @return the number of rows the response actually carried */
-	private long validate(String what, String path, String listKey, int expectedRows) throws Exception {
-		HttpResponse<String> response = http.send(request(path), HttpResponse.BodyHandlers.ofString());
+	/**
+	 * A rate this endpoint can actually absorb, and long enough at that rate for the
+	 * percentiles to mean something.
+	 */
+	private static LoadDriver.Step stepFor(Probe probe) {
+		double seconds = Math.max(probe.millis(), 1) / 1000.0;
+		int rate = (int) Math.clamp(Math.round(TARGET_CONCURRENCY / seconds), 1, MAX_SCENARIO_RATE);
+		long duration = Math.max(STEP_DURATION.toSeconds(), Math.ceilDiv(MIN_SAMPLES, rate));
+		return new LoadDriver.Step(rate, Duration.ofSeconds(duration));
+	}
+
+	/** What one unhurried request returned, and how long it took. */
+	private record Probe(long rows, long millis) {
+
+		/** The probe as a one-sample result, for an endpoint too slow to drive. */
+		LoadDriver.Result asResult() {
+			return new LoadDriver.Result(1, 1, 1, 1, Map.of(200, 1L), Map.of(), 0, millis, millis, millis, millis);
+		}
+	}
+
+	private Probe validate(String what, String path, String listKey, int expectedRows) throws Exception {
+		long startedAt = System.nanoTime();
+		HttpResponse<String> response = http.send(probeRequest(path), HttpResponse.BodyHandlers.ofString());
+		long millis = (System.nanoTime() - startedAt) / 1_000_000;
 		assertThat(response.statusCode()).as("status for %s", what).isEqualTo(200);
 
 		JsonNode body = mapper.readTree(response.body());
 		if (listKey == null) {
-			return body.isArray() ? body.size() : 1;
+			return new Probe(body.isArray() ? body.size() : 1, millis);
 		}
 		JsonNode list = body.get(listKey);
 		assertThat(list).as("`%s` in the response for %s", listKey, what).isNotNull();
@@ -317,7 +451,7 @@ class RetrievalBenchmark {
 		if (expectedRows != ANY_SIZE) {
 			assertThat(list.size()).as("page size for %s", what).isEqualTo(expectedRows);
 		}
-		return list.size();
+		return new Probe(list.size(), millis);
 	}
 
 	/**
@@ -332,7 +466,7 @@ class RetrievalBenchmark {
 		int depth = 1;
 		for (; depth < target; depth++) {
 			String url = cursor == null ? path : path + "?cursor=" + cursor;
-			HttpResponse<String> response = http.send(request(url), HttpResponse.BodyHandlers.ofString());
+			HttpResponse<String> response = http.send(probeRequest(url), HttpResponse.BodyHandlers.ofString());
 			assertThat(response.statusCode()).as("status walking %s to page %d", path, depth).isEqualTo(200);
 
 			JsonNode body = mapper.readTree(response.body());
@@ -370,9 +504,27 @@ class RetrievalBenchmark {
 
 	// -------------------------------------------------------------------- http
 
+	/** A request for the timed step, bounded by the driver's per-request timeout. */
 	private HttpRequest request(String path) {
+		return requestWithin(path, LoadDriver.REQUEST_TIMEOUT);
+	}
+
+	/**
+	 * A request for a probe or a cursor walk, with room to be slow.
+	 *
+	 * <p>The driver's timeout exists to stop one stalled request from wrecking a
+	 * plateau's percentiles, and it is the wrong bound here: a probe that takes
+	 * thirty seconds is not a stall, it is the finding, and timing it out would fail
+	 * the run instead of reporting it. {@link #DRIVABLE_MILLIS} is what acts on the
+	 * answer.
+	 */
+	private HttpRequest probeRequest(String path) {
+		return requestWithin(path, PROBE_TIMEOUT);
+	}
+
+	private HttpRequest requestWithin(String path, Duration timeout) {
 		return HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/internal" + path))
-			.timeout(LoadDriver.REQUEST_TIMEOUT)
+			.timeout(timeout)
 			.header("Cookie", session)
 			.GET()
 			.build();
