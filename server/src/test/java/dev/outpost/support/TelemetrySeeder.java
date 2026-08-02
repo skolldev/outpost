@@ -53,8 +53,14 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <li><b>Issue counters are derived from the events</b>, not invented, because
  * {@code last_seen} and {@code event_count} are the issue list's sort keys — a
  * seeder that made them up would page over an order the data does not have.
- * <li><b>{@code ANALYZE} runs at the end.</b> Without it the planner is blind and
- * every number the run produces is about a plan nobody will ever get.
+ * <li><b>{@code VACUUM ANALYZE} runs at the end.</b> Without the {@code ANALYZE}
+ * the planner is blind and every number the run produces is about a plan nobody
+ * will ever get. The {@code VACUUM} is there for a subtler reason: it sets the
+ * hint bits on the freshly bulk-loaded heap, which the first reader would
+ * otherwise set as a side effect of reading. That made the first measurement of a
+ * query cost about twice its steady state, so a guard's number depended on
+ * whether it happened to run first — a difference of ~185 blocks against ~90 on
+ * the issue list. Paying it once here makes the guards order-independent.
  * </ul>
  */
 public final class TelemetrySeeder {
@@ -510,7 +516,7 @@ public final class TelemetrySeeder {
 	}
 
 	private void analyze() {
-		jdbc.sql("ANALYZE " + String.join(", ", PartitionManager.TABLES)
+		jdbc.sql("VACUUM ANALYZE " + String.join(", ", PartitionManager.TABLES)
 				+ ", issue, issue_env_stats, release, uptime_check").update();
 	}
 

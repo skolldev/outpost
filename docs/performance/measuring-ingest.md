@@ -251,6 +251,42 @@ reproduce elsewhere. The five findings are structural and will.**
    engage it was clean: zero 5xx, readiness green, and all 16 925 acknowledged
    envelopes stored.
 
+## Index maintenance on `issue`, measured 2026-08-02
+
+`EventStore.ISSUE_UPSERT` runs **once per event**, not once per batch, and it
+bumps `event_count` and `last_seen` every time. Both are indexed, so the update
+can never be HOT: each one writes a new heap tuple and an entry into *every*
+index on `issue`, including the ones on columns it did not touch. The index count
+is therefore a direct multiplier on the error path — the same path finding 2
+above already names as the reason errors cost ~2x a transaction.
+
+#126 took that count from three to six. That is a doubling of per-event index
+maintenance on the hottest write in the system, so it was measured rather than
+argued about — six paired runs of the saturated single-project error ladder,
+alternating before/after on one machine:
+
+| | stored/s, 6 measurements | mean | spread |
+| --- | --- | --: | --: |
+| 3 indexes | 1707, 1729, 1770, 1779, 1806, 1824 | 1769 | 6.6% |
+| 6 indexes | 1671, 1673, 1727, 1735, 1767, 1822 | 1733 | 8.7% |
+
+**−2.1% of means, against a 7–9% spread, with the distributions overlapping and
+the sign flipping between adjacent pairs.** The 4-project variant moved −0.2%.
+`alloc KB/env` was unchanged to three digits, which is the expected shape: index
+maintenance is Postgres-side work and does not touch JVM allocation.
+
+The honest reading is that the cost is below what this harness resolves on this
+machine — **not** that it is zero. The noise floor is ~7%, so anything smaller is
+invisible here. Two caveats on generalizing it: `EnvelopeFactory` spreads over 50
+fingerprints, so 50 issue rows absorb the batch, and an install with far more
+distinct issues per batch touches proportionally more index pages; and this
+ladder saturates on the per-project advisory lock (finding 1), which may mask a
+storage-side cost that would show on a lock-free path.
+
+Worth knowing before adding a seventh index: **nothing in CI will catch it.** The
+ingest benchmark is excluded from `test` by the `benchmark` tag, so a future index
+on `issue` gets measured only if someone chooses to.
+
 ## Related
 
 - [`measuring-retrieval.md`](measuring-retrieval.md) — the read path, measured on
