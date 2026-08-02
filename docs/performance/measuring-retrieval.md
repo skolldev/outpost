@@ -169,10 +169,10 @@ are structural and will.**
 
 | Query | Blocks | Partitions read | Verdict |
 | --- | --: | --: | --- |
-| Issue list, page 1 | 30 | — | cheap, but sorts (#126) |
+| Issue list, page 1 | ~90 | — | walks an index; was 30 and sorted (#126) |
 | Issue list, deep cursor | 30 | — | O(page) holds |
 | Issue list, `environment=` | 133 | — | healthy — answered from the rollup |
-| Issue list, `release=` | **11 852** | 8 of 10 | #127 |
+| Issue list, `release=` | **~2 500** | 8 of 10 | #127 — was 11 852 before #126 |
 | Sparkline (14-day bound) | 9 470 | 5 of 10 | prunes correctly |
 | Users affected (unbounded) | **20 041** | **10 of 10** | #131 |
 | Log page 1 | **8 804** | **10 of 10** | #128 — costs more than a full scan |
@@ -182,6 +182,16 @@ are structural and will.**
 | Release list | **240 299** | **10 of 10** | #130 — 16x a full scan of `event` |
 | Trace detail (four tables) | 943 | indexed | healthy |
 | Event detail (+ 2 neighbours) | 254 | indexed | healthy |
+
+Two rows carry a `~` because they move between runs and the others do not. The
+seeder draws per-issue and per-release event counts randomly, which the
+index-driven plans are sensitive to in a way a sequential scan was not, and the
+*first* execution of the list query after seeding costs about twice the steady
+state (~185 against ~90) while hint bits are still being set on the freshly
+bulk-loaded heap. Both are why `MAX_LIST_BLOCKS` keeps the full 10x rather than
+being tightened onto a number that looks tighter than it is. The unmarked rows
+were re-measured and are unchanged — the deep cursor and the environment filter
+in particular, which look like they should have moved with page 1 and did not.
 
 ### Benchmark tier
 
@@ -266,11 +276,43 @@ Issue-list saturation ladder, same dataset:
    `query=` on the same run — 1 041 935 down to 93 763 — is what makes it clear
    which of the two is broken. (#132)
 
-6. **Neither issue-list sort order has an index.** `(last_seen, id)` and
-   `(event_count, id)` both fall back to a full sort of `issue` on every page.
-   `KeysetPage`'s O(page) promise rests on an index that is not there. It does not
-   hurt yet — `issue` is small next to `event` — and it will, which is why the guard
-   asserts the plan shape rather than a block count guard scale keeps small. (#126)
+6. **Neither issue-list sort order had an index — fixed in #126.** `(last_seen, id)`
+   and `(event_count, id)` both fell back to a full sort of `issue` on every page,
+   so `KeysetPage`'s O(page) promise rested on an index that was not there. `V9`
+   adds both, plus the project-scoped pair, and drops the `(project_id, last_seen)`
+   index they supersede.
+
+   The fix is the clearest argument in this file for asserting plan shape over
+   block counts. Page 1 now costs *more* at guard scale — ~90 blocks against 30 —
+   because fifty random heap fetches into a ten-block table lose to simply reading
+   the ten blocks. What changed is that the cost is bounded by page size instead of
+   table size, and that only pays off at a scale guard data does not reach. **A
+   block-count guard would have called this fix a regression.**
+
+   It also moved something nobody was aiming at: the `release=` filter fell from
+   11 852 blocks to ~2 500, because an ordered outer scan lets the `EXISTS`
+   semi-join stop once the page is full rather than testing every issue. That is a
+   4x improvement to a query this change was not about, and it is still #127 — the
+   `EXISTS` is still unbounded and `event(release)` still has no index.
+
+   The project-scoped pair needed a different guard, and the first attempt at one
+   was **wrong in a way worth recording**: it asserted only that no `Sort` ran,
+   which passed with both project-scoped indexes dropped, because Postgres will
+   walk the *global* `(last_seen, id)` index and apply `project_id` as a filter —
+   ordered, sort-free, and precisely the plan those indexes exist to avoid. "Some
+   index was used" cannot fail when a redundant index is added; only "*this* index
+   was used" can. `projectScopedOrderingsWalkTheirOwnIndex` now names the index it
+   expects, which is what `PlanFacts.indexesUsed` was added for.
+
+   Two mechanics behind that guard. It prices out the **sort**, not the scan:
+   disabling sequential scans alone just moves Postgres onto a bitmap scan of the
+   `(project_id, fingerprint)` unique index, which returns rows in heap order and
+   sorts them anyway. And it asserts the named index *and* the absence of a `Sort`,
+   since a bitmap scan of the right index would satisfy the first alone. What it
+   deliberately does not assert is that this is the plan chosen today — with half
+   of 200 issues in the seeded project the planner rightly scans and quicksorts
+   fifty rows, and *whether the crossover has been passed* is a question about
+   dataset size, which belongs to the benchmark tier.
 
 7. **The issue-list knee is between 8 and 16 requests/s.** p50 drifts from ~785 ms
    to 1 022 ms across 1/s through 8/s, then jumps to 7 025 ms at 16/s — the same
