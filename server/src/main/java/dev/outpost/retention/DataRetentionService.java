@@ -206,7 +206,7 @@ public class DataRetentionService {
 				FROM event e
 				JOIN retention_affected_issue affected ON affected.issue_id = e.issue_id
 				JOIN issue i ON i.id = e.issue_id
-				WHERE e.release IS NOT NULL
+				WHERE e.release IS NOT NULL AND btrim(e.release) <> ''
 				GROUP BY e.issue_id, e.release
 				""").update();
 

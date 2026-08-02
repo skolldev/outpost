@@ -85,15 +85,6 @@ class IssueQueryPerformanceTest {
 	 */
 	private static final long MAX_USERS_AFFECTED_BLOCKS = MAX_SPARKLINE_BLOCKS;
 
-	/**
-	 * The target for the release filter (#127), derived from the environment filter:
-	 * the same "which issues have signal X" question answered against a rollup costs
-	 * ~133 blocks, so 10x that is the class the release filter belongs in. The
-	 * release rollup costs ~217 blocks, down from ~2 200–2 800 against the unbounded
-	 * {@code event} semi-join (and ~11 850 before #126).
-	 */
-	private static final long MAX_RELEASE_FILTER_BLOCKS = 1_320;
-
 	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
 	private static final int DEEP_PAGE_TOLERANCE = 4;
 
@@ -286,16 +277,24 @@ class IssueQueryPerformanceTest {
 	 * Release and environment filtering ask the same question — whether an Issue has
 	 * Events carrying one value — and both answer it from low-volume rollups rather
 	 * than reading the partitioned {@code event} table.
+	 *
+	 * <p>Plan shape, no buffer ceiling, for the reason the list query has none: now
+	 * that this reads only {@code issue} and {@code issue_release_stats}, every
+	 * ceiling that clears the healthy plan (~217 blocks) already sits above the ~30
+	 * a full scan of both tables costs, and a ceiling above the scan cannot fail.
+	 * The ceiling this guard carried while it was {@code @Disabled} was the healthy
+	 * <em>target</em> (10x the environment filter, per {@link QueryGuard}); with the
+	 * target met, the honest guard is the one below. Validating that ceiling against
+	 * {@code event} would have been vacuous twice over — the assertion on the next
+	 * line is that {@code event} is never read at all.
 	 */
 	@Test
 	void releaseFilterCostsWhatTheEnvironmentFilterCosts() {
 		PlanFacts facts = QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null)
 			.explain(jdbc);
 
-		QueryGuard.assertUnderCeiling(facts, MAX_RELEASE_FILTER_BLOCKS, "the issue-list release filter");
 		assertThat(facts.relationsScanned()).as("relations read by the issue-list release filter%n%s", facts.plan())
 			.noneMatch(relation -> relation.startsWith("event"));
-		QueryGuard.assertCeilingCanFail(jdbc, MAX_RELEASE_FILTER_BLOCKS, "event");
 	}
 
 	/** Environment filtering goes through {@code issue_env_stats}, so it must not touch {@code event} at all. */
