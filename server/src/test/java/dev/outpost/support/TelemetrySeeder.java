@@ -220,7 +220,7 @@ public final class TelemetrySeeder {
 	 */
 	public void clear() {
 		jdbc.sql("""
-				TRUNCATE event, log_record, txn, span, issue_env_stats, issue,
+				TRUNCATE event, log_record, txn, span, issue_env_stats, issue_release_stats, issue,
 				         uptime_check, uptime_incident, uptime_monitor,
 				         release, environment, project_key, project CASCADE
 				""").update();
@@ -493,9 +493,12 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * Issue counters and per-environment stats, derived from the events in a single
-	 * pass. {@code last_seen} and {@code event_count} are the issue list's sort
-	 * keys, so inventing them would page over an order the data does not have.
+	 * Issue counters and per-environment/release stats, derived from the Events in
+	 * two passes. Environment stats share the issue-counter aggregate; release stats
+	 * need a different grouping.
+	 *
+	 * <p>{@code last_seen} and {@code event_count} are the Issue list's sort keys,
+	 * so inventing them would page over an order the data does not have.
 	 */
 	private void rollUpIssueCounters() {
 		jdbc.sql("""
@@ -513,11 +516,18 @@ public final class TelemetrySeeder {
 				      FROM agg GROUP BY issue_id) t
 				WHERE i.id = t.issue_id
 				""").update();
+		jdbc.sql("""
+				INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
+				SELECT issue_id, release, count(*), max("timestamp")
+				FROM event
+				WHERE release IS NOT NULL
+				GROUP BY issue_id, release
+				""").update();
 	}
 
 	private void analyze() {
 		jdbc.sql("VACUUM ANALYZE " + String.join(", ", PartitionManager.TABLES)
-				+ ", issue, issue_env_stats, release, uptime_check").update();
+				+ ", issue, issue_env_stats, issue_release_stats, release, uptime_check").update();
 	}
 
 	// ----------------------------------------------------------------- helpers

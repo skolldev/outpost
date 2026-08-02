@@ -212,6 +212,10 @@ class DataRetentionIntegrationTest {
 			.param(survivingIssue)
 			.param(timestamp(before))
 			.update();
+		jdbc.sql("INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen) VALUES (?, 'shop@1.0.0', 99, ?)")
+			.param(survivingIssue)
+			.param(timestamp(before))
+			.update();
 
 		insertLog(projectId, before, "before");
 		insertLog(projectId, at, "at");
@@ -282,6 +286,8 @@ class DataRetentionIntegrationTest {
 		assertThat(envStats).containsExactly(
 				Map.of("environment", "prod", "event_count", 1L, "last_seen", at),
 				Map.of("environment", "staging", "event_count", 1L, "last_seen", after));
+		assertThat(jdbc.sql("SELECT event_count FROM issue_release_stats WHERE issue_id = ? AND release = 'shop@1.0.0'")
+			.param(survivingIssue).query(Long.class).single()).isEqualTo(2);
 
 		for (String table : List.of("project", "project_key", "environment", "release", "app_user", "api_token",
 				"uptime_monitor", "artifact_bundle", "artifact_bundle_release", "artifact")) {
@@ -614,8 +620,8 @@ class DataRetentionIntegrationTest {
 
 	private void insertEvent(long projectId, long issueId, Instant timestamp, String environment, String level) {
 		jdbc.sql("""
-				INSERT INTO event (id, project_id, issue_id, environment, "timestamp", level, data)
-				VALUES (?, ?, ?, ?, ?, ?, '{}'::jsonb)
+				INSERT INTO event (id, project_id, issue_id, environment, release, "timestamp", level, data)
+				VALUES (?, ?, ?, ?, 'shop@1.0.0', ?, ?, '{}'::jsonb)
 				""").param(UUID.randomUUID()).param(projectId).param(issueId).param(environment)
 			.param(timestamp(timestamp)).param(level)
 			.update();

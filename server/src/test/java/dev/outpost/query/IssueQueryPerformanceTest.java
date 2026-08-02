@@ -30,7 +30,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@link QueryPlans} — never a copy, which would keep passing after the real
  * query regressed — and asserts on logical I/O and plan shape only. No wall
  * clock. {@link QueryGuard} documents how the ceilings are calibrated and why
- * two of these are {@code @Disabled}.
+ * one of these is {@code @Disabled}.
  *
  * <p><b>The list guards send what the UI sends.</b> Every real page load carries a
  * status and a time range, because both are defaults the user never has to pick —
@@ -88,12 +88,9 @@ class IssueQueryPerformanceTest {
 	/**
 	 * The target for the release filter (#127), derived from the environment filter:
 	 * the same "which issues have signal X" question answered against a rollup costs
-	 * ~133 blocks, so 10x that is the class the release filter belongs in. Today it
-	 * costs ~2 200–2 800, down from ~11 850 before #126: an ordered index on the
-	 * outer scan lets the semi-join stop once the page is full instead of testing
-	 * every issue. Closer, but still the wrong order of magnitude, and still #127 —
-	 * the {@code EXISTS} remains unbounded and {@code event(release)} still has no
-	 * index. The range is the seeder's randomized per-release event spread.
+	 * ~133 blocks, so 10x that is the class the release filter belongs in. The
+	 * release rollup costs ~217 blocks, down from ~2 200–2 800 against the unbounded
+	 * {@code event} semi-join (and ~11 850 before #126).
 	 */
 	private static final long MAX_RELEASE_FILTER_BLOCKS = 1_320;
 
@@ -286,19 +283,18 @@ class IssueQueryPerformanceTest {
 	// ----------------------------------------------------------------- filters
 
 	/**
-	 * The release filter is {@code EXISTS (SELECT 1 FROM event e WHERE e.issue_id =
-	 * issue.id AND e.release = ?)} — unbounded, and with no {@code event(release)}
-	 * index to serve it. The environment filter is the same question answered
-	 * against the {@code issue_env_stats} rollup, and it is two orders of magnitude
-	 * cheaper; that gap is the finding.
+	 * Release and environment filtering ask the same question — whether an Issue has
+	 * Events carrying one value — and both answer it from low-volume rollups rather
+	 * than reading the partitioned {@code event} table.
 	 */
 	@Test
-	@Disabled("#127 — no event(release) index and no time bound on the issue release filter")
 	void releaseFilterCostsWhatTheEnvironmentFilterCosts() {
 		PlanFacts facts = QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null)
 			.explain(jdbc);
 
 		QueryGuard.assertUnderCeiling(facts, MAX_RELEASE_FILTER_BLOCKS, "the issue-list release filter");
+		assertThat(facts.relationsScanned()).as("relations read by the issue-list release filter%n%s", facts.plan())
+			.noneMatch(relation -> relation.startsWith("event"));
 		QueryGuard.assertCeilingCanFail(jdbc, MAX_RELEASE_FILTER_BLOCKS, "event");
 	}
 

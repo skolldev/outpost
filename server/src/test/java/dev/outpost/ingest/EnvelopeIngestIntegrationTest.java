@@ -103,6 +103,9 @@ class EnvelopeIngestIntegrationTest {
 		assertThat(devIssues).hasSize(1);
 		assertThat(devIssues.get(0).get("title")).asString().startsWith("IllegalStateException");
 
+		// Release filter: both JavaScript Issues carry this Release; the Java one does not.
+		assertThat(getIssues("&release=demo-frontend@1.0.0")).hasSize(2);
+
 		// Issue detail + events + event payload round-trip.
 		long issueId = ((Number) grouped.get("id")).longValue();
 		Map<String, Object> detail = getJson("/api/internal/issues/" + issueId);

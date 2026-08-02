@@ -186,7 +186,7 @@ are structural and will.**
 | Issue list, Resolved tab | 30 | — | scans at guard scale by choice; see finding 6 |
 | Issue list, deep cursor | 30 | — | O(page) holds |
 | Issue list, `environment=` | 85 | — | healthy — answered from the rollup |
-| Issue list, `release=` | **2 087** | 6 of 10 | #127 — was 11 852 before #126 |
+| Issue list, `release=` | 217 | — | healthy — answered from the rollup; was 2 087 (#127) |
 | Sparkline (14-day bound) | 9 470 | 5 of 10 | prunes correctly |
 | Users affected (unbounded) | **20 041** | **10 of 10** | #131 |
 | Log page 1 | **8 804** | **10 of 10** | #128 — costs more than a full scan |
@@ -308,8 +308,10 @@ Issue-list saturation ladder, same dataset:
    It also moved something nobody was aiming at: the `release=` filter fell from
    11 852 blocks to ~2 500, because an ordered outer scan lets the `EXISTS`
    semi-join stop once the page is full rather than testing every issue. That is a
-   4x improvement to a query this change was not about, and it is still #127 — the
-   `EXISTS` is still unbounded and `event(release)` still has no index.
+   4x improvement to a query this change was not about, but it was still #127 — the
+   `EXISTS` remained unbounded and `event(release)` still had no index. Issue #127
+   subsequently moved that lookup to `issue_release_stats`; it now costs 217 blocks
+   and does not touch `event`.
 
    **The first version of this fix indexed a query the product never sends, and it
    is the mistake most worth keeping written down.** The guards called

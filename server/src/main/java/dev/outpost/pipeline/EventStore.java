@@ -170,6 +170,15 @@ public class EventStore {
 					    event_count = issue_env_stats.event_count + 1,
 					    last_seen = GREATEST(issue_env_stats.last_seen, EXCLUDED.last_seen)
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
+			if (event.release() != null) {
+				jdbc.update("""
+						INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
+						VALUES (?, ?, 1, ?)
+						ON CONFLICT (issue_id, release) DO UPDATE SET
+						    event_count = issue_release_stats.event_count + 1,
+						    last_seen = GREATEST(issue_release_stats.last_seen, EXCLUDED.last_seen)
+						""", issueId, event.release(), Timestamp.from(event.timestamp()));
+			}
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
 					event.exceptionType(), event.userIdent(), json(event), event.rawGzip(),
