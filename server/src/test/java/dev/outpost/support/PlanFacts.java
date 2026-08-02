@@ -32,12 +32,19 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * runtime pruning still appears in the plan with {@code "Actual Loops": 0}.
  * Counting it would make the pruning assertion vacuous, and it read nothing.
  * </ul>
+ *
+ * <p>{@link #indexesUsed} names the indexes rather than only recording that some
+ * index was read, because "an index was used" and "<em>this</em> index was used"
+ * are different assertions and only the second one can fail when a redundant
+ * index is added. It covers ordered, index-only, and bitmap index scans alike —
+ * pair it with {@link #ran} when the distinction matters.
  */
 public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, long tempWrittenBlocks,
-		Set<String> relationsScanned, Set<String> sequentiallyScanned, Set<String> nodeTypes, String plan) {
+		Set<String> relationsScanned, Set<String> sequentiallyScanned, Set<String> indexesUsed, Set<String> nodeTypes,
+		String plan) {
 
 	/** The identity for {@link #merge}: a scenario whose plan facts are not yet known. */
-	public static final PlanFacts NONE = new PlanFacts(0, 0, 0, 0, Set.of(), Set.of(), Set.of(), "");
+	public static final PlanFacts NONE = new PlanFacts(0, 0, 0, 0, Set.of(), Set.of(), Set.of(), Set.of(), "");
 
 	private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -71,11 +78,13 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 		relations.addAll(other.relationsScanned());
 		Set<String> sequential = new TreeSet<>(sequentiallyScanned);
 		sequential.addAll(other.sequentiallyScanned());
+		Set<String> indexes = new TreeSet<>(indexesUsed);
+		indexes.addAll(other.indexesUsed());
 		Set<String> nodes = new TreeSet<>(nodeTypes);
 		nodes.addAll(other.nodeTypes());
 		return new PlanFacts(sharedHits + other.sharedHits(), sharedReads + other.sharedReads(),
 				tempReadBlocks + other.tempReadBlocks(), tempWrittenBlocks + other.tempWrittenBlocks(), relations,
-				sequential, nodes, plan.isEmpty() ? other.plan() : plan + "\n" + other.plan());
+				sequential, indexes, nodes, plan.isEmpty() ? other.plan() : plan + "\n" + other.plan());
 	}
 
 	/** Whether the executor ran a node of this type, e.g. {@code "Sort"} or {@code "Seq Scan"}. */
@@ -140,6 +149,8 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 
 		private final Set<String> sequential = new LinkedHashSet<>();
 
+		private final Set<String> indexes = new LinkedHashSet<>();
+
 		private final Set<String> nodes = new LinkedHashSet<>();
 
 		Accumulator(String plan) {
@@ -153,6 +164,7 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 			addBuffers(node);
 			String nodeType = text(node, "Node Type");
 			JsonNode relation = node.get("Relation Name");
+			JsonNode index = node.get("Index Name");
 			if (executed(node)) {
 				if (nodeType != null) {
 					nodes.add(nodeType);
@@ -162,6 +174,9 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 					if ("Seq Scan".equals(nodeType)) {
 						sequential.add(relation.asString());
 					}
+				}
+				if (index != null) {
+					indexes.add(index.asString());
 				}
 			}
 			JsonNode children = node.get("Plans");
@@ -203,7 +218,7 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 
 		PlanFacts toFacts() {
 			return new PlanFacts(sharedHits, sharedReads, tempReadBlocks, tempWrittenBlocks, new TreeSet<>(relations),
-					new TreeSet<>(sequential), new TreeSet<>(nodes), plan);
+					new TreeSet<>(sequential), new TreeSet<>(indexes), new TreeSet<>(nodes), plan);
 		}
 
 	}
