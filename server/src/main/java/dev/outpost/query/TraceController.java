@@ -153,10 +153,6 @@ public class TraceController {
 	}
 
 	/**
-	 * Everything sharing a trace_id across all projects, in one payload. Fanning out
-	 * per table beats one mega-join here — each already has a trace_id index.
-	 */
-	/**
 	 * The four fan-out statements, named rather than inlined so a guard can
 	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. None of
 	 * them carries a time predicate, so each probes every partition of its table.
@@ -190,6 +186,10 @@ public class TraceController {
 		return List.of(TRANSACTIONS_BY_TRACE, SPANS_BY_TRACE, EVENTS_BY_TRACE, LOGS_BY_TRACE);
 	}
 
+	/**
+	 * Everything sharing a trace_id across all projects, in one payload. Fanning out
+	 * per table beats one mega-join here — each already has a trace_id index.
+	 */
 	@GetMapping("/traces/{trace_id}")
 	public ResponseEntity<Map<String, Object>> trace(@PathVariable("trace_id") String traceId) {
 		List<Map<String, Object>> transactions = jdbc.query(TRANSACTIONS_BY_TRACE, (rs, i) -> {

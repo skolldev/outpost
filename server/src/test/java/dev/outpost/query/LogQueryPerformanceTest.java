@@ -132,7 +132,7 @@ class LogQueryPerformanceTest {
 	@Test
 	void timeBoundedQueryPrunesToItsWindow() {
 		Instant since = windowStart();
-		PlanFacts facts = boundedLogs(null, null).explain(jdbc);
+		PlanFacts facts = boundedLogs(since, null, null).explain(jdbc);
 
 		QueryGuard.assertPrunesFrom(jdbc, facts, "log_record", since, "a 14-day-bounded log query");
 		QueryGuard.assertNoTempFiles(facts, "a 14-day-bounded log query");
@@ -152,16 +152,18 @@ class LogQueryPerformanceTest {
 	@Test
 	@Disabled("#132 — attributes->>? = ? cannot use the attributes GIN index")
 	void attributeFilterMakesTheQueryCheaper() {
-		assertSelectiveFilterPaysForItself(
-				boundedLogs(null, List.of(seeded.attributeKey() + "=" + seeded.attributeValue())),
+		Instant since = windowStart();
+		assertSelectiveFilterPaysForItself(since,
+				boundedLogs(since, null, List.of(seeded.attributeKey() + "=" + seeded.attributeValue())),
 				"the attribute-equality filter");
 	}
 
 	/** Presence filtering goes through {@code jsonb_exists}, which the GIN index does serve. */
 	@Test
 	void attributePresenceFilterStaysWithinTheUnfilteredCost() {
-		long unfiltered = boundedLogs(null, null).explain(jdbc).logicalIo();
-		PlanFacts facts = boundedLogs(null, List.of(seeded.attributeKey())).explain(jdbc);
+		Instant since = windowStart();
+		long unfiltered = boundedLogs(since, null, null).explain(jdbc).logicalIo();
+		PlanFacts facts = boundedLogs(since, null, List.of(seeded.attributeKey())).explain(jdbc);
 
 		assertThat(facts.logicalIo())
 			.as("blocks for an attribute-presence filter against the %d an unfiltered page costs%n%s", unfiltered,
@@ -175,8 +177,8 @@ class LogQueryPerformanceTest {
 	 * Both queries are time-bounded so partition pruning is held constant and the
 	 * only difference between them is the predicate under test.
 	 */
-	private void assertSelectiveFilterPaysForItself(QueryPlans.Built filtered, String what) {
-		long unfiltered = boundedLogs(null, null).explain(jdbc).logicalIo();
+	private void assertSelectiveFilterPaysForItself(Instant since, QueryPlans.Built filtered, String what) {
+		long unfiltered = boundedLogs(since, null, null).explain(jdbc).logicalIo();
 		PlanFacts facts = filtered.explain(jdbc);
 
 		assertThat(facts.logicalIo())
@@ -194,8 +196,14 @@ class LogQueryPerformanceTest {
 		return QueryPlans.logs(null, null, null, null, null, null, null, null, null, null);
 	}
 
-	private QueryPlans.Built boundedLogs(String query, List<String> attr) {
-		return QueryPlans.logs(null, null, null, null, null, query, attr, windowStart(), null, null);
+	/**
+	 * The bound is passed in rather than recomputed per call: two
+	 * {@link #windowStart()} evaluations either side of a Monday would bound the
+	 * query by one week and assert pruning against another, and the guard would
+	 * flake for a reason that has nothing to do with the query.
+	 */
+	private QueryPlans.Built boundedLogs(Instant since, String query, List<String> attr) {
+		return QueryPlans.logs(null, null, null, null, null, query, attr, since, null, null);
 	}
 
 }

@@ -14,7 +14,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -141,9 +140,6 @@ class RetrievalBenchmark {
 
 	private static final int DEEP_TRACE_PAGE = 20;
 
-	/** Matches {@code IssueController}'s sparkline window, so the aggregate plan is the real one. */
-	private static final int SPARKLINE_DAYS = 14;
-
 	/**
 	 * A page whose size the endpoint does not promise. Page 1 of an unfiltered list
 	 * is always full and asserting that catches a broken {@code LIMIT}; a filtered
@@ -216,24 +212,19 @@ class RetrievalBenchmark {
 	@Order(1)
 	void issueList() throws Exception {
 		measure("issues", "page 1", "/issues", "issues", ISSUE_PAGE_SIZE,
-				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null),
-						"last_seen", null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null)));
 		measure("issues", "sort=count", "/issues?sort=count", "issues", ISSUE_PAGE_SIZE,
-				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "count", null), "count",
-						null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "count", null)));
 		measure("issues", "query=", "/issues?query=order", "issues", ANY_SIZE,
-				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, "order", "last_seen", null),
-						"last_seen", null));
-		measure("issues", "release=", "/issues?release=" + seeded.release(), "issues", ANY_SIZE,
-				issuePagePlan(
-						QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null),
-						"last_seen", null));
+				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, "order", "last_seen", null)));
+		measure("issues", "release=", "/issues?release=" + seeded.release(), "issues", ANY_SIZE, issuePagePlan(
+				QueryPlans.issueList(null, null, null, seeded.release(), null, null, null, "last_seen", null)));
 		measure("issues", "environment=", "/issues?environment=" + seeded.environment(), "issues", ANY_SIZE,
 				issuePagePlan(QueryPlans.issueList(null, List.of(seeded.environment()), null, null, null, null, null,
-						"last_seen", null), "last_seen", null));
+						"last_seen", null)));
 		measure("issues", "project=", "/issues?project=" + seeded.projectId(), "issues", ANY_SIZE,
 				issuePagePlan(QueryPlans.issueList(List.of(seeded.projectId()), null, null, null, null, null, null,
-						"last_seen", null), "last_seen", null));
+						"last_seen", null)));
 	}
 
 	/**
@@ -242,21 +233,30 @@ class RetrievalBenchmark {
 	 * list query's plan next to the whole page's latency would put 558 blocks beside
 	 * half a second and make the machine look slow — the aggregates are where the
 	 * time goes, and the columns have to say so.
+	 *
+	 * <p>The ids come from {@code list} itself, not from an unfiltered stand-in: a
+	 * filtered scenario returns different issues, and pairing its latency with the
+	 * aggregate cost of somebody else's page would be a plan for a query the run
+	 * never made. The window comes from the controller for the same reason — see
+	 * {@link QueryPlans#sparklineSince()}.
 	 */
-	private PlanFacts issuePagePlan(QueryPlans.Built list, String sort, String cursor) {
-		List<Long> ids = QueryPlans.issueIdsOnPage(jdbc, sort, cursor);
-		Instant since = Instant.now().minus(SPARKLINE_DAYS, ChronoUnit.DAYS);
-		return sum(List.of(list, QueryPlans.sparkline(ids, since), QueryPlans.usersAffected(ids)));
+	private PlanFacts issuePagePlan(QueryPlans.Built list) {
+		List<Long> ids = QueryPlans.issueIdsOnPage(jdbc, list);
+		// The aggregates take an IN list, so an empty page has no plan to report — and
+		// a scenario matching no issues is not measuring anything either way.
+		assertThat(ids).as("issues matched by the scenario's own list query").isNotEmpty();
+		return sum(List.of(list, QueryPlans.sparkline(ids, QueryPlans.sparklineSince()), QueryPlans.usersAffected(ids),
+				QueryPlans.environmentRollup(ids)));
 	}
 
 	/** The direct test of {@code KeysetPage}'s O(page) claim against the missing sort indexes. */
 	@Test
 	@Order(2)
 	void issueDeepPagination() throws Exception {
-		Walk walk = walk("/issues", "issues", ISSUE_PAGE_SIZE, DEEP_ISSUE_PAGE);
-		measure("issues", "page " + walk.depth(), "/issues?cursor=" + walk.cursor(), "issues", ISSUE_PAGE_SIZE,
-				issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen",
-						walk.cursor()), "last_seen", walk.cursor()));
+		CursorWalk walk = walk("/issues", "issues", DEEP_ISSUE_PAGE);
+		measure("issues", "page " + walk.depth(), "/issues?cursor=" + walk.cursor(), "issues",
+				pageSizeReached(walk, ISSUE_PAGE_SIZE), issuePagePlan(
+						QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", walk.cursor())));
 	}
 
 	// -------------------------------------------------------------------- logs
@@ -276,8 +276,9 @@ class RetrievalBenchmark {
 
 	@Test
 	void logDeepPagination() throws Exception {
-		Walk walk = walk("/logs", "logs", LOG_PAGE_SIZE, DEEP_LOG_PAGE);
-		measure("logs", "page " + walk.depth(), "/logs?cursor=" + walk.cursor(), "logs", LOG_PAGE_SIZE,
+		CursorWalk walk = walk("/logs", "logs", DEEP_LOG_PAGE);
+		measure("logs", "page " + walk.depth(), "/logs?cursor=" + walk.cursor(), "logs",
+				pageSizeReached(walk, LOG_PAGE_SIZE),
 				QueryPlans.logs(null, null, null, null, null, null, null, null, null, walk.cursor()));
 	}
 
@@ -293,8 +294,9 @@ class RetrievalBenchmark {
 
 	@Test
 	void traceDeepPagination() throws Exception {
-		Walk walk = walk("/traces", "traces", TRACE_PAGE_SIZE, DEEP_TRACE_PAGE);
-		measure("traces", "page " + walk.depth(), "/traces?cursor=" + walk.cursor(), "traces", TRACE_PAGE_SIZE,
+		CursorWalk walk = walk("/traces", "traces", DEEP_TRACE_PAGE);
+		measure("traces", "page " + walk.depth(), "/traces?cursor=" + walk.cursor(), "traces",
+				pageSizeReached(walk, TRACE_PAGE_SIZE),
 				QueryPlans.traceSearch(null, null, null, null, null, null, null, null, null, walk.cursor()));
 	}
 
@@ -302,7 +304,7 @@ class RetrievalBenchmark {
 	@Test
 	void traceDetail() throws Exception {
 		measure("trace detail", "4-table fan-out", "/traces/" + seeded.traceId(), "transactions", ANY_SIZE,
-				sum(QueryPlans.traceDetail(seeded.traceId())));
+				sum(QueryPlans.traceDetail(seeded.traceId())), "spans", "errors", "logs");
 	}
 
 	// ------------------------------------------------------------------- pages
@@ -326,7 +328,9 @@ class RetrievalBenchmark {
 	@Test
 	@Order(Integer.MAX_VALUE)
 	void issueListSaturationLadder() throws Exception {
-		QueryPlans.Built plan = QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null);
+		// The whole page load, as every other issue row reports it — the ladder is
+		// driving /issues, not the list query on its own.
+		PlanFacts plan = issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null));
 		Probe probe = validate("issues saturation", "/issues", "issues", ISSUE_PAGE_SIZE);
 		int base = Math.max(1, (int) Math.round(1000.0 / Math.max(probe.millis(), 1)));
 
@@ -338,7 +342,7 @@ class RetrievalBenchmark {
 			System.out.printf("issue list @ %4d/s → p50 %8.1f ms, p99 %8.1f ms, %d non-200%n", rate, result.p50Millis(),
 					result.p99Millis(), result.offered() - result.status(200));
 			REPORT.add(new RetrievalReport.Row("issues saturation", rate + "/s", result, datasetRows, ISSUE_PAGE_SIZE,
-					plan.explain(jdbc)));
+					plan));
 			quiesce(probe);
 		}
 	}
@@ -368,9 +372,6 @@ class RetrievalBenchmark {
 
 	// ----------------------------------------------------------------- harness
 
-	private record Walk(String cursor, int depth) {
-	}
-
 	/**
 	 * The combined facts of every statement one endpoint issues. Trace detail fans
 	 * out into four and event detail into three; reporting one of them would be a
@@ -394,9 +395,9 @@ class RetrievalBenchmark {
 		measure(scenario, step, path, listKey, expectedRows, plan.explain(jdbc));
 	}
 
-	private void measure(String scenario, String step, String path, String listKey, int expectedRows, PlanFacts plan)
-			throws Exception {
-		Probe probe = validate(scenario + " " + step, path, listKey, expectedRows);
+	private void measure(String scenario, String step, String path, String listKey, int expectedRows, PlanFacts plan,
+			String... alsoNonEmpty) throws Exception {
+		Probe probe = validate(scenario + " " + step, path, listKey, expectedRows, alsoNonEmpty);
 		if (probe.millis() > DRIVABLE_MILLIS) {
 			System.out.printf("%-14s %-18s TOO SLOW TO DRIVE — one request took %d ms; reporting that sample alone%n",
 					scenario, step, probe.millis());
@@ -435,63 +436,79 @@ class RetrievalBenchmark {
 		}
 	}
 
-	private Probe validate(String what, String path, String listKey, int expectedRows) throws Exception {
+	/**
+	 * One unhurried request, checked before it is timed.
+	 *
+	 * <p>{@code alsoNonEmpty} names the other lists a response has to have filled
+	 * in. Trace detail fans out into four, and a run where three of them came back
+	 * empty would measure three queries finding nothing and report it as the cost of
+	 * a trace — the seeder plants a trace with guaranteed fan-out precisely so that
+	 * cannot pass quietly. A body that is a bare array is held to the same bar; the
+	 * releases page returns one, and an empty releases page is fast and meaningless.
+	 */
+	private Probe validate(String what, String path, String listKey, int expectedRows, String... alsoNonEmpty)
+			throws Exception {
 		long startedAt = System.nanoTime();
 		HttpResponse<String> response = http.send(probeRequest(path), HttpResponse.BodyHandlers.ofString());
 		long millis = (System.nanoTime() - startedAt) / 1_000_000;
 		assertThat(response.statusCode()).as("status for %s", what).isEqualTo(200);
 
 		JsonNode body = mapper.readTree(response.body());
-		if (listKey == null) {
-			return new Probe(body.isArray() ? body.size() : 1, millis);
+		for (String key : alsoNonEmpty) {
+			assertNonEmptyList(body, key, what);
 		}
-		JsonNode list = body.get(listKey);
-		assertThat(list).as("`%s` in the response for %s", listKey, what).isNotNull();
-		assertThat(list.size()).as("rows returned by %s — an empty page is fast and meaningless", what).isPositive();
+		if (listKey == null) {
+			if (!body.isArray()) {
+				return new Probe(1, millis);
+			}
+			assertThat(body.size()).as("rows returned by %s — an empty page is fast and meaningless", what).isPositive();
+			return new Probe(body.size(), millis);
+		}
+		JsonNode list = assertNonEmptyList(body, listKey, what);
 		if (expectedRows != ANY_SIZE) {
 			assertThat(list.size()).as("page size for %s", what).isEqualTo(expectedRows);
 		}
 		return new Probe(list.size(), millis);
 	}
 
+	private static JsonNode assertNonEmptyList(JsonNode body, String listKey, String what) {
+		JsonNode list = body.get(listKey);
+		assertThat(list).as("`%s` in the response for %s", listKey, what).isNotNull();
+		assertThat(list.size()).as("`%s` rows returned by %s — an empty page is fast and meaningless", listKey, what)
+			.isPositive();
+		return list;
+	}
+
 	/**
-	 * Pages forward to {@code target}, checking as it goes that adjacent pages share
-	 * no row id. Stops early when the data runs out and reports the depth it
-	 * reached, so a smoke run at {@code -Pbench.scale=0.1} measures a genuinely deep
-	 * page for its dataset rather than failing or silently measuring page 3.
+	 * Walks {@code path} to page {@code target} over real HTTP. The arithmetic lives
+	 * in {@link CursorWalk}, which is unit-tested; this supplies the transport.
 	 */
-	private Walk walk(String path, String listKey, int pageSize, int target) throws Exception {
-		String cursor = null;
-		List<String> previousIds = List.of();
-		int depth = 1;
-		for (; depth < target; depth++) {
+	private CursorWalk walk(String path, String listKey, int target) throws Exception {
+		CursorWalk walk = CursorWalk.to(target, cursor -> {
 			String url = cursor == null ? path : path + "?cursor=" + cursor;
 			HttpResponse<String> response = http.send(probeRequest(url), HttpResponse.BodyHandlers.ofString());
-			assertThat(response.statusCode()).as("status walking %s to page %d", path, depth).isEqualTo(200);
+			assertThat(response.statusCode()).as("status walking %s", path).isEqualTo(200);
 
 			JsonNode body = mapper.readTree(response.body());
-			List<String> ids = idsOf(body.get(listKey));
-			PageWalk walk = PageWalk.inspect(previousIds, ids);
-			assertThat(walk.advanced()).as("page %d of %s: %s", depth, path, walk.describe()).isTrue();
-
 			JsonNode next = body.get("next_cursor");
-			if (next == null || next.isNull()) {
-				break;
-			}
-			cursor = next.asString();
-			previousIds = ids;
+			return new CursorWalk.Page(idsOf(body.get(listKey)),
+					next == null || next.isNull() ? null : next.asString());
+		});
+		if (walk.depth() < target) {
+			System.out.printf("note: %s ran out of rows at page %d of a requested %d%n", path, walk.depth(), target);
 		}
-		// Two is the floor at which this measured anything: the scenario is not page 1,
-		// and the overlap comparison above ran at least once. A -Pbench.scale smoke run
-		// legitimately lands here; a full run reaches `target`, and the step label in
-		// the report says which, so a shallow walk cannot be mistaken for a deep one.
-		assertThat(depth).as("pages available under %s — a deep-pagination scenario needs somewhere to go", path)
-			.isGreaterThanOrEqualTo(2);
-		if (depth < target) {
-			System.out.printf("note: %s ran out of rows at page %d of a requested %d%n", path, depth, target);
-		}
-		System.out.printf("walked %s to page %d (page size %d)%n", path, depth, pageSize);
-		return new Walk(cursor, depth);
+		System.out.printf("walked %s to page %d%n", path, walk.depth());
+		return walk;
+	}
+
+	/**
+	 * The page size to hold a walked page to. A walk that ran out of rows ends on
+	 * the dataset's last page, which is legitimately short — asserting a full page
+	 * there would fail a smoke run for having less data, which is the one thing a
+	 * smoke run is meant to have.
+	 */
+	private static int pageSizeReached(CursorWalk walk, int pageSize) {
+		return walk.pageIsFull() ? pageSize : ANY_SIZE;
 	}
 
 	private static List<String> idsOf(JsonNode list) {

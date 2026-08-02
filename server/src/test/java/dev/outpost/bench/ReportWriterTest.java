@@ -77,6 +77,17 @@ class ReportWriterTest {
 		assertThat(ReportWriter.quote("a\"b\\c")).isEqualTo("\"a\\\"b\\\\c\"");
 	}
 
+	/**
+	 * Condition values come from Postgres settings and scenario labels from
+	 * callers. One raw newline in either produces a report no JSON reader can
+	 * open, which is the failure this class exists to prevent.
+	 */
+	@Test
+	void escapesControlCharactersToo() {
+		assertThat(ReportWriter.quote("a\nb\tc\rd")).isEqualTo("\"a\\nb\\tc\\rd\"");
+		assertThat(ReportWriter.quote("a" + (char) 1 + "b")).isEqualTo("\"a\\u0001b\"");
+	}
+
 	/** The two reports must not write over each other's files. */
 	@Test
 	void keepsEachBenchmarksReportsInItsOwnDirectory() {

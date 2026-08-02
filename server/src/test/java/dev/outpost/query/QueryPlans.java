@@ -74,13 +74,27 @@ public final class QueryPlans {
 		return Built.of(IssueController.buildUsersAffectedQuery(issueIds));
 	}
 
-	/** The ids the issue list's aggregates would be handed for a given page. */
-	public static List<Long> issueIdsOnPage(JdbcClient jdbc, String sort, String cursor) {
-		return issueList(null, null, null, null, null, null, null, sort, cursor).rows(jdbc)
-			.stream()
-			.map(row -> (Long) row.get("id"))
-			.limit(IssueController.pageSize())
-			.toList();
+	public static Built environmentRollup(List<Long> issueIds) {
+		return Built.of(IssueController.buildEnvironmentRollupQuery(issueIds));
+	}
+
+	/**
+	 * The window the sparkline is bound by, from the controller that owns it. Read
+	 * rather than recomputed: it is the bind parameter that decides which partitions
+	 * the aggregate reads, so a caller with its own copy would {@code EXPLAIN} a
+	 * plan the controller never runs.
+	 */
+	public static Instant sparklineSince() {
+		return IssueController.sparklineSince();
+	}
+
+	/**
+	 * The ids the aggregates would be handed for a page of {@code list} — the same
+	 * query, not an unfiltered stand-in. A filtered list returns different issues,
+	 * and its aggregates are only comparable to its own page.
+	 */
+	public static List<Long> issueIdsOnPage(JdbcClient jdbc, Built list) {
+		return list.rows(jdbc).stream().map(row -> (Long) row.get("id")).limit(IssueController.pageSize()).toList();
 	}
 
 	/** Walks real cursors to page {@code pages}, returning the cursor that opens it. */

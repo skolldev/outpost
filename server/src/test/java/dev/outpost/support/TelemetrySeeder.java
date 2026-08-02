@@ -43,7 +43,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * so the partition count is production-shaped rather than one week deep.
  * <li><b>{@code data} is ~1 KB of synthetic jsonb</b>, so heap fetches and TOAST
  * behave like they do against real payloads. It is not a real Sentry event — read
- * it as a size, not as a fixture.
+ * it as a size, not as a fixture. Spans get a smaller (~250 B) payload of their
+ * own: a database span carries a statement and a few attributes, not a stack
+ * trace, and there are three spans per transaction — giving them the event
+ * payload would add gigabytes to the seed to model something no span has.
+ * Empty is the one thing they must not be, or every span row is free.
  * <li><b>{@code trace_id}s are drawn from one pool shared by all four tables</b>,
  * so the trace-detail fan-out has real work to do in each.
  * <li><b>Issue counters are derived from the events</b>, not invented, because
@@ -398,7 +402,7 @@ public final class TelemetrySeeder {
 				       lpad(to_hex(floor(random() * 9007199254740991)::bigint), 16, '0'),
 				       i.span_id, 'db.sql.query', 'SELECT * FROM orders WHERE id = $1',
 				       i.start_ts + make_interval(secs => s * 0.005),
-				       i.start_ts + make_interval(secs => s * 0.005 + 0.04), 40, 'ok', '{}'::jsonb
+				       i.start_ts + make_interval(secs => s * 0.005 + 0.04), 40, 'ok', ?::jsonb
 				FROM inserted i CROSS JOIN generate_series(1, ?) s
 				""".formatted(projectArray(projectIds), projectIds.size(), environmentArray(), ENVIRONMENTS.size(),
 				rowVariables("""
@@ -410,6 +414,7 @@ public final class TelemetrySeeder {
 			.param(scale.windowDays())
 			.param(lo)
 			.param(hi)
+			.param(syntheticSpanPayload())
 			.param(scale.spansPerTxn())
 			.update());
 	}
@@ -428,25 +433,25 @@ public final class TelemetrySeeder {
 				       CASE WHEN g > 1 THEN lpad(to_hex(1), 16, '0') END,
 				       'GET /api/checkout/{id}', 'http.server',
 				       now() - make_interval(hours => g), now() - make_interval(hours => g) + interval '120 ms',
-				       120, 'ok', '{}'::jsonb
+				       120, 'ok', ?::jsonb
 				FROM generate_series(1, 4) g
-				""").param(project).param(KNOWN_TRACE_ID).update();
+				""").param(project).param(KNOWN_TRACE_ID).param(syntheticPayload()).update();
 		jdbc.sql("""
 				INSERT INTO span (id, txn_id, project_id, trace_id, span_id, parent_span_id, op, description,
 				                  start_ts, end_ts, duration_ms, status, data)
 				SELECT gen_random_uuid(), t.id, ?, ?, lpad(to_hex(1000 + s), 16, '0'), t.span_id,
 				       'db.sql.query', 'SELECT * FROM orders WHERE id = $1',
-				       t.start_ts + interval '5 ms', t.start_ts + interval '45 ms', 40, 'ok', '{}'::jsonb
+				       t.start_ts + interval '5 ms', t.start_ts + interval '45 ms', 40, 'ok', ?::jsonb
 				FROM txn t CROSS JOIN generate_series(1, 3) s
 				WHERE t.trace_id = ?
-				""").param(project).param(KNOWN_TRACE_ID).param(KNOWN_TRACE_ID).update();
+				""").param(project).param(KNOWN_TRACE_ID).param(syntheticSpanPayload()).param(KNOWN_TRACE_ID).update();
 		jdbc.sql("""
 				INSERT INTO event (id, project_id, issue_id, environment, release, "timestamp", trace_id, level,
 				                   message, exception_type, user_ident, data)
 				SELECT gen_random_uuid(), ?, ?, 'production', 'app@1.0.0', now() - make_interval(hours => g), ?,
-				       'error', 'Unhandled exception in request', 'IllegalStateException', 'user-1', '{}'::jsonb
+				       'error', 'Unhandled exception in request', 'IllegalStateException', 'user-1', ?::jsonb
 				FROM generate_series(1, 3) g
-				""").param(project).param(issueIdBase).param(KNOWN_TRACE_ID).update();
+				""").param(project).param(issueIdBase).param(KNOWN_TRACE_ID).param(syntheticPayload()).update();
 		jdbc.sql("""
 				INSERT INTO log_record (id, project_id, environment, "timestamp", trace_id, span_id, level,
 				                        severity_number, body, attributes, release)
@@ -564,6 +569,19 @@ public final class TelemetrySeeder {
 	 * real payloads. Synthetic: the shape borrows from a Sentry event, the contents
 	 * are filler.
 	 */
+	/**
+	 * ~250 B of jsonb per span. Deliberately smaller than {@link #syntheticPayload}:
+	 * the shape borrows from an OpenTelemetry database span, which carries a
+	 * statement and a handful of attributes rather than a stack trace.
+	 */
+	private static String syntheticSpanPayload() {
+		return """
+				{"db.system":"postgresql","db.name":"outpost","db.user":"app",\
+				"db.statement":"SELECT o.id, o.total, o.status FROM orders o WHERE o.customer_id = $1 ORDER BY o.created_at DESC LIMIT 50",\
+				"db.operation":"SELECT","net.peer.name":"db.internal","net.peer.port":5432,\
+				"thread.name":"http-nio-8080-exec-7"}""";
+	}
+
 	private static String syntheticPayload() {
 		StringBuilder frames = new StringBuilder();
 		for (int i = 0; i < 6; i++) {

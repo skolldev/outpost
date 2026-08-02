@@ -1,12 +1,14 @@
 package dev.outpost.bench;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.outpost.support.PlanFacts;
 import dev.outpost.support.TelemetrySeeder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -107,6 +109,93 @@ class RetrievalBenchmarkTest {
 		@Test
 		void treatsTheFirstPageAsAdvanced() {
 			assertThat(PageWalk.inspect(List.of(), List.of("a", "b")).advanced()).isTrue();
+		}
+
+	}
+
+	/**
+	 * The arithmetic that decides whether "page 50" is page 50. A walk one page
+	 * short reports page 49 under a "page 50" label and nothing says so, which is
+	 * the same silent wrongness {@link PageWalk} exists to catch one level up.
+	 */
+	@Nested
+	class CursorWalking {
+
+		private static final int PAGE_SIZE = 10;
+
+		@Test
+		void returnsTheCursorThatOpensTheRequestedPage() throws Exception {
+			CursorWalk walk = CursorWalk.to(5, pagesOf(200));
+
+			assertThat(walk.depth()).isEqualTo(5);
+			assertThat(walk.cursor()).isEqualTo(cursorFor(5));
+			assertThat(walk.pageIsFull()).isTrue();
+		}
+
+		/** Off by one in either direction is a different page, so both neighbours are pinned. */
+		@Test
+		void doesNotStopAPageEarlyOrRunAPageLate() throws Exception {
+			assertThat(CursorWalk.to(2, pagesOf(200)).cursor()).isEqualTo(cursorFor(2));
+			assertThat(CursorWalk.to(20, pagesOf(200)).cursor()).isEqualTo(cursorFor(20));
+		}
+
+		/** A smoke run at a tenth scale runs out of rows; measuring what it reached beats failing. */
+		@Test
+		void stopsAtTheLastPageWhenTheDataRunsOut() throws Exception {
+			CursorWalk walk = CursorWalk.to(50, pagesOf(35));
+
+			assertThat(walk.depth()).isEqualTo(4);
+			assertThat(walk.cursor()).isEqualTo(cursorFor(4));
+			assertThat(walk.pageIsFull()).isFalse();
+		}
+
+		/**
+		 * The reason {@code pageIsFull} is read from the cursor rather than from the
+		 * depth reached: a dataset ending on a page boundary hands back a full page with
+		 * no cursor after it, and a scenario must not be told to expect more.
+		 */
+		@Test
+		void reportsAnExactlyFullFinalPageAsNotGuaranteedFull() throws Exception {
+			CursorWalk walk = CursorWalk.to(50, pagesOf(40));
+
+			assertThat(walk.depth()).isEqualTo(4);
+			assertThat(walk.pageIsFull()).isFalse();
+		}
+
+		@Test
+		void refusesADatasetWithNowhereToWalk() {
+			assertThatThrownBy(() -> CursorWalk.to(50, pagesOf(PAGE_SIZE)))
+				.isInstanceOf(AssertionError.class)
+				.hasMessageContaining("needs somewhere to go");
+		}
+
+		/** The failure a broken cursor predicate produces, seen through the walk. */
+		@Test
+		void failsWhenTheCursorStopsAdvancing() {
+			CursorWalk.Pages stuck = cursor -> new CursorWalk.Page(List.of("a", "b"), "always-page-1");
+
+			assertThatThrownBy(() -> CursorWalk.to(50, stuck)).isInstanceOf(AssertionError.class)
+				.hasMessageContaining("really page 1");
+		}
+
+		/** A page of {@code PAGE_SIZE} ids per page, over a dataset of {@code rows}. */
+		private static CursorWalk.Pages pagesOf(int rows) {
+			return cursor -> {
+				int page = cursor == null ? 1 : Integer.parseInt(cursor.substring("page-".length()));
+				int firstRow = (page - 1) * PAGE_SIZE;
+				List<String> ids = new ArrayList<>();
+				for (int row = firstRow; row < Math.min(firstRow + PAGE_SIZE, rows); row++) {
+					ids.add("row-" + row);
+				}
+				// KeysetPage emits a cursor only when a full page was returned and more rows
+				// exist behind it — the property the walk reads `pageIsFull` from.
+				boolean more = firstRow + PAGE_SIZE < rows;
+				return new CursorWalk.Page(ids, more ? cursorFor(page + 1) : null);
+			};
+		}
+
+		private static String cursorFor(int page) {
+			return "page-" + page;
 		}
 
 	}

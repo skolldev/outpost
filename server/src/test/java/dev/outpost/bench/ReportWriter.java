@@ -114,8 +114,33 @@ public final class ReportWriter {
 		return Double.isNaN(value) ? "null" : String.format(Locale.ROOT, "%.3f", value);
 	}
 
+	/**
+	 * Control characters are escaped alongside the obvious two: condition values
+	 * come from Postgres settings and scenario labels from callers, and a single
+	 * newline in either would produce a report file no JSON reader can open —
+	 * which is the one thing this class exists to prevent.
+	 */
 	public static String quote(String value) {
-		return '"' + value.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
+		StringBuilder quoted = new StringBuilder(value.length() + 2).append('"');
+		for (int i = 0; i < value.length(); i++) {
+			char c = value.charAt(i);
+			switch (c) {
+				case '\\' -> quoted.append("\\\\");
+				case '"' -> quoted.append("\\\"");
+				case '\n' -> quoted.append("\\n");
+				case '\r' -> quoted.append("\\r");
+				case '\t' -> quoted.append("\\t");
+				default -> {
+					if (c < 0x20) {
+						quoted.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+					}
+					else {
+						quoted.append(c);
+					}
+				}
+			}
+		}
+		return quoted.append('"').toString();
 	}
 
 }

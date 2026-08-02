@@ -90,6 +90,21 @@ public class IssueController {
 		return PAGE_SIZE;
 	}
 
+	/**
+	 * The lower bound the sparkline is built from. Package-visible for the same
+	 * reason {@link #pageSize()} is: it is the bind parameter that decides which
+	 * partitions the aggregate reads, so a guard that computed its own would
+	 * {@code EXPLAIN} a different plan than the controller runs — and would keep
+	 * passing after this window changed.
+	 */
+	static Instant sparklineSince() {
+		return sparklineSince(LocalDate.now(ZoneOffset.UTC));
+	}
+
+	private static Instant sparklineSince(LocalDate today) {
+		return today.minusDays(SPARKLINE_DAYS - 1L).atStartOfDay().toInstant(ZoneOffset.UTC);
+	}
+
 	/** The issue-list query the controller runs, extracted per {@link SearchQuery}. */
 	static SearchQuery buildIssueQuery(List<Long> project, List<String> environment, String status, String release,
 			Instant from, Instant to, String query, String sort, String cursor) {
@@ -163,18 +178,29 @@ public class IssueController {
 				new ArrayList<>(issueIds));
 	}
 
-	/** Sparkline (daily counts, last 14 days) + users affected, per page of issues. */
+	/**
+	 * Per-environment event counts for the page's issues. Extracted alongside the
+	 * other two so a guard or benchmark can {@code EXPLAIN} the whole page load: an
+	 * issue-list request is four statements, and summing three of them would report
+	 * a cost nobody waits for.
+	 */
+	static SearchQuery buildEnvironmentRollupQuery(List<Long> issueIds) {
+		return new SearchQuery(
+				"SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
+					.formatted(QuerySupport.placeholders(issueIds.size())),
+				new ArrayList<>(issueIds));
+	}
+
+	/** Sparkline (daily counts, last 14 days) + users affected + environments, per page of issues. */
 	private void attachAggregates(List<Map<String, Object>> rows) {
 		if (rows.isEmpty()) {
 			return;
 		}
 		List<Long> ids = rows.stream().map(r -> (Long) r.get("id")).toList();
-		Object[] idParams = ids.toArray();
 
 		Map<Long, long[]> sparklines = new HashMap<>();
 		LocalDate today = LocalDate.now(ZoneOffset.UTC);
-		SearchQuery sparkline = buildSparklineQuery(ids,
-				today.minusDays(SPARKLINE_DAYS - 1L).atStartOfDay().toInstant(ZoneOffset.UTC));
+		SearchQuery sparkline = buildSparklineQuery(ids, sparklineSince(today));
 		jdbc.query(sparkline.sql(), rs -> {
 			long[] days = sparklines.computeIfAbsent(rs.getLong("issue_id"), k -> new long[SPARKLINE_DAYS]);
 			int offset = (int) (today.toEpochDay() - rs.getDate("day").toLocalDate().toEpochDay());
@@ -190,11 +216,10 @@ public class IssueController {
 		}, users.params().toArray());
 
 		Map<Long, List<String>> environments = new HashMap<>();
-		jdbc.query("SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
-			.formatted(QuerySupport.placeholders(ids.size())), rs -> {
-				environments.computeIfAbsent(rs.getLong("issue_id"), k -> new ArrayList<>())
-					.add(rs.getString("environment"));
-			}, idParams);
+		SearchQuery rollup = buildEnvironmentRollupQuery(ids);
+		jdbc.query(rollup.sql(), rs -> {
+			environments.computeIfAbsent(rs.getLong("issue_id"), k -> new ArrayList<>()).add(rs.getString("environment"));
+		}, rollup.params().toArray());
 
 		for (Map<String, Object> row : rows) {
 			Long id = (Long) row.get("id");

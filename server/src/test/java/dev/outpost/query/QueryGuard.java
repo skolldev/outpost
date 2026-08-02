@@ -127,10 +127,19 @@ final class QueryGuard {
 				table).isLessThan(fullScan);
 	}
 
-	/** What reading {@code table} end to end costs on this dataset. */
+	/**
+	 * What reading {@code table} end to end costs on this dataset. An unregistered
+	 * table is rejected rather than scanned: {@code count(null)} is answerable, and
+	 * a zero here would make {@link #assertCeilingCanFail} blame the ceiling for a
+	 * missing map entry.
+	 */
 	static long fullScanCost(JdbcClient jdbc, String table) {
-		return PlanFacts.explain(jdbc, "SELECT count(" + FULL_SCAN_COLUMNS.get(table) + ") FROM " + table, List.of())
-			.logicalIo();
+		String column = FULL_SCAN_COLUMNS.get(table);
+		if (column == null) {
+			throw new IllegalArgumentException(
+					"no full-scan column registered for " + table + "; known tables are " + FULL_SCAN_COLUMNS.keySet());
+		}
+		return PlanFacts.explain(jdbc, "SELECT count(" + column + ") FROM " + table, List.of()).logicalIo();
 	}
 
 	static long partitionCount(JdbcClient jdbc, String table) {

@@ -7,8 +7,6 @@ import dev.outpost.db.PartitionManager;
 import dev.outpost.support.PlanFacts;
 import dev.outpost.support.TelemetrySeeder;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
@@ -40,8 +38,6 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 @Import(TestcontainersConfiguration.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class IssueQueryPerformanceTest {
-
-	private static final int SPARKLINE_DAYS = 14;
 
 	/** Healthy is 30 blocks; 300 is the standard 10x, and ~50x below a full scan of {@code event}. */
 	private static final long MAX_LIST_BLOCKS = 300;
@@ -142,7 +138,7 @@ class IssueQueryPerformanceTest {
 	 */
 	@Test
 	void sparklinePrunesToItsWindow() {
-		Instant since = sparklineWindowStart();
+		Instant since = QueryPlans.sparklineSince();
 		PlanFacts facts = QueryPlans.sparkline(pageIds(), since).explain(jdbc);
 
 		QueryGuard.assertPrunesFrom(jdbc, facts, "event", since, "the issue-list sparkline");
@@ -165,9 +161,10 @@ class IssueQueryPerformanceTest {
 	void usersAffectedIsTimeBounded() {
 		PlanFacts facts = QueryPlans.usersAffected(pageIds()).explain(jdbc);
 
-		QueryGuard.assertPrunesFrom(jdbc, facts, "event", sparklineWindowStart(),
+		QueryGuard.assertPrunesFrom(jdbc, facts, "event", QueryPlans.sparklineSince(),
 				"the issue-list users-affected aggregate");
 		QueryGuard.assertUnderCeiling(facts, MAX_USERS_AFFECTED_BLOCKS, "the issue-list users-affected aggregate");
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_USERS_AFFECTED_BLOCKS, "event");
 	}
 
 	// ----------------------------------------------------------------- filters
@@ -186,6 +183,7 @@ class IssueQueryPerformanceTest {
 			.explain(jdbc);
 
 		QueryGuard.assertUnderCeiling(facts, MAX_RELEASE_FILTER_BLOCKS, "the issue-list release filter");
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_RELEASE_FILTER_BLOCKS, "event");
 	}
 
 	/** Environment filtering goes through {@code issue_env_stats}, so it must not touch {@code event} at all. */
@@ -201,16 +199,12 @@ class IssueQueryPerformanceTest {
 
 	// ----------------------------------------------------------------- helpers
 
-	private static Instant sparklineWindowStart() {
-		return LocalDate.now(ZoneOffset.UTC).minusDays(SPARKLINE_DAYS - 1L).atStartOfDay().toInstant(ZoneOffset.UTC);
-	}
-
 	private QueryPlans.Built pageOne() {
 		return QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null);
 	}
 
 	private List<Long> pageIds() {
-		return QueryPlans.issueIdsOnPage(jdbc, "last_seen", null);
+		return QueryPlans.issueIdsOnPage(jdbc, pageOne());
 	}
 
 }
