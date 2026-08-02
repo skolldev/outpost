@@ -33,7 +33,22 @@ public class ReleaseController {
 
 	@GetMapping
 	public List<Release> list(@RequestParam long project) {
-		return jdbc.sql("""
+		SearchQuery search = buildReleaseListQuery(project);
+		return jdbc.sql(search.sql())
+			.params(search.params())
+			.query((rs, i) -> new Release(rs.getLong("id"), rs.getString("version"),
+					rs.getTimestamp("created_at").toInstant(), rs.getLong("bundle_count"),
+					rs.getLong("artifact_count"), rs.getLong("issue_count")))
+			.list();
+	}
+
+	/**
+	 * The release-list query the controller runs, extracted per {@link SearchQuery}.
+	 * The {@code issue_count} subquery is correlated over a {@code LIMIT 200}
+	 * result and carries no time bound, so it is EXPLAIN-able on its own terms.
+	 */
+	static SearchQuery buildReleaseListQuery(long project) {
+		return new SearchQuery("""
 				SELECT r.id, r.version, r.created_at,
 				       (SELECT count(*) FROM artifact_bundle_release abr
 				        WHERE abr.project_id = r.project_id AND abr.release = r.version) AS bundle_count,
@@ -46,12 +61,7 @@ public class ReleaseController {
 				WHERE r.project_id = ?
 				ORDER BY r.created_at DESC, r.id DESC
 				LIMIT 200
-				""")
-			.param(project)
-			.query((rs, i) -> new Release(rs.getLong("id"), rs.getString("version"),
-					rs.getTimestamp("created_at").toInstant(), rs.getLong("bundle_count"),
-					rs.getLong("artifact_count"), rs.getLong("issue_count")))
-			.list();
+				""", List.of(project));
 	}
 
 	@GetMapping("/{version}/artifacts")

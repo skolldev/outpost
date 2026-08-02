@@ -65,6 +65,50 @@ public class IssueController {
 			@RequestParam(defaultValue = "last_seen") String sort,
 			@RequestParam(required = false) String cursor) {
 
+		SearchQuery search = buildIssueQuery(project, environment, status, release, from, to, query, sort, cursor);
+		KeysetPage page = issuePage(sort);
+
+		List<Map<String, Object>> rows = jdbc.query(search.sql(), this::mapIssue, search.params().toArray());
+		KeysetPage.Page result = page.paginate(rows);
+		attachAggregates(result.rows());
+
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("issues", result.rows());
+		body.put("next_cursor", result.nextCursor());
+		return body;
+	}
+
+	/**
+	 * The keyset the list is paged by. Package-visible so a guard can walk real
+	 * cursors to a deep page instead of synthesizing one — see {@link KeysetPage}.
+	 */
+	static KeysetPage issuePage(String sort) {
+		return "count".equals(sort) ? BY_EVENT_COUNT : BY_LAST_SEEN;
+	}
+
+	static int pageSize() {
+		return PAGE_SIZE;
+	}
+
+	/**
+	 * The lower bound the sparkline is built from. Package-visible for the same
+	 * reason {@link #pageSize()} is: it is the bind parameter that decides which
+	 * partitions the aggregate reads, so a guard that computed its own would
+	 * {@code EXPLAIN} a different plan than the controller runs — and would keep
+	 * passing after this window changed.
+	 */
+	static Instant sparklineSince() {
+		return sparklineSince(LocalDate.now(ZoneOffset.UTC));
+	}
+
+	private static Instant sparklineSince(LocalDate today) {
+		return today.minusDays(SPARKLINE_DAYS - 1L).atStartOfDay().toInstant(ZoneOffset.UTC);
+	}
+
+	/** The issue-list query the controller runs, extracted per {@link SearchQuery}. */
+	static SearchQuery buildIssueQuery(List<Long> project, List<String> environment, String status, String release,
+			Instant from, Instant to, String query, String sort, String cursor) {
+
 		StringBuilder sql = new StringBuilder("""
 				SELECT id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count
 				FROM issue WHERE 1=1
@@ -99,59 +143,83 @@ public class IssueController {
 			params.add("%" + query + "%");
 		}
 
-		KeysetPage page = "count".equals(sort) ? BY_EVENT_COUNT : BY_LAST_SEEN;
-		KeysetPage.Tail tail = page.build(cursor);
+		KeysetPage.Tail tail = issuePage(sort).build(cursor);
 		sql.append(tail.sql());
 		params.addAll(tail.params());
-
-		List<Map<String, Object>> rows = jdbc.query(sql.toString(), this::mapIssue, params.toArray());
-		KeysetPage.Page result = page.paginate(rows);
-		attachAggregates(result.rows());
-
-		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("issues", result.rows());
-		body.put("next_cursor", result.nextCursor());
-		return body;
+		return new SearchQuery(sql.toString(), params);
 	}
 
-	/** Sparkline (daily counts, last 14 days) + users affected, per page of issues. */
+	/**
+	 * Daily event counts for the page's issues over the sparkline window. Split out
+	 * from {@link #attachAggregates} so a guard can {@code EXPLAIN} it alone: it is
+	 * one of the two per-page-load aggregates over {@code event}, and the two have
+	 * very different plans — this one is time-bounded, {@link
+	 * #buildUsersAffectedQuery} is not.
+	 */
+	static SearchQuery buildSparklineQuery(List<Long> issueIds, Instant since) {
+		List<Object> params = new ArrayList<>(issueIds);
+		params.add(java.sql.Timestamp.from(since));
+		return new SearchQuery("""
+				SELECT issue_id, date_trunc('day', "timestamp" AT TIME ZONE 'UTC')::date AS day, count(*) AS n
+				FROM event WHERE issue_id IN (%s) AND "timestamp" >= ?
+				GROUP BY issue_id, day
+				""".formatted(QuerySupport.placeholders(issueIds.size())), params);
+	}
+
+	/**
+	 * Distinct users per issue for the page. Deliberately EXPLAIN-able alone: it
+	 * carries no time bound, so it reads every partition ever created for every
+	 * issue on the page, on the most-visited screen in the product.
+	 */
+	static SearchQuery buildUsersAffectedQuery(List<Long> issueIds) {
+		return new SearchQuery(
+				"SELECT issue_id, count(DISTINCT user_ident) AS n FROM event WHERE issue_id IN (%s) GROUP BY issue_id"
+					.formatted(QuerySupport.placeholders(issueIds.size())),
+				new ArrayList<>(issueIds));
+	}
+
+	/**
+	 * Per-environment event counts for the page's issues. Extracted alongside the
+	 * other two so a guard or benchmark can {@code EXPLAIN} the whole page load: an
+	 * issue-list request is four statements, and summing three of them would report
+	 * a cost nobody waits for.
+	 */
+	static SearchQuery buildEnvironmentRollupQuery(List<Long> issueIds) {
+		return new SearchQuery(
+				"SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
+					.formatted(QuerySupport.placeholders(issueIds.size())),
+				new ArrayList<>(issueIds));
+	}
+
+	/** Sparkline (daily counts, last 14 days) + users affected + environments, per page of issues. */
 	private void attachAggregates(List<Map<String, Object>> rows) {
 		if (rows.isEmpty()) {
 			return;
 		}
 		List<Long> ids = rows.stream().map(r -> (Long) r.get("id")).toList();
-		String idList = QuerySupport.placeholders(ids.size());
-		Object[] idParams = ids.toArray();
 
 		Map<Long, long[]> sparklines = new HashMap<>();
 		LocalDate today = LocalDate.now(ZoneOffset.UTC);
-		List<Object> sparklineParams = new ArrayList<>(ids);
-		sparklineParams.add(java.sql.Timestamp
-			.from(today.minusDays(SPARKLINE_DAYS - 1L).atStartOfDay().toInstant(ZoneOffset.UTC)));
-		jdbc.query("""
-				SELECT issue_id, date_trunc('day', "timestamp" AT TIME ZONE 'UTC')::date AS day, count(*) AS n
-				FROM event WHERE issue_id IN (%s) AND "timestamp" >= ?
-				GROUP BY issue_id, day
-				""".formatted(idList), rs -> {
+		SearchQuery sparkline = buildSparklineQuery(ids, sparklineSince(today));
+		jdbc.query(sparkline.sql(), rs -> {
 			long[] days = sparklines.computeIfAbsent(rs.getLong("issue_id"), k -> new long[SPARKLINE_DAYS]);
 			int offset = (int) (today.toEpochDay() - rs.getDate("day").toLocalDate().toEpochDay());
 			if (offset >= 0 && offset < SPARKLINE_DAYS) {
 				days[SPARKLINE_DAYS - 1 - offset] += rs.getLong("n");
 			}
-		}, sparklineParams.toArray());
+		}, sparkline.params().toArray());
 
 		Map<Long, Long> usersAffected = new HashMap<>();
-		jdbc.query("SELECT issue_id, count(DISTINCT user_ident) AS n FROM event WHERE issue_id IN (%s) GROUP BY issue_id"
-			.formatted(idList), rs -> {
-				usersAffected.put(rs.getLong("issue_id"), rs.getLong("n"));
-			}, idParams);
+		SearchQuery users = buildUsersAffectedQuery(ids);
+		jdbc.query(users.sql(), rs -> {
+			usersAffected.put(rs.getLong("issue_id"), rs.getLong("n"));
+		}, users.params().toArray());
 
 		Map<Long, List<String>> environments = new HashMap<>();
-		jdbc.query("SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
-			.formatted(idList), rs -> {
-				environments.computeIfAbsent(rs.getLong("issue_id"), k -> new ArrayList<>())
-					.add(rs.getString("environment"));
-			}, idParams);
+		SearchQuery rollup = buildEnvironmentRollupQuery(ids);
+		jdbc.query(rollup.sql(), rs -> {
+			environments.computeIfAbsent(rs.getLong("issue_id"), k -> new ArrayList<>()).add(rs.getString("environment"));
+		}, rollup.params().toArray());
 
 		for (Map<String, Object> row : rows) {
 			Long id = (Long) row.get("id");
@@ -229,13 +297,31 @@ public class IssueController {
 		return body;
 	}
 
+	/**
+	 * Event detail's three statements, named rather than inlined so a guard can
+	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. The
+	 * neighbour lookups are what make this page cost more than one row: each is a
+	 * separate probe across every partition of {@code event}.
+	 */
+	static final String EVENT_BY_ID = """
+			SELECT id, project_id, issue_id, environment, release, "timestamp", trace_id, level, message,
+			       exception_type, user_ident, data, symbolication_status
+			FROM event WHERE id = ?
+			""";
+
+	static final String NEWER_EVENT_IN_ISSUE = """
+			SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) > (?, ?)
+			ORDER BY "timestamp" ASC, id ASC LIMIT 1
+			""";
+
+	static final String OLDER_EVENT_IN_ISSUE = """
+			SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) < (?, ?)
+			ORDER BY "timestamp" DESC, id DESC LIMIT 1
+			""";
+
 	@GetMapping("/events/{id}")
 	public ResponseEntity<Map<String, Object>> event(@PathVariable UUID id) {
-		List<Map<String, Object>> rows = jdbc.query("""
-				SELECT id, project_id, issue_id, environment, release, "timestamp", trace_id, level, message,
-				       exception_type, user_ident, data, symbolication_status
-				FROM event WHERE id = ?
-				""", (rs, i) -> {
+		List<Map<String, Object>> rows = jdbc.query(EVENT_BY_ID, (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("id", rs.getObject("id", UUID.class));
 			row.put("project_id", rs.getLong("project_id"));
@@ -265,13 +351,7 @@ public class IssueController {
 
 	/** Adjacent event id within the same issue, by (timestamp, id) order. */
 	private UUID neighbor(long issueId, Instant ts, UUID id, boolean newer) {
-		String sql = newer ? """
-				SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) > (?, ?)
-				ORDER BY "timestamp" ASC, id ASC LIMIT 1
-				""" : """
-				SELECT id FROM event WHERE issue_id = ? AND ("timestamp", id) < (?, ?)
-				ORDER BY "timestamp" DESC, id DESC LIMIT 1
-				""";
+		String sql = newer ? NEWER_EVENT_IN_ISSUE : OLDER_EVENT_IN_ISSUE;
 		List<UUID> found = jdbc.query(sql, (rs, i) -> rs.getObject("id", UUID.class), issueId,
 				java.sql.Timestamp.from(ts), id);
 		return found.isEmpty() ? null : found.get(0);
