@@ -290,6 +290,38 @@ Worth knowing before adding a seventh index: **nothing in CI will catch it.** Th
 ingest benchmark is excluded from `test` by the `benchmark` tag, so a future index
 on `issue` gets measured only if someone chooses to.
 
+## Index maintenance on `log_record`, measured 2026-08-03
+
+#128 took `log_record` from four indexes to six, adding `("timestamp" DESC, id
+DESC)` and `(project_id, "timestamp" DESC, id DESC)`. Unlike the `issue` case
+above this is a pure append path — `LogStore` batch-inserts and never updates — so
+there is no HOT consideration, just two more index entries per record.
+
+`logEnvelopeStepLoad`, before and after, same machine:
+
+| offered | stored/s before | stored/s after | p99 ms before | p99 ms after | alloc KB/env before | after |
+| --: | --: | --: | --: | --: | --: | --: |
+| 10/s | 998.9 | 999.3 | 18.5 | 18.4 | 928.7 | 924.2 |
+| 20/s | 1998.7 | 1999.6 | 26.6 | 16.4 | 925.2 | 920.8 |
+| 40/s | 3997.9 | 3997.9 | 16.5 | 11.9 | 919.6 | 915.1 |
+| 80/s | 7997.1 | 7998.1 | 8.0 | 7.7 | 917.2 | 912.9 |
+| 160/s | 15995.5 | 15996.5 | 4.8 | 4.4 | 915.9 | 911.7 |
+
+**This table cannot show a regression, and that is the most important thing about
+it.** The log ladder never saturates: zero 429s, zero shed, and queue depth 0 at
+every step both before and after, so `stored/s` is just the offered rate played
+back and the after column being marginally *faster* is run-to-run noise. What it
+establishes is that the extra maintenance is absorbed at up to ~16 000 records/s —
+not that it is free, and not where the knee is, because this ladder never reaches
+it for logs. Finding the log knee would need rates well above 160 envelopes/s, and
+the ladder's top step was chosen for the error path.
+
+The cost that *was* resolvable is storage, and it is not small: at 2 000 010
+records the two indexes occupy 78 MB and 95 MB against a 651 MB heap and the
+374 MB the original four already cost — 90 bytes per record, a ~46 % increase in
+index storage for `log_record`. See `V11__log_stream_indexes.sql` for why each of
+the two is there and why a third for `environment` is not.
+
 ## The release rollup, measured 2026-08-02
 
 #127 moved the issue-list `release=` filter off `event` and onto an
