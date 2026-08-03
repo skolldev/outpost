@@ -19,25 +19,38 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the log stream. Baselines measured 2026-08-01 against
+ * Performance guards for the log stream. Baselines measured 2026-08-03 against
  * {@link TelemetrySeeder.Scale#GUARD}: 40 010 log records over 10 weekly
  * partitions, where a full scan of {@code log_record} costs 5 043 blocks.
  *
- * <p>Two of these are {@code @Disabled}, and the root cause of the first is worth
- * stating up front: {@code log_record} has no index serving the stream's
- * {@code ("timestamp", id)} ordering, so <b>page 1 already reads every partition
- * and sorts</b> (#128). That plan cannot be made worse by an unindexable
- * predicate, which is why the attribute guard (#132) is written as a
- * <em>differential</em> assertion — a filter eliminating 99.9 % of rows must make
- * the query cheaper — rather than as an absolute ceiling. Stated as a ceiling it
- * would fail for #128's reason and hide its own.
+ * <p>The shape of these guards is set by what #128 turned out to be. {@code
+ * log_record} had no index on the {@code ("timestamp", id)} ordering every log
+ * list is paged by, so page 1 of the global stream read all ten partitions and
+ * sorted them — 9 010 blocks to return 100 rows, more than the 5 043 reading the
+ * table costs. {@code V11} adds that index and a project-leading one; the guards
+ * below assert the plan shape those buy, at every request shape the UI can
+ * actually produce.
  *
- * <p>Body-substring search is deliberately <b>not</b> guarded here. It looked
- * broken at this scale and is not: 40 000 rows is small enough that the planner
- * correctly prefers a scan to {@code idx_log_body_trgm}, and at the retrieval
- * benchmark's 500 000 it uses the index for a 10x saving. A guard whose verdict
- * flips with dataset size is worse than none, so that question lives in the
- * benchmark, which has the rows to answer it.
+ * <p><b>The matrix is the guard, not page 1.</b> #126's lesson was that a guard is
+ * only as honest as the parameters it passes: {@code issueListSortIsIndexSupported}
+ * stayed green throughout a real bug because it asked about a request nobody
+ * makes. The log equivalent would be to measure the unfiltered, unbounded stream —
+ * reachable through the range picker's "All time", but not the default — and call
+ * it the log page. The UI defaults to 14 days ({@code ui/src/app/core/filters.ts})
+ * and offers repeated project and environment filters (ADR 0009), so
+ * {@link #everyLogListShapeWalksItsOwnIndex} names the index that must serve each
+ * of those combinations, and {@link #everyLogListShapeStaysIndexedAtDepth} walks
+ * a real cursor to page 3 <em>under each shape's own filters</em>.
+ *
+ * <p>Body-substring search is deliberately <b>not</b> guarded here, and {@code V11}
+ * strengthened that argument. It looked broken at this scale and is not: 40 000 rows
+ * is small enough that the planner correctly prefers a scan to {@code
+ * idx_log_body_trgm} (#129). Since the ordering index exists there are two near-cost
+ * plans for it at benchmark scale — the trigram bitmap scan, and an ordered walk of
+ * {@code idx_log_ts_id} filtering with {@code ILIKE} — and the planner has been
+ * observed choosing differently on consecutive runs over the same dataset. A guard
+ * whose verdict flips with dataset size is worse than none; one that flips between
+ * runs is worse still.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -47,22 +60,36 @@ class LogQueryPerformanceTest {
 
 	private static final int WINDOW_DAYS = 14;
 
-	/** Healthy is 79 blocks for the indexed trace lookup; 790 is the standard 10x, well under a full scan. */
+	/** Healthy is ~89 blocks for the indexed trace lookup; 790 is the standard 10x, well under a full scan. */
 	private static final long MAX_TRACE_LOOKUP_BLOCKS = 790;
 
 	/**
-	 * The target for page 1 (#128), not today's 8 804. An indexed 10-row lookup on
-	 * the same table costs 79 blocks; a 101-row page merged across 10 partitions is
-	 * a larger job but the same shape, and 1 000 leaves room for it while sitting
-	 * ~5x below the 5 043 a full scan costs — so it can fail.
+	 * The unfiltered stream's ceiling, calibrated against <b>All time</b> rather
+	 * than the 14-day default, because that is the expensive end of the range
+	 * picker: 480–725 blocks against ~340. The difference is not rows read — both
+	 * execute the same three partitions — but the planner touching all ten it has to
+	 * consider before pruning, which {@link PlanFacts} counts because it sums the
+	 * {@code Planning} buffers too. That grows with retention, not with the dataset.
+	 *
+	 * <p>Not the standard 10x, which would be 7 250 and sit above the 5 043 a full
+	 * scan costs, i.e. could not fail. This is the "as high as it can while still
+	 * being able to fail" case the calibration rules name: half the full scan, ~3.5x
+	 * over the measured plan, and comfortably below the 9 010 the sorting plan cost.
 	 */
-	private static final long MAX_PAGE_ONE_BLOCKS = 1_000;
+	private static final long MAX_PAGE_ONE_BLOCKS = 2_500;
 
 	/** A filter that removes 99.9 % of rows should remove most of the work; 4x is the modest floor. */
 	private static final int SELECTIVE_FILTER_SAVING = 4;
 
 	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
 	private static final int DEEP_PAGE_TOLERANCE = 2;
+
+	/** Deep enough that a plan reading the table end to end cannot keep up, shallow enough to walk cheaply. */
+	private static final int DEEP_PAGE = 3;
+
+	/** Two of the three seeded environments — a multi-value filter that really excludes rows. */
+	private static final List<String> TWO_ENVIRONMENTS = List.of(TelemetrySeeder.ENVIRONMENTS.get(0),
+			TelemetrySeeder.ENVIRONMENTS.get(1));
 
 	@Autowired
 	JdbcClient jdbc;
@@ -77,36 +104,141 @@ class LogQueryPerformanceTest {
 		seeded = new TelemetrySeeder(jdbc, partitions).seed(TelemetrySeeder.Scale.GUARD);
 	}
 
+	/**
+	 * One request the UI can produce, paired with the index that has to serve it.
+	 *
+	 * @param indexes the index families the plan may walk — and nothing else. Naming
+	 * them is what makes the assertion able to fail: "some index was used" stays true
+	 * when the wrong one is chosen, and Postgres will happily walk the global
+	 * ordering index and apply {@code project_id} as a filter, which is ordered,
+	 * sort-free, and exactly the plan {@code idx_log_project_ts_id} exists to avoid.
+	 * More than one is named only where more than one is genuinely equivalent.
+	 */
+	private record Shape(String name, List<Long> project, List<String> environment, Instant from,
+			List<String> indexes) {
+
+		QueryPlans.Built at(String cursor) {
+			return QueryPlans.logs(project, environment, null, null, null, null, null, from, null, cursor);
+		}
+	}
+
+	/**
+	 * The shapes the logs page actually sends, and the index each must walk.
+	 *
+	 * <p>Several expect the <em>global</em> index while carrying a filter, and that is
+	 * a finding rather than an oversight. A multi-value filter leaves rows ordered by
+	 * {@code (project_id, "timestamp")} rather than by {@code "timestamp"}, so no
+	 * leading-column index can serve the ordering and Postgres correctly falls back to
+	 * walking the global one and filtering. Asserting the global index there pins that
+	 * down: if a later migration adds an index that makes the planner sort instead,
+	 * this fails.
+	 *
+	 * <p><b>The multi-select case is carried by environments, not projects, and the
+	 * reason is a fixture limitation worth stating.</b> {@link TelemetrySeeder.Scale#GUARD}
+	 * seeds two projects, so a two-project filter selects <em>every row in the
+	 * table</em> — it would assert the multi-select plan against a predicate that
+	 * excludes nothing, which is the same "passes for the wrong reason forever" trap
+	 * the seeder's single-partition note warns about. Two of the three seeded
+	 * environments genuinely excludes a third of the rows, so that is the shape the
+	 * claim rests on.
+	 *
+	 * <p>Project + environment together is served by the pre-existing
+	 * {@code idx_log_project_env_ts} with an incremental sort, which {@link
+	 * QueryGuard#assertWalksIndex} allows — an incremental sort is bounded by the
+	 * group size, not by the table, which is the property under guard. It is the one
+	 * shape naming two indexes, because {@code idx_log_project_ts_id} serves it just
+	 * as well and the two measured four blocks apart.
+	 */
+	private List<Shape> uiShapes(Instant since) {
+		List<Long> oneProject = List.of(seeded.projectId());
+		List<String> oneEnvironment = List.of(seeded.environment());
+		List<String> global = List.of("idx_log_ts_id");
+		List<String> byProject = List.of("idx_log_project_ts_id");
+		List<String> byProjectAndEnv = List.of("idx_log_project_env_ts", "idx_log_project_ts_id");
+		return List.of(new Shape("global, 14d (the default)", null, null, since, global),
+				new Shape("global, All time", null, null, null, global),
+				new Shape("one project, 14d", oneProject, null, since, byProject),
+				new Shape("one project, All time", oneProject, null, null, byProject),
+				new Shape("one environment, 14d", null, oneEnvironment, since, global),
+				new Shape("one environment, All time", null, oneEnvironment, null, global),
+				new Shape("two environments, 14d", null, TWO_ENVIRONMENTS, since, global),
+				new Shape("one project + one environment, 14d", oneProject, oneEnvironment, since, byProjectAndEnv),
+				new Shape("one project + one environment, All time", oneProject, oneEnvironment, null,
+						byProjectAndEnv));
+	}
+
 	// --------------------------------------------------------------- ordering
 
 	/**
 	 * Page 1 of the global stream returns 100 rows and should cost about what
-	 * fetching 100 rows costs. It does not: with no index on
-	 * {@code ("timestamp" DESC, id DESC)} the plan reads every partition and sorts
-	 * the lot — more expensive than simply reading the table, because it reads the
-	 * table <em>and then</em> sorts it.
+	 * fetching 100 rows costs. Because {@code log_record} is range-partitioned on
+	 * the same column the {@code ORDER BY} leads with, the index gives Postgres an
+	 * ordered {@code Append}: it walks partitions newest-first and stops once the
+	 * page is full, reading three of ten rather than merging all of them.
 	 */
 	@Test
-	@Disabled("#128 — no index supports the global log stream's ordering")
 	void logListPageOneIsIndexSupported() {
 		PlanFacts facts = pageOne().explain(jdbc);
 
-		assertThat(facts.ran("Sort")).as("log list page 1 sorts every partition rather than merging indexes%n%s",
-				facts.plan()).isFalse();
+		// Names the index rather than only excluding a Sort: #126 recorded that
+		// "no Sort ran" stays green with the right indexes dropped, because walking a
+		// different index and filtering is also ordered and also sort-free.
+		QueryGuard.assertWalksIndex(jdbc, facts, "log_record", List.of("idx_log_ts_id"), "log list page 1");
 		QueryGuard.assertUnderCeiling(facts, MAX_PAGE_ONE_BLOCKS, "log list page 1");
 		QueryGuard.assertCeilingCanFail(jdbc, MAX_PAGE_ONE_BLOCKS, "log_record");
 	}
 
-	/** Whatever page 1 costs, page N must cost the same — that is the whole claim keyset paging makes. */
+	/** Every UI-producible shape walks the index built for it, rather than sorting the table. */
 	@Test
-	void deepPageCostsWhatPageOneCosts() {
+	void everyLogListShapeWalksItsOwnIndex() {
+		Instant since = windowStart();
+		for (Shape shape : uiShapes(since)) {
+			PlanFacts facts = shape.at(null).explain(jdbc);
+
+			QueryGuard.assertWalksIndex(jdbc, facts, "log_record", shape.indexes(), "log list — " + shape.name());
+		}
+	}
+
+	/**
+	 * The same shapes at depth, each walked to page {@value #DEEP_PAGE} through its
+	 * <em>own</em> filters.
+	 *
+	 * <p>Walking unfiltered and then explaining a filtered query at the cursor it
+	 * ended on would measure a request nobody makes: a filtered stream reaches a
+	 * different row, over a different span of time, after the same number of pages.
+	 */
+	@Test
+	void everyLogListShapeStaysIndexedAtDepth() {
+		Instant since = windowStart();
+		for (Shape shape : uiShapes(since)) {
+			String cursor = QueryPlans.logCursorAtPage(jdbc, DEEP_PAGE, shape::at);
+			PlanFacts facts = shape.at(cursor).explain(jdbc);
+
+			QueryGuard.assertWalksIndex(jdbc, facts, "log_record", shape.indexes(),
+					"log list at page " + DEEP_PAGE + " — " + shape.name());
+		}
+	}
+
+	/**
+	 * Whatever page 1 costs, page N must cost the same — that is the whole claim
+	 * keyset paging makes.
+	 *
+	 * <p>The ratio alone is not enough, and this is the flaw it used to have: two
+	 * equally bad full scans satisfy it together, which is precisely what happened
+	 * while #128 was open. The absolute ceiling is what stops a deep page passing by
+	 * being no worse than a broken page 1.
+	 */
+	@Test
+	void deepPageCostsWhatPageOneCostsAndBothStayUnderTheCeiling() {
 		long pageOneBlocks = pageOne().explain(jdbc).logicalIo();
-		String cursor = QueryPlans.logCursorAtPage(jdbc, 3);
+		String cursor = QueryPlans.logCursorAtPage(jdbc, DEEP_PAGE);
 
 		PlanFacts deep = QueryPlans.logs(null, null, null, null, null, null, null, null, null, cursor).explain(jdbc);
 
 		assertThat(deep.logicalIo()).as("blocks for a deep log page against the %d page 1 costs%n%s", pageOneBlocks,
 				deep.plan()).isLessThanOrEqualTo(DEEP_PAGE_TOLERANCE * pageOneBlocks);
+		QueryGuard.assertUnderCeiling(deep, MAX_PAGE_ONE_BLOCKS, "a deep log page");
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_PAGE_ONE_BLOCKS, "log_record");
 	}
 
 	// ---------------------------------------------------------------- lookups
@@ -123,16 +255,28 @@ class LogQueryPerformanceTest {
 	}
 
 	/**
-	 * A bounded log query must prune to the partitions its window covers. No buffer
-	 * ceiling here on purpose: at guard scale the 14-day window holds most of the
-	 * table, so there is no number both above the healthy plan and below a full
-	 * scan. Pruning is the assertion that means something, and it holds at any
-	 * scale.
+	 * A bounded log query must prune to the partitions its window covers.
+	 *
+	 * <p><b>The query under test is deliberately a filtered one, because {@code V11}
+	 * made the unfiltered page unable to test this.</b> An ordered walk stops as soon
+	 * as the page is full — three partitions — whether or not the bound prunes the
+	 * other seven, so asserting `scanned ⊆ allowed` on the plain 14-day page passes
+	 * identically with the bound removed. That is the "ceiling that cannot fail"
+	 * mistake in a different costume, and it is what this guard had become.
+	 *
+	 * <p>A filter the index cannot serve restores the property: the plan has to
+	 * traverse its whole window to know there is nothing further, so the window is
+	 * what decides how many partitions it reads — five of ten here, and all ten if
+	 * the bound stops pruning. It uses the attribute-equality filter for that, which
+	 * is unindexable for #132's separate reasons; the two are orthogonal, and if
+	 * #132 is ever fixed this needs a different unindexable predicate rather than a
+	 * quiet pass.
 	 */
 	@Test
 	void timeBoundedQueryPrunesToItsWindow() {
 		Instant since = windowStart();
-		PlanFacts facts = boundedLogs(since, null, null).explain(jdbc);
+		PlanFacts facts = boundedLogs(since, null, List.of(seeded.attributeKey() + "=" + seeded.attributeValue()))
+			.explain(jdbc);
 
 		QueryGuard.assertPrunesFrom(jdbc, facts, "log_record", since, "a 14-day-bounded log query");
 		QueryGuard.assertNoTempFiles(facts, "a 14-day-bounded log query");
@@ -146,11 +290,25 @@ class LogQueryPerformanceTest {
 	 * extraction. Adding a filter that matches one row in a thousand therefore costs
 	 * exactly as much as not adding it.
 	 *
-	 * <p>Comparing against the same query without the filter, rather than against a
-	 * fixed ceiling, keeps this measuring the predicate and not #128.
+	 * <p><b>#128 made the defect far more visible and this spec less usable, and
+	 * whoever picks up #132 needs to know both.</b> The comparator is the same query
+	 * without the filter, which used to cost 4 570 blocks because it scanned and
+	 * sorted; it now costs ~342 because it walks {@code idx_log_ts_id}. The filtered
+	 * query did <em>not</em> follow it down — measured at 3 992 blocks, still a
+	 * sequential scan and sort, because the planner will not walk the ordered index
+	 * for a predicate it believes is this selective. So the filter now costs 11x the
+	 * unfiltered page rather than exactly as much as it, which is a sharper
+	 * diagnostic than the equality this guard was written against.
+	 *
+	 * <p>What it does not survive is the assertion. A
+	 * {@value #SELECTIVE_FILTER_SAVING}x saving against 342 is under 90 blocks, and a
+	 * correct GIN lookup plus its heap fetches may well not beat that — so this ratio
+	 * can now reject a healthy plan, or reward a fixture-specific combined index. It
+	 * is left {@code @Disabled} and unchanged rather than retuned to a number nobody
+	 * has measured against a working implementation.
 	 */
 	@Test
-	@Disabled("#132 — attributes->>? = ? cannot use the attributes GIN index")
+	@Disabled("#132 — attributes->>? = ? cannot use the attributes GIN index; ratio needs re-deriving, see javadoc")
 	void attributeFilterMakesTheQueryCheaper() {
 		Instant since = windowStart();
 		assertSelectiveFilterPaysForItself(since,

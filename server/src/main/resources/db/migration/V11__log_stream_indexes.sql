@@ -1,0 +1,115 @@
+-- Indexes for the log stream's ordering, keyed on the shapes the product actually
+-- sends.
+--
+-- `LogController` pages every log list by ("timestamp", id) descending. Until this
+-- migration `log_record` had no index on that ordering — its four indexes serve
+-- project+environment, trace lookup, attribute containment and body trigrams — so
+-- page 1 of the global stream sequentially scanned every weekly partition and
+-- sorted the result. At guard scale that cost 9 010 shared blocks against the
+-- 5 043 a full scan of the table costs: a request returning 100 rows read the
+-- whole table and *then* sorted it (#128). (The issue reported 8 142 and the
+-- baseline table 8 804 for the same shape on earlier runs of the same fixture;
+-- 9 010 is what it measured immediately before this migration.)
+--
+-- Because `log_record` is range-partitioned on "timestamp" — the same column the
+-- ORDER BY leads with — an index on it gives Postgres an *ordered Append*: it
+-- walks partitions newest-first and stops once the page is full, touching three
+-- of ten rather than merging all of them. Cost becomes O(page).
+--
+-- Measured at guard scale (40 010 records, 10 weekly partitions) in one run on
+-- 2026-08-03, page 1 blocks. The middle column is what the global index alone
+-- buys, so the second index is justified by its own column rather than by the
+-- distance from the unindexed state:
+--
+--   shape                        none   +ts   +ts,project
+--   global, All time            9 010   725     701
+--   global, 14d (the default)   3 941   335     337
+--   one project, All time       6 689   573     336
+--   one project, 14d            3 938   581     337
+--   one environment, 14d        3 938   824     826
+--   two projects, 14d           3 984   335     337
+--   one level, 14d              3 978  1 322   1 324
+--
+-- These move a few percent run to run — page 1 at All time has been seen at 480 as
+-- well as 725 — because the indexed plans now read few enough blocks that cache
+-- state is a material share of the total. Compare columns within a row, not
+-- numbers across runs; docs/performance/measuring-retrieval.md quotes a later run.
+--
+-- Two things that table is saying, both of which decided the index set.
+--
+-- **A multi-value filter cannot use a leading-column index for ordered output.**
+-- `project_id IN (?,?)` leaves the rows ordered by (project_id, "timestamp"), not
+-- by "timestamp", so the planner falls back to the global index and filters — on
+-- every index set tried, including one leading with project_id. Only the
+-- single-select case benefits, because Postgres simplifies `IN (?)` to `= ?`.
+-- There is no index that serves the multi-select shape; a sort is the alternative
+-- and it is strictly worse. The environment filter (ADR 0009) behaves the same.
+--
+-- **Filter selectivity, not dataset size, is what is left.** A filtered walk of an
+-- ordered index costs `page / selectivity`. That is why only project_id gets its
+-- own index: an install's project count is unbounded, so one quiet project's
+-- stream would walk ~100 rows per row returned on a 100-project install. The
+-- environment and level filters cost a bounded small constant instead — measured
+-- ~2.5x and ~4x the unfiltered page above — and an index for each would be a third
+-- and fourth index on the highest-volume table in the product to buy a constant
+-- factor.
+--
+-- That bound is a convention, not a constraint, and it is the assumption most
+-- likely to be wrong here. `level` really is closed (six values). Environments are
+-- **auto-created on ingest** by TelemetryOrigins — nothing in the schema caps how
+-- many an install accumulates, and one that sends a per-branch or per-pod
+-- environment name would give the environment filter the same unbounded
+-- `page / selectivity` cost that project_id gets an index for. If that shows up,
+-- the fix is (environment, "timestamp" DESC, id DESC), measured at 339 blocks
+-- against 826 when it was tried here, and the reason it was not shipped is that
+-- three environments is what the product's own UI and seeder assume.
+--
+-- `idx_log_project_env_ts` is deliberately kept rather than widened to
+-- (project_id, environment, "timestamp" DESC, id DESC). Widening it wins the
+-- project+environment shape (444 blocks to 337) and loses project-alone (337 to
+-- 583), and project-alone is the one with the unbounded penalty. As it stands
+-- project+environment is served by an incremental sort over the existing index at
+-- 444 blocks, which is bounded by the group size rather than the table.
+--
+-- Locking. Like V9 this indexes a table that already holds data, and unlike V9 the
+-- table is the largest one in the product. A plain CREATE INDEX holds a ShareLock
+-- on `log_record` for the length of the build — confirmed by reading pg_locks
+-- during one — and ShareLock conflicts with the RowExclusiveLock an INSERT needs,
+-- so log ingest (`LogStore`'s batch insert) blocks until it finishes. Measured at
+-- 2 000 010 records over 13 weekly partitions: 392 ms for idx_log_ts_id and 560 ms
+-- for idx_log_project_ts_id — under a second of blocked ingest, together, for two
+-- million records.
+--
+-- Extrapolate that with care rather than as a rate. An index build sorts, so it
+-- grows faster than linearly and depends on maintenance_work_mem; and what an
+-- install can absorb depends on its own ingest rate, since the queue holds a fixed
+-- 50 000 envelopes rather than a fixed duration. The measurement says the build is
+-- cheap at single-digit millions and says nothing reliable two orders of magnitude
+-- up. An operator who cannot tolerate the answer being wrong should use the manual
+-- path below instead of deriving a threshold from one data point.
+--
+-- CONCURRENTLY is not the escape here that it was not in V9, and for a more basic
+-- reason than V9's Flyway deadlock: Postgres rejects it on a partitioned table
+-- outright — `ERROR: cannot create index on partitioned table "log_record"
+-- concurrently` (SQLSTATE 0A000, verified on 17.10). It is therefore not a
+-- one-word change but a per-partition build plus ATTACH.
+--
+-- An install large enough to care should therefore build these by hand before
+-- upgrading, after which the migration finds them present and is a no-op:
+--
+--   CREATE INDEX idx_log_ts_id ON ONLY log_record ("timestamp" DESC, id DESC);
+--   -- then, per partition:
+--   CREATE INDEX CONCURRENTLY idx_log_ts_id_p20260601
+--       ON log_record_p20260601 ("timestamp" DESC, id DESC);
+--   ALTER INDEX idx_log_ts_id ATTACH PARTITION idx_log_ts_id_p20260601;
+--
+-- Write cost. `log_record` goes from four indexes to six, and unlike `issue` it is
+-- append-only — every insert writes two more index entries, but no update has to
+-- be re-checked for HOT eligibility. On the same 2 000 010 records the two indexes
+-- occupy 78 MB and 95 MB against a 651 MB heap and the 374 MB V4's four already
+-- cost: 90 bytes per record, taking log_record's index storage up by ~46 %.
+-- Storage is the real price of this migration; see
+-- docs/performance/measuring-ingest.md for what it did to ingest throughput.
+
+CREATE INDEX IF NOT EXISTS idx_log_ts_id ON log_record ("timestamp" DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_log_project_ts_id ON log_record (project_id, "timestamp" DESC, id DESC);

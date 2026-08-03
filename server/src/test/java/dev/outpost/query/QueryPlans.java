@@ -112,8 +112,18 @@ public final class QueryPlans {
 	}
 
 	public static String logCursorAtPage(JdbcClient jdbc, int pages) {
-		return walk(jdbc, LogController.logPage(),
-				cursor -> logs(null, null, null, null, null, null, null, null, null, cursor), pages);
+		return logCursorAtPage(jdbc, pages, cursor -> logs(null, null, null, null, null, null, null, null, null, cursor));
+	}
+
+	/**
+	 * Walks to page {@code pages} of the log list <em>as {@code build} shapes it</em>.
+	 * A deep page reached through an unfiltered walk is not the deep page a filtered
+	 * request reaches: the cursor it ends on is a different row, over a different
+	 * span of time, and explaining a filtered query at it measures a request nobody
+	 * makes.
+	 */
+	public static String logCursorAtPage(JdbcClient jdbc, int pages, Function<String, Built> build) {
+		return walk(jdbc, LogController.logPage(), build, pages);
 	}
 
 	// ---------------------------------------------------------- traces/releases

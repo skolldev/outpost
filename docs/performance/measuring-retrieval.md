@@ -189,10 +189,13 @@ are structural and will.**
 | Issue list, `release=` | 217 | — | healthy — answered from the rollup; was 2 087 (#127) |
 | Sparkline (14-day bound) | 9 470 | 5 of 10 | prunes correctly |
 | Users affected (unbounded) | **20 041** | **10 of 10** | #131 |
-| Log page 1 | **8 804** | **10 of 10** | #128 — costs more than a full scan |
-| Logs by `trace_id` | 79 | indexed | healthy |
-| Logs, 14-day bound | 4 570 | 5 of 10 | prunes correctly |
-| …plus a 0.1 %-selective `attr=` | **4 570** | 5 of 10 | #132 — the filter saves nothing at all |
+| Log page 1, All time | 480 | 3 of 10 | walks an index; was 8 804 and sorted (#128) |
+| Log page 1, 14-day bound | 342 | 3 of 10 | walks an index |
+| …scoped to one project | 334 | 3 of 10 | walks the project-leading index |
+| …scoped to one environment | 1 006 | 3 of 10 | walks the global index and filters; see finding 4 |
+| Log deep page (p3) | 375 | 3 of 10 | O(page) holds |
+| Logs by `trace_id` | 89 | indexed | healthy |
+| Logs, 14-day bound + a 0.1 %-selective `attr=` | **3 992** | 5 of 10 | #132 — 11x the unfiltered page |
 | Release list | **240 299** | **10 of 10** | #130 — 16x a full scan of `event` |
 | Trace detail (four tables) | 943 | indexed | healthy |
 | Event detail (+ 2 neighbours) | 254 | indexed | healthy |
@@ -205,16 +208,27 @@ freshly bulk-loaded heap, which made a guard's number depend on whether it
 happened to run first. A full scan of `issue` reads 23 blocks on this dataset.
 
 The issue-list rows were re-measured after #126 changed both the indexes and the
-seeder. **The rows below them were not**, so treat any of those within a few
-blocks of its previous value as unverified rather than confirmed; the hint-bit
-change moves cold reads much more than warm ones, and these were always quoted
-warm.
+seeder, and the log rows after #128 added `V11`. **The remaining rows — the
+sparkline, users-affected, releases, trace and event detail — were not**, so treat
+any of those within a few blocks of its previous value as unverified rather than
+confirmed; the hint-bit change moves cold reads much more than warm ones, and these
+were always quoted warm.
+
+The log rows move by a few percent between runs (page 1 at All time was seen at 480
+and at 725 on the same dataset) because they now read few enough blocks that cache
+state is a material share of the total. That is why the guards assert plan shape,
+and why the one buffer ceiling they keep sits at 2 500.
 
 ### Benchmark tier
 
 2 000 003 events, 5 000 010 log records, 1 000 004 transactions, 3 000 012 spans,
 4 000 issues — 11 000 029 telemetry rows, seeded in 245 s. `shared_buffers=1GB`,
 `work_mem=32MB`. Latency is same-machine only; the block and temp columns are not.
+
+**The five log rows were re-measured after #128 added `V11`.** The rest of the table
+was re-run in the same pass and moved within run-to-run variation — the issue rows by
+under 10 %, releases and traces by under 1 % — so they are left at their 2026-08-02
+values rather than churned.
 
 The issue rows carry the plan facts of **all four** statements a page load issues,
 and each filtered row is paired with the aggregates for *its own* page of issues,
@@ -229,11 +243,14 @@ not for an unfiltered one.
 | Issue list, `environment=` | 936 ms | 1 044 ms | 944 811 | 0 |
 | Issue list, `project=` | 611 ms | 820 ms | 731 930 | 0 |
 | Issue list, page 50 | **36 ms** | 47 ms | 84 231 | 0 |
-| Log page 1 | 274 ms | 793 ms | 1 041 935 | 0 |
-| Logs, `query=` (0.1 % selective) | 116 ms | 121 ms | 93 763 | 0 |
-| Logs, `attr=` (0.1 % selective) | 331 ms | 963 ms | 1 041 935 | 0 |
-| Logs by `trace_id` | 10 ms | 21 ms | 157 | 0 |
-| Log page 50 | 268 ms | 787 ms | 1 041 755 | 0 |
+| Log page 1, All time | **11 ms** | 20 ms | **333** | 0 |
+| Log page 1, 14d (the default) | **12 ms** | 22 ms | **342** | 0 |
+| Log page 1, 14d, `project=` | **12 ms** | 22 ms | **342** | 0 |
+| Log page 50, All time | **11 ms** | 21 ms | **419** | 0 |
+| Log page 50, 14d, `project=` | **12 ms** | 24 ms | **358** | 0 |
+| Logs, `query=` (0.1 % selective) | 109 ms | 212 ms | 92 119 | 0 |
+| Logs, `attr=` (0.1 % selective) | 66 ms | 80 ms | 282 516 | 0 |
+| Logs by `trace_id` | 11 ms | 17 ms | 175 | 0 |
 | Trace search, page 1 | 2 097 ms | 2 134 ms | 900 534 | **224 130** |
 | Trace search, page 20 | 2 098 ms | 2 122 ms | 900 382 | **224 130** |
 | Trace search, `has_errors=true` | 1 401 ms | 3 186 ms | 6 358 857 | **256 683** |
@@ -279,19 +296,136 @@ Issue-list saturation ladder, same dataset:
    enormous. This is the finding the `temp` column exists for: it is invisible in
    the guard tier, where 8 004 transactions sort comfortably in memory. (#133)
 
-4. **The global log stream reads everything, every time.** `log_record` has no
-   index serving `("timestamp", id)` descending, so page 1 sequentially scans all
-   ten partitions and sorts them — costing *more* than reading the table, because it
-   reads it and then sorts it. Time-bounding helps only by pruning partitions;
-   within the window it still scans. (#128)
+4. **The global log stream read everything, every time — fixed in #128.**
+   `log_record` had no index serving `("timestamp", id)` descending, so page 1
+   sequentially scanned all ten partitions and sorted them, costing *more* than
+   reading the table. `V11` adds `("timestamp" DESC, id DESC)` and
+   `(project_id, "timestamp" DESC, id DESC)`, and page 1 fell from 8 804 blocks —
+   9 010 when re-measured immediately before the fix — to 480.
 
-5. **The log ordering problem masks the attribute one.** `attributes->>? = ?`
-   cannot use the GIN index — the key is a bind parameter, and `jsonb_ops` indexes
-   containment rather than text extraction. At both scales, adding a 0.1 %-selective
-   attribute filter changes the block count by *nothing at all* (4 570 → 4 570 at
-   guard scale; 1 041 935 → 1 041 935 at benchmark scale). The contrast with
-   `query=` on the same run — 1 041 935 down to 93 763 — is what makes it clear
-   which of the two is broken. (#132)
+   The partitioning is what makes it this cheap. `log_record` is range-partitioned
+   on the same column the `ORDER BY` leads with, so Postgres uses an **ordered
+   `Append`** rather than a `MergeAppend`: it walks partitions newest-first and stops
+   once the page is full, executing three of ten. Cost is O(page).
+
+   Two things the fix does *not* do, both worth knowing before quoting it.
+
+   **All time costs about twice the 14-day default (480–725 blocks against ~340),
+   and the difference is not rows read.** Both execute the same three partitions —
+   the table above reports 3 of 10 for either — so the extra blocks are not a longer
+   walk. They are the *planner* touching every partition it must consider before
+   pruning, which `PlanFacts` counts because it sums the `Planning` node's buffers
+   alongside the executed ones. That is O(retention) rather than O(rows), so it does
+   not grow with the dataset, but it is why `MAX_PAGE_ONE_BLOCKS` is calibrated
+   against All time. The standard 10x rule was unusable here: 10x the healthy plan is
+   7 250, above the 5 043 a full scan costs, so it could not fail. The ceiling sits at
+   2 500 — half the full scan — and the plan-shape assertions carry the real weight.
+
+   **A multi-value filter cannot use any leading-column index for ordered output.**
+   `project_id IN (?,?)` leaves rows ordered by `(project_id, "timestamp")`, so the
+   planner correctly falls back to the global index and filters — on every index set
+   tried, including ones leading with `project_id`. Only single-select benefits,
+   because `IN (?)` simplifies to `= ?`. The environment filter (ADR 0009) behaves
+   the same way. There is no index that serves the multi-select shape; a sort is the
+   alternative and it is strictly worse.
+
+   What is left is filter selectivity: a filtered walk of an ordered index costs
+   `page / selectivity`. That is why `project_id` got an index and `environment` and
+   `level` did not. A project's share of the logs shrinks without bound as an install
+   adds projects, so one quiet project's stream would walk ~100 rows per row returned
+   on a 100-project install; environment is low-cardinality by convention and `level` has
+   six values, so both cost a bounded small constant — measured ~3x (1 006 blocks)
+   and ~4x (1 322). **Neither of those constants is something the guard tier can
+   assert**, because at guard scale there are two projects and three environments;
+   the structural claim the guards do assert is that each shape walks the index built
+   for it rather than sorting.
+
+   **The environment half of that is an assumption, and it is the one to revisit
+   first.** `level` is genuinely closed, but environments are auto-created on ingest
+   by `TelemetryOrigins` and nothing caps how many accumulate. An install naming an
+   environment per branch or per pod gives the environment filter exactly the
+   unbounded `page / selectivity` cost that earned `project_id` its index. The
+   remedy is known and priced — `(environment, "timestamp" DESC, id DESC)` took that
+   shape from 826 blocks to 339 when it was tried — and was declined only because
+   three environments is what the product's UI and seeder assume, not because the
+   schema guarantees it.
+
+   **At benchmark scale the fix is worth far more than at guard scale, which is the
+   direction the structural argument predicted.** On 5 000 010 log records page 1
+   went from 1 041 935 blocks and 274 ms to **333 blocks and 11 ms**, and page 50
+   from 1 041 755 and 268 ms to **419 and 11 ms** — O(page) holding three thousand
+   times better than the plan it replaced. p99 on page 1 fell from 793 ms to 20 ms.
+   This is the payoff a block-count guard at guard scale could not have seen, for
+   exactly the reason finding 6 gives about #126.
+
+   **And it holds at the shapes the UI actually sends, which is the half worth
+   checking.** The rows above are All time — the range picker's expensive end, not
+   its default. The benchmark now drives the 14-day default and its project-scoped
+   variant too, page 1 and a deep cursor *walked under those same filters*: 342, 342,
+   and 358 blocks against the unfiltered 333, all within a millisecond of each other.
+   The fix is not an All-time special case.
+
+   **It also gave body-substring search two plans of near-equal estimated cost, and
+   the planner now picks between them run to run.** Two full runs on the same
+   dataset, differing in nothing but which plan was chosen:
+
+   | `query=` plan | blocks | partitions | p50 |
+   | --- | --: | --: | --: |
+   | bitmap scan of `idx_log_body_trgm` + sort | 92 119 | 13 | 109 ms |
+   | ordered walk of `idx_log_ts_id` + `ILIKE` filter | 307 690 | 3 | 89 ms |
+
+   The first is what it always did (93 763 before the migration); the second is new.
+   Note that the *cheaper* plan in blocks is the *slower* one in wall clock — the
+   ordered walk trades random heap fetches for a sequential-ish read, which is a
+   good trade here and a worse one as the needle gets rarer, since only the walk has
+   to go further to fill a page. **This was first written up as a 3.3x regression on
+   the strength of a single run; a second run showed the other plan and that claim
+   was wrong.** What is true is the instability, and it is a caution about the whole
+   tier: one benchmark run is a sample of the planner's choice, not a measurement of
+   the query. **No guard covers this**, because #129 established body search as a
+   scale-dependent question and deleted its guard.
+
+   The same new plan is why `attr=` improved (1 041 935 → ~280–310k) without #132
+   being fixed at all — the filter is still unindexed, it is just riding a cheaper
+   scan.
+
+   The write side was measured rather than assumed, because this indexes the
+   highest-volume table in the product. At 2 000 010 records over 13 weekly
+   partitions the two indexes cost 78 MB and 95 MB against a 651 MB heap and the
+   374 MB V4's four already occupy — 90 bytes per record, taking `log_record`'s index
+   storage up ~46 %. **Storage, not throughput, is the price.** The build holds a
+   `ShareLock` (read from `pg_locks` during one) which does block inserts (probed
+   deterministically), but only for 392 ms and 560 ms at that size.
+   Ingest throughput needed the log ladder raised before it could say anything: its
+   top step left the queue at depth 0, so it reported the offered rate rather than a
+   capacity. Raised to 640 envelopes/s it saturates, and the ceiling is **43 481
+   records/s before against 43 947 after** — a 1.1 % difference in the direction two
+   extra indexes cannot produce, i.e. below what the harness resolves. See
+   [`measuring-ingest.md`](measuring-ingest.md) for the caveats on a single pair.
+
+5. **The log ordering problem masked the attribute one; #128 unmasked it.**
+   `attributes->>? = ?` cannot use the GIN index — the key is a bind parameter, and
+   `jsonb_ops` indexes containment rather than text extraction. While #128 was open
+   this was invisible: adding a 0.1 %-selective attribute filter changed the block
+   count by *nothing at all* (4 570 → 4 570 at guard scale; 1 041 935 → 1 041 935 at
+   benchmark scale), because a plan that already reads everything cannot be made
+   worse by an unindexable predicate.
+
+   Now that the unfiltered page walks an index, the defect is visible at both scales
+   and reads differently at each. At guard scale the filter costs **3 992 blocks
+   against the unfiltered page's 342** — it still scans and sorts, because the
+   planner will not walk the ordered index for a predicate it believes is this
+   selective. At benchmark scale it walks the ordered index instead and costs
+   **307 671 against page 1's 333**. Both are the same underlying fact — the
+   predicate is applied after the read, never by an index — and either ratio is a
+   far sharper signal than the parity #128 used to hide it behind. (#132)
+
+   It also invalidated that guard's *spec*, which is the part worth flagging: the
+   disabled `attributeFilterMakesTheQueryCheaper` asserts the filtered query costs a
+   quarter of the unfiltered one, and a quarter of 342 is under 90 blocks — a bar a
+   correct GIN lookup plus its heap fetches may not clear. The ratio was left
+   unchanged rather than retuned to a number nobody has measured against a working
+   implementation, with the reasoning recorded on the test.
 
 6. **Neither issue-list sort order had an index — fixed in #126.** `(last_seen, id)`
    and `(event_count, id)` both fell back to a full sort of `issue` on every page,
