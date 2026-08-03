@@ -183,10 +183,9 @@ public class EventStore {
 					    event_count = issue_env_stats.event_count + 1,
 					    last_seen = GREATEST(issue_env_stats.last_seen, EXCLUDED.last_seen)
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
-			// Blank as well as null: an SDK sending "release":"" reaches here as an
-			// empty string, and IssueController rejects a blank release filter, so a
-			// row for one could never be matched by the query this rollup exists for.
-			if (event.release() != null && !event.release().isBlank()) {
+			// Blank as well as null, per Releases.isNamed: a row for one could never be
+			// matched by the queries this rollup exists for.
+			if (Releases.isNamed(event.release())) {
 				releaseRows.add(
 						new Object[] { issueId, event.projectId(), event.release(), Timestamp.from(event.timestamp()) });
 			}

@@ -25,7 +25,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * {@code count(*)} the distinct-Issue count.
  *
  * <p><b>Three different things could pass a naive version of this guard,</b> and
- * each has its own test below because none of them implies the others:
+ * each has its own test below because none of them implies the others — and in two
+ * of the three, a block count is not what settles it:
  *
  * <ol>
  * <li>A single {@code GROUP BY release} pass over {@code event} removes the
@@ -33,14 +34,17 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * {@link #releaseListStaysOffTheEventTable} is the assertion that rejects it, and
  * it is the one that holds at any dataset size.
  * <li>A supporting index makes correlated probes cheap enough to fit under any
- * ceiling <em>at this fixture's eight Releases</em>, while the endpoint returns up
- * to {@link ReleaseController#pageSize()}. {@link #fullPageCostsWhatAOneReleasePageCosts}
- * fills the page and rejects it.
+ * ceiling this fixture can honestly set, while the endpoint returns up to
+ * {@link ReleaseController#pageSize()} rows. Cost cannot reject that, so
+ * {@link #noCountRunsOncePerReleaseRow} rejects it on plan shape and
+ * {@link #fullPageCostsWhatAOneReleasePageCosts} sits behind as a backstop.
  * <li>Counting rollup rows without scoping them to the Project reads every other
- * Project's Issues for the same version string — release names are not unique
- * across Projects. {@link #aOneReleasePageIgnoresOtherProjectsRollupRows} rejects
- * that, against a fixture where the other Project's rows outnumber this one's ten
- * thousand to one.
+ * Project's Issues for the same version string — release versions are not unique
+ * across Projects. Cost cannot reject that either, because such a plan can still
+ * filter on the version and read very little;
+ * {@link #aOneReleasePageIgnoresOtherProjectsRollupRows} rejects it on the
+ * <em>answer</em>, against a fixture where other Projects carry hundreds of Issues
+ * on the version this one has once.
  * </ol>
  *
  * <p>Exact {@code issue_count} <em>values</em> — repeated Events on one Issue,
@@ -188,10 +192,37 @@ class ReleaseQueryPerformanceTest {
 	// -------------------------------------------------------------- what scales
 
 	/**
+	 * <b>No count may be a subquery the executor re-runs per Release row.</b> This is
+	 * the assertion that actually forbids the defect, and it is separate from the
+	 * costs below on purpose: #130's comment warned that "a supporting index could
+	 * make eight correlated probes fit under the ceiling without removing the
+	 * per-output-row structure", and it is right — a page's worth of indexed probes
+	 * is cheap enough to pass any bound this fixture can honestly set. Cost cannot
+	 * express "not once per row"; plan shape can.
+	 *
+	 * <p>Asserted on the full page, since a fixture with eight Releases is where a
+	 * per-row plan hides best.
+	 */
+	@Test
+	void noCountRunsOncePerReleaseRow() {
+		PlanFacts facts = warm(QueryPlans.releaseList(busyProjectId));
+
+		assertThat(facts.correlatedSubplans())
+			.as("subqueries re-run per output row by a %d-release page%n%s", ReleaseController.pageSize(), facts.plan())
+			.isEmpty();
+	}
+
+	/**
 	 * Work must scale with the page, not with the correlation. The guard dataset has
 	 * eight Releases and the endpoint returns two hundred, so a per-row aggregate
 	 * cheap enough to hide at eight is the fixture-shaped result #130's comment
 	 * warned the old bound would certify.
+	 *
+	 * <p>This is the backstop, not the structural claim —
+	 * {@link #noCountRunsOncePerReleaseRow} is that. The two fixtures differ in
+	 * Releases <em>and</em> in memberships (one against twenty thousand), so the ratio
+	 * confounds the two and is deliberately loose; what it catches is a plan whose
+	 * cost per output row grew, whatever the reason.
 	 *
 	 * <p>The counts are read back, not just explained. {@code EXPLAIN ANALYZE}
 	 * executes the query but asserts nothing about what came out of it, and a plan
@@ -199,7 +230,7 @@ class ReleaseQueryPerformanceTest {
 	 */
 	@Test
 	void fullPageCostsWhatAOneReleasePageCosts() {
-		long solo = warm(QueryPlans.releaseList(soloProjectId)).logicalIo();
+		long oneReleaseBlocks = warm(QueryPlans.releaseList(soloProjectId)).logicalIo();
 		QueryPlans.Built page = QueryPlans.releaseList(busyProjectId);
 		PlanFacts facts = warm(page);
 
@@ -219,8 +250,8 @@ class ReleaseQueryPerformanceTest {
 		});
 		assertThat(facts.logicalIo())
 			.as("blocks for a %d-release page against the %d a 1-release page costs%n%s", ReleaseController.pageSize(),
-					solo, facts.plan())
-			.isLessThan(FULL_PAGE_COST_MULTIPLE * solo);
+					oneReleaseBlocks, facts.plan())
+			.isLessThan(FULL_PAGE_COST_MULTIPLE * oneReleaseBlocks);
 	}
 
 	/**
@@ -230,14 +261,32 @@ class ReleaseQueryPerformanceTest {
 	 * handful of ways — so a count that groups the rollup without scoping it reads
 	 * every other Project's memberships and then discards them.
 	 *
-	 * <p>The comparator is what reading the whole rollup costs, which is what such a
-	 * plan would have to pay at minimum. The busy project's twenty thousand rows are
-	 * there to make that number worth clearing: without them the rollup fits in a
-	 * couple of blocks and the assertion could not fail. Measured 132 blocks against
-	 * 404 — the margin comes from the index, not from the table being small.
+	 * <p><b>The value is what proves it, not the block count.</b> A cost bound cannot:
+	 * a plan that dropped {@code project_id} but kept matching on the version string
+	 * would read only the rows carrying <em>that one version</em> — a few dozen — and
+	 * sit comfortably under any ceiling while returning a number that belongs to the
+	 * whole installation. So the fixture is built to make that plan wrong rather than
+	 * slow: the solo Project's single Release shares its version with the busy
+	 * Project's, where {@link #BUSY_PROJECT_ISSUES} Issues carry it, and with the
+	 * seeded Projects' hundreds. One Issue is the answer; anything project-blind
+	 * returns three figures.
+	 *
+	 * <p>The block bound stays behind it, against what reading the whole rollup
+	 * costs — the floor a plan that grouped every Project's memberships would pay.
+	 * The busy project's twenty thousand rows are there to make that number worth
+	 * clearing: without them the rollup fits in a couple of blocks and it could not
+	 * fail. Measured 132 blocks against 404.
 	 */
 	@Test
 	void aOneReleasePageIgnoresOtherProjectsRollupRows() {
+		QueryPlans.Built page = QueryPlans.releaseList(soloProjectId);
+		List<Map<String, Object>> rows = page.rows(jdbc);
+
+		assertThat(rows).as("the solo project's page").hasSize(1);
+		assertThat(rows.getFirst().get("issue_count"))
+			.as("issue_count for a version %d other issues carry in another project", BUSY_PROJECT_ISSUES)
+			.isEqualTo(1L);
+
 		// count(event_count), not count(release): `release` is the trailing column of
 		// idx_issue_release_stats_project_release, so counting it can be answered
 		// index-only and would price "read every project's rows" below what reading
@@ -245,7 +294,7 @@ class ReleaseQueryPerformanceTest {
 		// telemetry tables, and for the same reason.
 		long wholeRollup = warm(new QueryPlans.Built("SELECT count(event_count) FROM issue_release_stats", List.of()))
 			.logicalIo();
-		PlanFacts facts = warm(QueryPlans.releaseList(soloProjectId));
+		PlanFacts facts = warm(page);
 
 		assertThat(facts.logicalIo())
 			.as("blocks for a 1-release page against the %d reading every project's rollup rows costs%n%s", wholeRollup,
@@ -290,7 +339,7 @@ class ReleaseQueryPerformanceTest {
 	 *
 	 * @return the new project's id
 	 */
-	private long seedRollupOnly(String slug, int releases, int issues) {
+	private long seedRollupOnly(String slug, int releaseCount, int issueCount) {
 		long projectId = jdbc.sql("INSERT INTO project (slug, name) VALUES (?, ?) RETURNING id")
 			.param(slug)
 			.param(slug)
@@ -302,12 +351,12 @@ class ReleaseQueryPerformanceTest {
 				INSERT INTO release (project_id, version, created_at)
 				SELECT ?, 'app@1.0.' || g, now() - make_interval(days => g)
 				FROM generate_series(1, ?) g
-				""").param(projectId).param(releases).update();
+				""").param(projectId).param(releaseCount).update();
 		jdbc.sql("""
 				INSERT INTO issue (project_id, fingerprint, title, culprit, level, status, first_seen, last_seen)
 				SELECT ?, 'fp-' || g, 'seeded', 'seeded', 'error', 'unresolved', now(), now()
 				FROM generate_series(1, ?) g
-				""").param(projectId).param(issues).update();
+				""").param(projectId).param(issueCount).update();
 		jdbc.sql("""
 				INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
 				SELECT i.id, i.project_id, r.version, 1, now()

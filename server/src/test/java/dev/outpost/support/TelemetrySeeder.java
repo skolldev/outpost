@@ -520,7 +520,7 @@ public final class TelemetrySeeder {
 				INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
 				SELECT issue_id, project_id, release, count(*), max("timestamp")
 				FROM event
-				WHERE release IS NOT NULL
+				WHERE release IS NOT NULL AND btrim(release) <> ''
 				GROUP BY issue_id, project_id, release
 				""").update();
 	}

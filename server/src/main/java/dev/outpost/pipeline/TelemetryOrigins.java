@@ -67,7 +67,7 @@ public class TelemetryOrigins {
 			jdbc.update(ENVIRONMENT_UPSERT, environment.projectId(), environment.name());
 		}
 		for (Ref release : distinct(batch, ProcessedTelemetry::release)) {
-			if (!release.name().isBlank()) {
+			if (Releases.isNamed(release.name())) {
 				jdbc.update(RELEASE_UPSERT, release.projectId(), release.name());
 			}
 		}

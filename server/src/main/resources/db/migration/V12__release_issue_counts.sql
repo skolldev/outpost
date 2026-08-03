@@ -1,8 +1,8 @@
 -- The Releases page annotates each Release with the number of distinct Issues
--- seen on it. That is the membership question `issue_release_stats` already
--- answers, one row per (Issue, Release) that has ever carried an Event, so the
--- page can count rollup rows instead of aggregating `event` once per Release
--- row with no time bound (#130).
+-- carrying a retained Event on it. That is the membership question
+-- `issue_release_stats` already answers, one row per (Issue, Release) with a
+-- retained Event, so the page can count rollup rows instead of aggregating
+-- `event` once per Release row with no time bound (#130).
 --
 -- What the rollup was missing is a Project-scoped way in. It keys on issue_id,
 -- so scoping a count to one Project meant joining `issue` — which reads every
@@ -28,10 +28,13 @@
 -- no way in.
 ALTER TABLE issue_release_stats ADD COLUMN project_id bigint;
 
--- Cheap where V10's backfill was not. This reads the rollup and `issue`, both
--- low-volume; V10 had to read every weekly partition of `event` because it was
--- deriving membership that existed nowhere else. Here the truth is one join
--- away, so an install that survived V10 will not notice this one.
+-- Structurally cheaper than V10's backfill, which is a claim about what this
+-- reads rather than a measured time: the rollup and `issue`, both low-volume,
+-- where V10 had to read every weekly partition of `event` to derive membership
+-- that existed nowhere else. It is still a full rewrite of the rollup under an
+-- ACCESS EXCLUSIVE lock taken by the ALTERs around it, and no upgrade of a
+-- populated install has been timed — an operator with a large rollup should
+-- treat the duration as unknown rather than as small.
 UPDATE issue_release_stats stats SET project_id = i.project_id FROM issue i WHERE i.id = stats.issue_id;
 
 ALTER TABLE issue_release_stats ALTER COLUMN project_id SET NOT NULL;
@@ -39,4 +42,12 @@ ALTER TABLE issue_release_stats ALTER COLUMN project_id SET NOT NULL;
 -- The Releases page's whole access path: one range per (Project, Release) on
 -- the page, counted in one pass. The primary key (issue_id, release) cannot
 -- serve it — it leads with the column the page does not know.
+--
+-- Its write cost is per new (Issue, Release) pair, not per Event, which is the
+-- reason it is affordable on a table an ingest worker upserts into for every
+-- Event it stores. EventStore's upsert inserts a row the first time an Issue is
+-- seen on a Release and updates counters on every Event after that; the update
+-- leaves both indexed columns alone, so it adds no index entry. A deploy that
+-- surfaces 500 Issues writes 500 entries, once — against the millions of Events
+-- those Issues go on to collect.
 CREATE INDEX idx_issue_release_stats_project_release ON issue_release_stats (project_id, release);

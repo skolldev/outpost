@@ -52,15 +52,22 @@ public class ReleaseController {
 	/**
 	 * The release-list query the controller runs, extracted per {@link SearchQuery}.
 	 *
-	 * <p>{@code issue_count} is the number of distinct Issues ever seen on a
-	 * Release. It used to be {@code count(DISTINCT e.issue_id)} over {@code event},
+	 * <p>{@code issue_count} is the number of distinct Issues carrying at least one
+	 * <em>retained</em> Event on that Release — not the number ever seen on it. The
+	 * distinction is invisible until the Data Retention Policy expires an Event, at
+	 * which point the count drops; that was true of the aggregate over {@code event}
+	 * too, which could only count rows that still existed, and the rollup preserves it
+	 * because {@code DataRetentionService} rebuilds an affected Issue's rows from the
+	 * Events that survived the sweep.
+	 *
+	 * <p>It used to be {@code count(DISTINCT e.issue_id)} over {@code event},
 	 * correlated to the Release row and carrying no time bound — a fresh aggregate
 	 * over every weekly partition for each of up to {@link #PAGE_SIZE} rows, which
 	 * cost 16x a full scan of {@code event} to annotate eight Releases and 14.9
 	 * seconds at benchmark scale (#130).
 	 *
 	 * <p>It is now counted from {@code issue_release_stats}, which holds exactly one
-	 * row per (Issue, Release) that has ever carried an Event — so {@code count(*)}
+	 * row per (Issue, Release) with a retained Event — so {@code count(*)}
 	 * over a Release's rows <em>is</em> its distinct-Issue count, without a
 	 * {@code DISTINCT} and without reading a telemetry table at all. That is the
 	 * property that matters: the page's cost is a function of the Project's Issues
