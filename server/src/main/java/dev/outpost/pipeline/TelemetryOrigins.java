@@ -47,13 +47,29 @@ public class TelemetryOrigins {
 		this.jdbc = jdbc;
 	}
 
-	/** Creates any environment or release in {@code batch} that does not exist yet. */
+	/**
+	 * Creates any environment or release in {@code batch} that does not exist yet.
+	 *
+	 * <p>A <em>blank</em> release is skipped, and the rest of the product already
+	 * agrees it is not a Release: an SDK sending {@code "release":""} reaches here
+	 * as an empty string, {@code EventStore} keeps no rollup row for it,
+	 * {@code IssueController} rejects a blank release filter, and
+	 * {@code sentry-cli}'s release endpoint refuses to create one. A row here would
+	 * be a Release the Releases page lists with an empty name and — since #130 reads
+	 * its Issue counts from that rollup — no Issues, whatever its Events say.
+	 * Environments are not held to the same rule here because only the error
+	 * pipeline defaults a blank one; the log and transaction pipelines store it as
+	 * given, and an environment the signal rows carry but the filter list omits is
+	 * the mismatch this avoids.
+	 */
 	public void ensure(Collection<? extends ProcessedTelemetry> batch) {
 		for (Ref environment : distinct(batch, ProcessedTelemetry::environment)) {
 			jdbc.update(ENVIRONMENT_UPSERT, environment.projectId(), environment.name());
 		}
 		for (Ref release : distinct(batch, ProcessedTelemetry::release)) {
-			jdbc.update(RELEASE_UPSERT, release.projectId(), release.name());
+			if (!release.name().isBlank()) {
+				jdbc.update(RELEASE_UPSERT, release.projectId(), release.name());
+			}
 		}
 	}
 

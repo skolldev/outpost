@@ -517,11 +517,11 @@ public final class TelemetrySeeder {
 				WHERE i.id = t.issue_id
 				""").update();
 		jdbc.sql("""
-				INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
-				SELECT issue_id, release, count(*), max("timestamp")
+				INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
+				SELECT issue_id, project_id, release, count(*), max("timestamp")
 				FROM event
 				WHERE release IS NOT NULL
-				GROUP BY issue_id, release
+				GROUP BY issue_id, project_id, release
 				""").update();
 	}
 
