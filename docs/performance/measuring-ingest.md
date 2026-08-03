@@ -226,7 +226,10 @@ reproduce elsewhere. The five findings are structural and will.**
 
 2. **Errors cost ~2× a transaction.** `TransactionStore` has no advisory lock and
    no issue upsert; `EventStore` has both, plus an `issue_env_stats` upsert per
-   event. Grouping is the expensive part of error ingest, not the insert.
+   event. Grouping is the expensive part of error ingest, not the insert. (Since
+   #127 there is a second rollup, `issue_release_stats`, batched once per batch
+   rather than once per event — see the 2026-08-02 section below for what the
+   per-event version of it cost.)
 
 3. **`max-batch` counts items, not records.** A log item holds up to 100 records,
    so a 500-item batch is 50 000 records in one transaction — each with its own
@@ -286,6 +289,44 @@ storage-side cost that would show on a lock-free path.
 Worth knowing before adding a seventh index: **nothing in CI will catch it.** The
 ingest benchmark is excluded from `test` by the `benchmark` tag, so a future index
 on `issue` gets measured only if someone chooses to.
+
+## The release rollup, measured 2026-08-02
+
+#127 moved the issue-list `release=` filter off `event` and onto an
+`issue_release_stats` rollup, which means `EventStore` maintains a second rollup
+on the write path. The first version of that upsert ran **once per event**, next
+to the `issue_env_stats` one finding 2 above already names as part of why errors
+cost ~2x a transaction. Single runs of the saturated error ladder, same machine,
+back to back:
+
+| | 1 600/s offered | 3 200/s offered |
+| --- | --: | --: |
+| before the rollup (`b1e43e4`) | 1 520 stored/s | 1 743 stored/s |
+| rollup, upsert per event | 1 130 (−26%) | 1 172 (**−33%**) |
+| rollup, one `batchUpdate` per batch | 1 451 (−4.5%) | 1 592 (−8.7%) |
+
+**The per-event version cost a third of peak error throughput, and batching gives
+back about three quarters of that.** The 1 600/s step is the clearer signal: it
+was a sustainable plateau before (queue depth 202) and stopped being one with the
+per-event upsert (depth 6 055, average queue wait 157 ms → 2 244 ms).
+
+Read the two rows with different confidence. **−33% is four times the ~7% noise
+floor** the #126 section establishes for this harness, and the four lower rungs of
+the ladder match the baseline to 0.1 rows/s, so the regression is real. **−8.7% is
+barely above that floor** — these were single runs, not the six paired ones #126
+got, so the residual cost of the batched rollup is *not* resolved here. It is
+somewhere between free and ~9%.
+
+The useful inference is about the mechanism rather than this rollup: the cost that
+batching removed was the **round trip per event**, not the row write, and the same
+shape applies to the `issue_env_stats` upsert three lines above it, which still
+runs per event and has never been measured against a batched alternative. That is
+the cheapest untested throughput idea currently visible on the error path.
+
+Same caveat as #126 on catching a regression like this: **nothing in CI would
+have.** The per-event version passed every test in the repo, including the guard
+that proved the read-side fix worked. It was found by running the ingest
+benchmark by hand, which is opt-in.
 
 ## Related
 

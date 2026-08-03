@@ -374,7 +374,7 @@ class IngestBenchmark {
 		jdbc.sql("DELETE FROM txn").update();
 		jdbc.sql("DELETE FROM log_record").update();
 		jdbc.sql("DELETE FROM event").update();
-		jdbc.sql("DELETE FROM issue_env_stats").update();
+		// Both issue rollups are FK-cascaded from `issue`, so deleting it clears them.
 		jdbc.sql("DELETE FROM issue").update();
 	}
 

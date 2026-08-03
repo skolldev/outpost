@@ -195,6 +195,20 @@ public class DataRetentionService {
 				JOIN issue i ON i.id = e.issue_id
 				GROUP BY e.issue_id, e.environment
 				""").update();
+		jdbc.sql("""
+				DELETE FROM issue_release_stats stats
+				USING retention_affected_issue affected
+				WHERE stats.issue_id = affected.issue_id
+				""").update();
+		jdbc.sql("""
+				INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
+				SELECT e.issue_id, e.release, count(*), max(e."timestamp")
+				FROM event e
+				JOIN retention_affected_issue affected ON affected.issue_id = e.issue_id
+				JOIN issue i ON i.id = e.issue_id
+				WHERE e.release IS NOT NULL AND btrim(e.release) <> ''
+				GROUP BY e.issue_id, e.release
+				""").update();
 
 		return new ProjectChunk(events, issues, true);
 	}

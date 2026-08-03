@@ -32,8 +32,11 @@ import org.springframework.web.client.RestTemplate;
 /**
  * A redelivered event must not inflate the aggregates. SDKs retry on network
  * failure, so the same {@code event_id} arrives more than once; the second copy
- * stores no event row and must therefore leave {@code issue.event_count} and
- * {@code issue_env_stats.event_count} untouched.
+ * stores no event row and must therefore leave {@code issue.event_count},
+ * {@code issue_env_stats.event_count} and {@code issue_release_stats.event_count}
+ * untouched. Every envelope here carries a {@link #RELEASE}, so all three
+ * counters are on the path each test exercises — a rollup nothing writes to
+ * cannot be over-counted, and would pass silently.
  *
  * <p>The single-event path goes over HTTP. The batched path calls
  * {@link EventStore#store} directly: whether two envelopes land in the same
@@ -44,6 +47,9 @@ import org.springframework.web.client.RestTemplate;
 		"outpost.ingest.linger-millis=50" })
 @Import(TestcontainersConfiguration.class)
 class DuplicateEventIngestIntegrationTest {
+
+	/** Carried by every envelope below, so the release rollup is written on each path. */
+	private static final String RELEASE = "shop@1.0.0";
 
 	@LocalServerPort
 	int port;
@@ -107,6 +113,7 @@ class DuplicateEventIngestIntegrationTest {
 		assertThat(eventRows()).isEqualTo(1);
 		assertThat(issueEventCount()).isEqualTo(1);
 		assertThat(envEventCount("prod")).isEqualTo(1);
+		assertThat(releaseEventCount()).isEqualTo(1);
 	}
 
 	@Test
@@ -121,6 +128,7 @@ class DuplicateEventIngestIntegrationTest {
 		assertThat(eventRows()).isEqualTo(2);
 		assertThat(issueEventCount()).isEqualTo(2);
 		assertThat(envEventCount("prod")).isEqualTo(2);
+		assertThat(releaseEventCount()).isEqualTo(2);
 		assertThat(duplicates() - baselineDuplicates).isEqualTo(1);
 	}
 
@@ -133,6 +141,7 @@ class DuplicateEventIngestIntegrationTest {
 		assertThat(eventRows()).isEqualTo(1);
 		assertThat(issueEventCount()).isEqualTo(1);
 		assertThat(envEventCount("prod")).isEqualTo(1);
+		assertThat(releaseEventCount()).isEqualTo(1);
 		assertThat(duplicates() - baselineDuplicates).isEqualTo(1);
 	}
 
@@ -172,10 +181,10 @@ class DuplicateEventIngestIntegrationTest {
 	private String eventJson(String eventId, String environment, String type) {
 		return """
 				{"event_id":"%s","timestamp":"%s","platform":"javascript",\
-				"level":"error","environment":"%s",\
+				"level":"error","environment":"%s","release":"%s",\
 				"exception":{"values":[{"type":"%s","value":"boom","stacktrace":{"frames":[\
 				{"filename":"http://localhost:4200/main.js","function":"handleClick","in_app":true,"lineno":13}\
-				]}}]}}""".formatted(eventId, eventTimestamp, environment, type);
+				]}}]}}""".formatted(eventId, eventTimestamp, environment, RELEASE, type);
 	}
 
 	private long eventRows() {
@@ -189,6 +198,13 @@ class DuplicateEventIngestIntegrationTest {
 	private long envEventCount(String environment) {
 		return jdbc.sql("SELECT coalesce(sum(event_count), 0) FROM issue_env_stats WHERE environment = ?")
 			.param(environment)
+			.query(Long.class)
+			.single();
+	}
+
+	private long releaseEventCount() {
+		return jdbc.sql("SELECT coalesce(sum(event_count), 0) FROM issue_release_stats WHERE release = ?")
+			.param(RELEASE)
 			.query(Long.class)
 			.single();
 	}

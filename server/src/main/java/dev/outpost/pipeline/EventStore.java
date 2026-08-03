@@ -73,6 +73,14 @@ public class EventStore {
 			ON CONFLICT DO NOTHING
 			""";
 
+	private static final String RELEASE_STATS_UPSERT = """
+			INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
+			VALUES (?, ?, 1, ?)
+			ON CONFLICT (issue_id, release) DO UPDATE SET
+			    event_count = issue_release_stats.event_count + 1,
+			    last_seen = GREATEST(issue_release_stats.last_seen, EXCLUDED.last_seen)
+			""";
+
 	// Which of the batch's events are already stored, probed on exactly the key
 	// EVENT_INSERT conflicts on — so "found here" and "would not insert there" are
 	// the same question, and each probe prunes to the one partition it can be in.
@@ -153,6 +161,7 @@ public class EventStore {
 			return;
 		}
 		origins.ensure(batch);
+		List<Object[]> releaseRows = new ArrayList<>(batch.size());
 		List<Object[]> eventRows = batch.stream().map(event -> {
 			IssueUpsert upsert = jdbc.queryForObject(ISSUE_UPSERT,
 					(rs, i) -> new IssueUpsert(rs.getLong("id"), rs.getBoolean("inserted")), event.projectId(),
@@ -170,12 +179,27 @@ public class EventStore {
 					    event_count = issue_env_stats.event_count + 1,
 					    last_seen = GREATEST(issue_env_stats.last_seen, EXCLUDED.last_seen)
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
+			// Blank as well as null: an SDK sending "release":"" reaches here as an
+			// empty string, and IssueController rejects a blank release filter, so a
+			// row for one could never be matched by the query this rollup exists for.
+			if (event.release() != null && !event.release().isBlank()) {
+				releaseRows.add(new Object[] { issueId, event.release(), Timestamp.from(event.timestamp()) });
+			}
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
 					event.exceptionType(), event.userIdent(), json(event), event.rawGzip(),
 					event.symbolicationStatus() };
 		}).toList();
 
+		// One round trip for the whole batch, not one per event. The environment
+		// rollup above still pays per event, and docs/performance/measuring-ingest.md
+		// measures what that costs; adding a second per-event round trip here cost
+		// a third of peak error throughput (1 743 → 1 172 events/s), and batching
+		// gives it back. Statement-per-row, deliberately: a single multi-row VALUES
+		// cannot carry two Events of the same Issue and Release, which every batch
+		// from one deploy is full of — ON CONFLICT refuses to affect a row twice in
+		// one statement, while a JDBC batch applies each row in its own.
+		jdbc.batchUpdate(RELEASE_STATS_UPSERT, releaseRows);
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);
 	}
 

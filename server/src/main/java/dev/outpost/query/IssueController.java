@@ -126,7 +126,7 @@ public class IssueController {
 			params.addAll(environment);
 		}
 		if (release != null && !release.isBlank()) {
-			sql.append(" AND EXISTS (SELECT 1 FROM event e WHERE e.issue_id = issue.id AND e.release = ?)");
+			sql.append(" AND EXISTS (SELECT 1 FROM issue_release_stats s WHERE s.issue_id = issue.id AND s.release = ?)");
 			params.add(release);
 		}
 		if (from != null) {
