@@ -243,11 +243,14 @@ not for an unfiltered one.
 | Issue list, `environment=` | 936 ms | 1 044 ms | 944 811 | 0 |
 | Issue list, `project=` | 611 ms | 820 ms | 731 930 | 0 |
 | Issue list, page 50 | **36 ms** | 47 ms | 84 231 | 0 |
-| Log page 1 | **10 ms** | 22 ms | **333** | 0 |
-| Logs, `query=` (0.1 % selective) | 89 ms | 108 ms | **307 690** | 0 |
-| Logs, `attr=` (0.1 % selective) | 56 ms | 72 ms | 307 671 | 0 |
-| Logs by `trace_id` | 10 ms | 16 ms | 175 | 0 |
-| Log page 50 | **12 ms** | 20 ms | **422** | 0 |
+| Log page 1, All time | **11 ms** | 20 ms | **333** | 0 |
+| Log page 1, 14d (the default) | **12 ms** | 22 ms | **342** | 0 |
+| Log page 1, 14d, `project=` | **12 ms** | 22 ms | **342** | 0 |
+| Log page 50, All time | **11 ms** | 21 ms | **419** | 0 |
+| Log page 50, 14d, `project=` | **12 ms** | 24 ms | **358** | 0 |
+| Logs, `query=` (0.1 % selective) | 109 ms | 212 ms | 92 119 | 0 |
+| Logs, `attr=` (0.1 % selective) | 66 ms | 80 ms | 282 516 | 0 |
+| Logs by `trace_id` | 11 ms | 17 ms | 175 | 0 |
 | Trace search, page 1 | 2 097 ms | 2 134 ms | 900 534 | **224 130** |
 | Trace search, page 20 | 2 098 ms | 2 122 ms | 900 382 | **224 130** |
 | Trace search, `has_errors=true` | 1 401 ms | 3 186 ms | 6 358 857 | **256 683** |
@@ -330,35 +333,61 @@ Issue-list saturation ladder, same dataset:
    `page / selectivity`. That is why `project_id` got an index and `environment` and
    `level` did not. A project's share of the logs shrinks without bound as an install
    adds projects, so one quiet project's stream would walk ~100 rows per row returned
-   on a 100-project install; environment is low-cardinality by design and `level` has
+   on a 100-project install; environment is low-cardinality by convention and `level` has
    six values, so both cost a bounded small constant — measured ~3x (1 006 blocks)
    and ~4x (1 322). **Neither of those constants is something the guard tier can
    assert**, because at guard scale there are two projects and three environments;
    the structural claim the guards do assert is that each shape walks the index built
    for it rather than sorting.
 
+   **The environment half of that is an assumption, and it is the one to revisit
+   first.** `level` is genuinely closed, but environments are auto-created on ingest
+   by `TelemetryOrigins` and nothing caps how many accumulate. An install naming an
+   environment per branch or per pod gives the environment filter exactly the
+   unbounded `page / selectivity` cost that earned `project_id` its index. The
+   remedy is known and priced — `(environment, "timestamp" DESC, id DESC)` took that
+   shape from 826 blocks to 339 when it was tried — and was declined only because
+   three environments is what the product's UI and seeder assume, not because the
+   schema guarantees it.
+
    **At benchmark scale the fix is worth far more than at guard scale, which is the
    direction the structural argument predicted.** On 5 000 010 log records page 1
-   went from 1 041 935 blocks and 274 ms to **333 blocks and 10 ms**, and page 50
-   from 1 041 755 and 268 ms to **422 and 12 ms** — O(page) holding three thousand
-   times better than the plan it replaced. p99 on page 1 fell from 793 ms to 22 ms.
+   went from 1 041 935 blocks and 274 ms to **333 blocks and 11 ms**, and page 50
+   from 1 041 755 and 268 ms to **419 and 11 ms** — O(page) holding three thousand
+   times better than the plan it replaced. p99 on page 1 fell from 793 ms to 20 ms.
    This is the payoff a block-count guard at guard scale could not have seen, for
    exactly the reason finding 6 gives about #126.
 
-   **It also made body-substring search read 3.3x more blocks, and that is a real
-   regression even though it got faster.** `query=` went from 93 763 blocks to
-   307 690 while p50 improved from 116 ms to 89 ms: the planner now prefers walking
-   `idx_log_ts_id` in order and applying `ILIKE` as a filter over a bitmap scan of
-   `idx_log_body_trgm` plus a sort. It is trading random heap fetches for a
-   sequential-ish ordered walk, which wins on this dataset's cache behaviour and
-   loses on logical I/O. That trade gets worse as the needle gets rarer, since the
-   ordered walk has to go further to fill a page while the trigram scan does not.
-   **No guard covers this**, because #129 established that body search is a
-   scale-dependent question and deleted its guard; it is recorded here rather than
-   asserted anywhere, and it is the row to check first if log search is reported
-   slow. The same mechanism is why `attr=` improved (1 041 935 → 307 671) without
-   #132 being fixed at all — the filter is still unindexed, it is just riding a
-   cheaper scan.
+   **And it holds at the shapes the UI actually sends, which is the half worth
+   checking.** The rows above are All time — the range picker's expensive end, not
+   its default. The benchmark now drives the 14-day default and its project-scoped
+   variant too, page 1 and a deep cursor *walked under those same filters*: 342, 342,
+   and 358 blocks against the unfiltered 333, all within a millisecond of each other.
+   The fix is not an All-time special case.
+
+   **It also gave body-substring search two plans of near-equal estimated cost, and
+   the planner now picks between them run to run.** Two full runs on the same
+   dataset, differing in nothing but which plan was chosen:
+
+   | `query=` plan | blocks | partitions | p50 |
+   | --- | --: | --: | --: |
+   | bitmap scan of `idx_log_body_trgm` + sort | 92 119 | 13 | 109 ms |
+   | ordered walk of `idx_log_ts_id` + `ILIKE` filter | 307 690 | 3 | 89 ms |
+
+   The first is what it always did (93 763 before the migration); the second is new.
+   Note that the *cheaper* plan in blocks is the *slower* one in wall clock — the
+   ordered walk trades random heap fetches for a sequential-ish read, which is a
+   good trade here and a worse one as the needle gets rarer, since only the walk has
+   to go further to fill a page. **This was first written up as a 3.3x regression on
+   the strength of a single run; a second run showed the other plan and that claim
+   was wrong.** What is true is the instability, and it is a caution about the whole
+   tier: one benchmark run is a sample of the planner's choice, not a measurement of
+   the query. **No guard covers this**, because #129 established body search as a
+   scale-dependent question and deleted its guard.
+
+   The same new plan is why `attr=` improved (1 041 935 → ~280–310k) without #132
+   being fixed at all — the filter is still unindexed, it is just riding a cheaper
+   scan.
 
    The write side was measured rather than assumed, because this indexes the
    highest-volume table in the product. At 2 000 010 records over 13 weekly
@@ -367,10 +396,12 @@ Issue-list saturation ladder, same dataset:
    storage up ~46 %. **Storage, not throughput, is the price.** The build holds a
    `ShareLock` (read from `pg_locks` during one) which does block inserts (probed
    deterministically), but only for 392 ms and 560 ms at that size.
-   `logEnvelopeStepLoad` was unchanged either side of the migration — and the honest
-   caveat is that it *cannot* have shown otherwise, since that ladder never saturates
-   for logs: zero shed and zero queue depth at every step, before and after. It shows
-   the extra maintenance is absorbed up to ~16 000 records/s, not that it is free.
+   Ingest throughput needed the log ladder raised before it could say anything: its
+   top step left the queue at depth 0, so it reported the offered rate rather than a
+   capacity. Raised to 640 envelopes/s it saturates, and the ceiling is **43 481
+   records/s before against 43 947 after** — a 1.1 % difference in the direction two
+   extra indexes cannot produce, i.e. below what the harness resolves. See
+   [`measuring-ingest.md`](measuring-ingest.md) for the caveats on a single pair.
 
 5. **The log ordering problem masked the attribute one; #128 unmasked it.**
    `attributes->>? = ?` cannot use the GIN index — the key is a bind parameter, and

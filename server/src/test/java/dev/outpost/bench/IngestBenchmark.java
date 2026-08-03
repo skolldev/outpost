@@ -80,7 +80,14 @@ class IngestBenchmark {
 	 */
 	private static final int[] ERROR_RATES = { 200, 400, 800, 1600, 3200 };
 
-	private static final int[] LOG_RATES = { 10, 20, 40, 80, 160 };
+	/**
+	 * Raised from {@code 10..160} while measuring #128, because it did not satisfy
+	 * the contract above: at 160 envelopes/s — 16 000 records/s — the queue still
+	 * drained to depth 0 with nothing shed, so every step measured the offered rate
+	 * played back and the ladder could not price a change to the log write path. The
+	 * knee is inside this one.
+	 */
+	private static final int[] LOG_RATES = { 40, 80, 160, 320, 640 };
 
 	private static final int[] TRANSACTION_RATES = { 100, 200, 400, 800, 1600 };
 

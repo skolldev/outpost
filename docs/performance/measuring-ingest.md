@@ -297,24 +297,35 @@ DESC)` and `(project_id, "timestamp" DESC, id DESC)`. Unlike the `issue` case
 above this is a pure append path — `LogStore` batch-inserts and never updates — so
 there is no HOT consideration, just two more index entries per record.
 
-`logEnvelopeStepLoad`, before and after, same machine:
+**Measuring it meant fixing the ladder first.** `LOG_RATES` ran `10..160`
+envelopes/s, and at its top step the queue still drained to depth 0 with nothing
+shed — so every step reported the offered rate played back, and the scenario could
+not price a change to the log write path at all. That violates the ladder's own
+contract ("the knee should land in the middle of each ladder"), so it was raised to
+`40..640`. The knee is now inside it, between 320 and 640 envelopes/s.
 
-| offered | stored/s before | stored/s after | p99 ms before | p99 ms after | alloc KB/env before | after |
+`logEnvelopeStepLoad` on the raised ladder, before and after, same machine:
+
+| offered | stored/s before | stored/s after | queue depth before | after | queue wait ms before | after |
 | --: | --: | --: | --: | --: | --: | --: |
-| 10/s | 998.9 | 999.3 | 18.5 | 18.4 | 928.7 | 924.2 |
-| 20/s | 1998.7 | 1999.6 | 26.6 | 16.4 | 925.2 | 920.8 |
-| 40/s | 3997.9 | 3997.9 | 16.5 | 11.9 | 919.6 | 915.1 |
-| 80/s | 7997.1 | 7998.1 | 8.0 | 7.7 | 917.2 | 912.9 |
-| 160/s | 15995.5 | 15996.5 | 4.8 | 4.4 | 915.9 | 911.7 |
+| 40/s | 3 997.6 | 3 997.3 | 0 | 0 | 0.9 | 0.9 |
+| 80/s | 7 997.6 | 7 997.6 | 0 | 0 | 0.7 | 0.7 |
+| 160/s | 15 995.5 | 15 995.5 | 0 | 0 | 0.6 | 0.6 |
+| 320/s | 31 995.5 | 32 002.1 | 0 | 0 | 0.9 | 1.2 |
+| **640/s** | **43 480.9** | **43 946.7** | 2 077 | 2 008 | 1 520 | 2 260 |
 
-**This table cannot show a regression, and that is the most important thing about
-it.** The log ladder never saturates: zero 429s, zero shed, and queue depth 0 at
-every step both before and after, so `stored/s` is just the offered rate played
-back and the after column being marginally *faster* is run-to-run noise. What it
-establishes is that the extra maintenance is absorbed at up to ~16 000 records/s —
-not that it is free, and not where the knee is, because this ladder never reaches
-it for logs. Finding the log knee would need rates well above 160 envelopes/s, and
-the ladder's top step was chosen for the error path.
+Up to 320 envelopes/s — 32 000 records/s — both keep up exactly. At 640/s both
+saturate, and the ceiling is the number that matters: **43 481 records/s before
+against 43 947 after, a 1.1 % difference in the direction that adding two indexes
+cannot physically produce.** So the maintenance cost is below what this harness
+resolves even at the knee.
+
+Two caveats on that, in the same spirit as the `issue` section above. This is a
+single pair, not the six the #126 measurement used, and that measurement put the
+noise floor near 7 % — 1.1 % is comfortably inside it. And `EnvelopeFactory` sends
+every log envelope to one project, so nothing here exercises many partitions being
+written at once. What the pair rules out is a *large* regression; it does not
+establish that the cost is zero.
 
 The cost that *was* resolvable is storage, and it is not small: at 2 000 010
 records the two indexes occupy 78 MB and 95 MB against a 651 MB heap and the

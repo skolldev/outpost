@@ -42,12 +42,15 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * of those combinations, and {@link #everyLogListShapeStaysIndexedAtDepth} walks
  * a real cursor to page 3 <em>under each shape's own filters</em>.
  *
- * <p>Body-substring search is deliberately <b>not</b> guarded here. It looked
- * broken at this scale and is not: 40 000 rows is small enough that the planner
- * correctly prefers a scan to {@code idx_log_body_trgm}, and at the retrieval
- * benchmark's 5 000 000 it uses the index for an 11x saving. A guard whose verdict
- * flips with dataset size is worse than none, so that question lives in the
- * benchmark, which has the rows to answer it.
+ * <p>Body-substring search is deliberately <b>not</b> guarded here, and {@code V11}
+ * strengthened that argument. It looked broken at this scale and is not: 40 000 rows
+ * is small enough that the planner correctly prefers a scan to {@code
+ * idx_log_body_trgm} (#129). Since the ordering index exists there are two near-cost
+ * plans for it at benchmark scale — the trigram bitmap scan, and an ordered walk of
+ * {@code idx_log_ts_id} filtering with {@code ILIKE} — and the planner has been
+ * observed choosing differently on consecutive runs over the same dataset. A guard
+ * whose verdict flips with dataset size is worse than none; one that flips between
+ * runs is worse still.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -63,9 +66,10 @@ class LogQueryPerformanceTest {
 	/**
 	 * The unfiltered stream's ceiling, calibrated against <b>All time</b> rather
 	 * than the 14-day default, because that is the expensive end of the range
-	 * picker: 480–725 blocks against ~340. The difference is not rows but
-	 * per-partition startup — ten index scans to open instead of five — so it grows
-	 * with retention and not with the dataset.
+	 * picker: 480–725 blocks against ~340. The difference is not rows read — both
+	 * execute the same three partitions — but the planner touching all ten it has to
+	 * consider before pruning, which {@link PlanFacts} counts because it sums the
+	 * {@code Planning} buffers too. That grows with retention, not with the dataset.
 	 *
 	 * <p>Not the standard 10x, which would be 7 250 and sit above the 5 043 a full
 	 * scan costs, i.e. could not fail. This is the "as high as it can while still
@@ -82,6 +86,10 @@ class LogQueryPerformanceTest {
 
 	/** Deep enough that a plan reading the table end to end cannot keep up, shallow enough to walk cheaply. */
 	private static final int DEEP_PAGE = 3;
+
+	/** Two of the three seeded environments — a multi-value filter that really excludes rows. */
+	private static final List<String> TWO_ENVIRONMENTS = List.of(TelemetrySeeder.ENVIRONMENTS.get(0),
+			TelemetrySeeder.ENVIRONMENTS.get(1));
 
 	@Autowired
 	JdbcClient jdbc;
@@ -117,13 +125,22 @@ class LogQueryPerformanceTest {
 	/**
 	 * The shapes the logs page actually sends, and the index each must walk.
 	 *
-	 * <p>Two of them expect the <em>global</em> index while carrying a filter, and
-	 * that is a finding rather than an oversight. A multi-value filter leaves rows
-	 * ordered by {@code (project_id, "timestamp")} rather than by {@code "timestamp"},
-	 * so no leading-column index can serve the ordering and Postgres correctly falls
-	 * back to walking the global one and filtering. Asserting the global index there
-	 * pins that down: if a later migration adds an index that makes the planner sort
-	 * instead, this fails.
+	 * <p>Several expect the <em>global</em> index while carrying a filter, and that is
+	 * a finding rather than an oversight. A multi-value filter leaves rows ordered by
+	 * {@code (project_id, "timestamp")} rather than by {@code "timestamp"}, so no
+	 * leading-column index can serve the ordering and Postgres correctly falls back to
+	 * walking the global one and filtering. Asserting the global index there pins that
+	 * down: if a later migration adds an index that makes the planner sort instead,
+	 * this fails.
+	 *
+	 * <p><b>The multi-select case is carried by environments, not projects, and the
+	 * reason is a fixture limitation worth stating.</b> {@link TelemetrySeeder.Scale#GUARD}
+	 * seeds two projects, so a two-project filter selects <em>every row in the
+	 * table</em> — it would assert the multi-select plan against a predicate that
+	 * excludes nothing, which is the same "passes for the wrong reason forever" trap
+	 * the seeder's single-partition note warns about. Two of the three seeded
+	 * environments genuinely excludes a third of the rows, so that is the shape the
+	 * claim rests on.
 	 *
 	 * <p>Project + environment together is served by the pre-existing
 	 * {@code idx_log_project_env_ts} with an incremental sort, which {@link
@@ -144,7 +161,7 @@ class LogQueryPerformanceTest {
 				new Shape("one project, All time", oneProject, null, null, byProject),
 				new Shape("one environment, 14d", null, oneEnvironment, since, global),
 				new Shape("one environment, All time", null, oneEnvironment, null, global),
-				new Shape("two projects, 14d", seeded.projectIds(), null, since, global),
+				new Shape("two environments, 14d", null, TWO_ENVIRONMENTS, since, global),
 				new Shape("one project + one environment, 14d", oneProject, oneEnvironment, since, byProjectAndEnv),
 				new Shape("one project + one environment, All time", oneProject, oneEnvironment, null,
 						byProjectAndEnv));

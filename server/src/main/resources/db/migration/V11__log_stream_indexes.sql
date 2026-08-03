@@ -49,10 +49,20 @@
 -- ordered index costs `page / selectivity`. That is why only project_id gets its
 -- own index: an install's project count is unbounded, so one quiet project's
 -- stream would walk ~100 rows per row returned on a 100-project install. The
--- environment (low-cardinality by design, cross-project per ADR 0009) and level
--- (six values) filters cost a bounded small constant instead — measured ~2.5x and
--- ~4x the unfiltered page above — and an index for each would be a third and
--- fourth index on the highest-volume table in the product to buy a constant factor.
+-- environment and level filters cost a bounded small constant instead — measured
+-- ~2.5x and ~4x the unfiltered page above — and an index for each would be a third
+-- and fourth index on the highest-volume table in the product to buy a constant
+-- factor.
+--
+-- That bound is a convention, not a constraint, and it is the assumption most
+-- likely to be wrong here. `level` really is closed (six values). Environments are
+-- **auto-created on ingest** by TelemetryOrigins — nothing in the schema caps how
+-- many an install accumulates, and one that sends a per-branch or per-pod
+-- environment name would give the environment filter the same unbounded
+-- `page / selectivity` cost that project_id gets an index for. If that shows up,
+-- the fix is (environment, "timestamp" DESC, id DESC), measured at 339 blocks
+-- against 826 when it was tried here, and the reason it was not shipped is that
+-- three environments is what the product's own UI and seeder assume.
 --
 -- `idx_log_project_env_ts` is deliberately kept rather than widened to
 -- (project_id, environment, "timestamp" DESC, id DESC). Widening it wins the

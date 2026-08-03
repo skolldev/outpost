@@ -14,6 +14,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -140,6 +141,9 @@ class RetrievalBenchmark {
 
 	private static final int DEEP_TRACE_PAGE = 20;
 
+	/** The range picker's default, from {@code ui/src/app/core/filters.ts}. */
+	private static final int UI_WINDOW_DAYS = 14;
+
 	/**
 	 * A page whose size the endpoint does not promise. Page 1 of an unfiltered list
 	 * is always full and asserting that catches a broken {@code LIMIT}; a filtered
@@ -261,10 +265,22 @@ class RetrievalBenchmark {
 
 	// -------------------------------------------------------------------- logs
 
+	/**
+	 * The unfiltered rows below are the "All time" end of the range picker, not the
+	 * default. #128's acceptance was explicit that a fix must be measured at the
+	 * shapes the UI actually sends, so the default 14-day window and its
+	 * project-scoped variant are measured at benchmark scale too — the guard tier
+	 * pins their plan shape, but only this tier has the rows to price them.
+	 */
 	@Test
 	void logStream() throws Exception {
 		measure("logs", "page 1", "/logs", "logs", LOG_PAGE_SIZE,
 				QueryPlans.logs(null, null, null, null, null, null, null, null, null, null));
+		Instant from = uiWindowStart();
+		measure("logs", "page 1, 14d", "/logs?from=" + encode(from.toString()), "logs", LOG_PAGE_SIZE,
+				QueryPlans.logs(null, null, null, null, null, null, null, from, null, null));
+		measure("logs", "page 1, 14d, project=", logsInWindow(from), "logs", LOG_PAGE_SIZE, QueryPlans
+			.logs(List.of(seeded.projectId()), null, null, null, null, null, null, from, null, null));
 		measure("logs", "query=", "/logs?query=" + encode(seeded.bodyNeedle()), "logs", ANY_SIZE,
 				QueryPlans.logs(null, null, null, null, null, seeded.bodyNeedle(), null, null, null, null));
 		String attr = seeded.attributeKey() + "=" + seeded.attributeValue();
@@ -280,6 +296,26 @@ class RetrievalBenchmark {
 		measure("logs", "page " + walk.depth(), "/logs?cursor=" + walk.cursor(), "logs",
 				pageSizeReached(walk, LOG_PAGE_SIZE),
 				QueryPlans.logs(null, null, null, null, null, null, null, null, null, walk.cursor()));
+
+		// Walked under the default filters rather than reached unfiltered and then
+		// filtered: a project-scoped stream gets deep over a different span of time,
+		// so a cursor borrowed from the global walk names a page nobody lands on.
+		Instant from = uiWindowStart();
+		CursorWalk scoped = walk(logsInWindow(from), "logs", DEEP_LOG_PAGE);
+		measure("logs", "page " + scoped.depth() + ", 14d, project=",
+				logsInWindow(from) + "&cursor=" + scoped.cursor(), "logs", pageSizeReached(scoped, LOG_PAGE_SIZE),
+				QueryPlans.logs(List.of(seeded.projectId()), null, null, null, null, null, null, from, null,
+						scoped.cursor()));
+	}
+
+	/** The default logs request the UI sends: one project, the 14-day window. */
+	private String logsInWindow(Instant from) {
+		return "/logs?project=" + seeded.projectId() + "&from=" + encode(from.toString());
+	}
+
+	/** `ui/src/app/core/filters.ts` defaults the global range to 14 days and sends it as `from`. */
+	private static Instant uiWindowStart() {
+		return Instant.now().minus(UI_WINDOW_DAYS, ChronoUnit.DAYS);
 	}
 
 	// ------------------------------------------------------------------ traces
@@ -485,7 +521,7 @@ class RetrievalBenchmark {
 	 */
 	private CursorWalk walk(String path, String listKey, int target) throws Exception {
 		CursorWalk walk = CursorWalk.to(target, cursor -> {
-			String url = cursor == null ? path : path + "?cursor=" + cursor;
+			String url = cursor == null ? path : path + (path.contains("?") ? "&" : "?") + "cursor=" + cursor;
 			HttpResponse<String> response = http.send(probeRequest(url), HttpResponse.BodyHandlers.ofString());
 			assertThat(response.statusCode()).as("status walking %s", path).isEqualTo(200);
 
