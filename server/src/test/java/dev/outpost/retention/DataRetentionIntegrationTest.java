@@ -212,8 +212,13 @@ class DataRetentionIntegrationTest {
 			.param(survivingIssue)
 			.param(timestamp(before))
 			.update();
-		jdbc.sql("INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen) VALUES (?, 'shop@1.0.0', 99, ?)")
+		jdbc
+			.sql("""
+					INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
+					VALUES (?, ?, 'shop@1.0.0', 99, ?)
+					""")
 			.param(survivingIssue)
+			.param(projectId)
 			.param(timestamp(before))
 			.update();
 

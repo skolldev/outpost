@@ -32,7 +32,7 @@ gets quoted as a capacity claim.
 | --- | --- |
 | `IssueQueryPerformanceTest` | The issue list and its four per-page-load queries |
 | `LogQueryPerformanceTest` | The log stream: ordering, trace lookup, pruning, attribute filters |
-| `ReleaseQueryPerformanceTest` | The releases page's per-row aggregate |
+| `ReleaseQueryPerformanceTest` | The releases page: what it reads, and what its cost scales with |
 | `TraceSearchPerformanceTest` | The 350x correlated-subquery regression, still locked out |
 
 Each `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`s the **controller's own SQL**,
@@ -119,9 +119,9 @@ adjacent pages. Cursors are *walked*, page by page, exactly as a user gets deep.
 
 Each scenario's offered rate comes from its own measured latency rather than a
 fixed number, held at a small constant concurrency. A fixed rate is only safe for
-endpoints that keep up with it: offering the releases page 20/s open-loop would
-bury it under a backlog and fail the run for a reason that has nothing to do with
-the query. An endpoint slower than half the driver's per-request timeout cannot be
+endpoints that keep up with it: offering trace search 20/s open-loop would bury it
+under a backlog and fail the run for a reason that has nothing to do with the query.
+An endpoint slower than half the driver's per-request timeout cannot be
 driven at all, and is measured once and reported as a single sample — losing the
 whole report to say "this endpoint is slow" would be a poor trade for a report
 that was going to say exactly that.
@@ -196,7 +196,8 @@ are structural and will.**
 | Log deep page (p3) | 375 | 3 of 10 | O(page) holds |
 | Logs by `trace_id` | 89 | indexed | healthy |
 | Logs, 14-day bound + a 0.1 %-selective `attr=` | **3 992** | 5 of 10 | #132 — 11x the unfiltered page |
-| Release list | **240 299** | **10 of 10** | #130 — 16x a full scan of `event` |
+| Release list | 83 | none | healthy — counted from the rollup; was 240 299 (#130) |
+| Release list, a full 200-release page | 344 | none | O(page) holds — 2.6x the 1-release page |
 | Trace detail (four tables) | 943 | indexed | healthy |
 | Event detail (+ 2 neighbours) | 254 | indexed | healthy |
 
@@ -208,11 +209,11 @@ freshly bulk-loaded heap, which made a guard's number depend on whether it
 happened to run first. A full scan of `issue` reads 23 blocks on this dataset.
 
 The issue-list rows were re-measured after #126 changed both the indexes and the
-seeder, and the log rows after #128 added `V11`. **The remaining rows — the
-sparkline, users-affected, releases, trace and event detail — were not**, so treat
-any of those within a few blocks of its previous value as unverified rather than
-confirmed; the hint-bit change moves cold reads much more than warm ones, and these
-were always quoted warm.
+seeder, the log rows after #128 added `V11`, and the release rows after #130 moved
+the page's counts to the rollup. **The remaining rows — the sparkline,
+users-affected, trace and event detail — were not**, so treat any of those within a
+few blocks of its previous value as unverified rather than confirmed; the hint-bit
+change moves cold reads much more than warm ones, and these were always quoted warm.
 
 The log rows move by a few percent between runs (page 1 at All time was seen at 480
 and at 725 on the same dataset) because they now read few enough blocks that cache
@@ -225,10 +226,12 @@ and why the one buffer ceiling they keep sits at 2 500.
 4 000 issues — 11 000 029 telemetry rows, seeded in 245 s. `shared_buffers=1GB`,
 `work_mem=32MB`. Latency is same-machine only; the block and temp columns are not.
 
-**The five log rows were re-measured after #128 added `V11`.** The rest of the table
-was re-run in the same pass and moved within run-to-run variation — the issue rows by
-under 10 %, releases and traces by under 1 % — so they are left at their 2026-08-02
-values rather than churned.
+**The five log rows were re-measured after #128 added `V11`, and the releases row after
+#130 moved its counts to the rollup** (2026-08-04). The rest of the table was re-run in
+the same pass: every row landed within ~1 % of the run before it, but the issue rows sit
+~25 % below the 2026-08-02 values recorded here, which #126 and #127 landed between. They
+are left as recorded rather than half-updated — re-attributing them belongs to whichever
+change next measures them.
 
 The issue rows carry the plan facts of **all four** statements a page load issues,
 and each filtered row is paired with the aggregates for *its own* page of issues,
@@ -255,7 +258,7 @@ not for an unfiltered one.
 | Trace search, page 20 | 2 098 ms | 2 122 ms | 900 382 | **224 130** |
 | Trace search, `has_errors=true` | 1 401 ms | 3 186 ms | 6 358 857 | **256 683** |
 | Trace detail | 17 ms | 29 ms | 1 699 | 0 |
-| **Releases list** | **14 895 ms** | single sample | **28 495 399** | 0 |
+| Releases list | **16 ms** | 26 ms | **429** | 0 |
 | Uptime overview | 30 ms | 37 ms | — | — |
 | Event detail + neighbours | 15 ms | 26 ms | 298 | 0 |
 
@@ -271,13 +274,61 @@ Issue-list saturation ladder, same dataset:
 
 ### Findings
 
-1. **The releases page is the worst query in the product, by an order of
-   magnitude.** 14.9 seconds and 28 million blocks to annotate twenty rows —
-   slower than the load driver's own request timeout, so the benchmark reports it
-   as a single sample rather than driving it. It is structurally identical to the
-   trace-search regression already fixed and guarded: a correlated aggregate over a
-   partitioned telemetry table, run once per output row, with no time bound. It
-   gets linearly worse with both release count and event volume. (#130)
+1. **The releases page was the worst query in the product by an order of magnitude —
+   fixed in #130.** It cost 16.5 seconds and 28.5 million blocks to annotate twenty
+   rows, slower than the load driver's own request timeout, so the benchmark could
+   not drive it and reported a single sample. It now costs **16 ms and 429 blocks**,
+   driven at 20/s like every other healthy page — a thousandfold on latency, sixty-six
+   thousandfold on logical I/O, and the weekly partitions it reads went from 13 to
+   **none**.
+
+   That zero is the finding, not the ratio. `count(DISTINCT e.issue_id)` over `event`,
+   correlated to the release row and unbounded in time, is now `count(*)` over
+   `issue_release_stats` — the rollup #127 built for the issue-list release filter,
+   which holds exactly one row per (Issue, Release) that has ever carried an Event.
+   One row per membership means the distinct count *is* a row count, so the page
+   answers its question without reading a telemetry table at all, and its cost stopped
+   being a function of how long events are retained. A ratio would have been true of a
+   fix that merely got cheaper.
+
+   **Reusing that rollup needed one schema change, and it is the interesting one.**
+   `issue_release_stats` keys on `issue_id`, so scoping a count to one Project meant
+   joining `issue` — which reads *every* Project's rows for a version string before
+   discarding all but one Project's. Release versions are not unique across Projects:
+   `release` is keyed `(project_id, version)`, and an install running four services off
+   one tag names them all `app@1.4.0`. `V12` denormalizes `project_id` onto the rollup
+   and indexes `(project_id, release)`. Its backfill is a join against `issue` — cheap
+   where V10's was not, because V10 had to read every weekly partition of `event` to
+   derive membership that existed nowhere else.
+
+   **The old acceptance bound would have passed a fix that was still O(retention).**
+   "Less than two full scans of `event`" is satisfied by a single `GROUP BY release`
+   pass computed once per request, which removes the per-row multiplier and still reads
+   every retained Event on every page load. The guard now asserts the page never reads
+   `event` at all, which is the claim that holds at any dataset size, and the ticket's
+   original bound is kept behind it because a regression to the correlated plan costs
+   240 300 blocks against a 15 000-block scan and fails it loudly.
+
+   **A per-row subquery over a small table is invisible until the big one is fixed, and
+   that is the lesson worth keeping.** De-correlating `issue_count` alone left a full
+   200-release page at 1 731 blocks against 47 for a one-release page — 37x, and every
+   bit of it the two *artifact* counts, still one index probe per row over unpartitioned
+   tables nobody had ever suspected. They had never been measured because `issue_count`
+   was 240 000 blocks and drowned them. Grouping them the same way is what took the page
+   to its current 344 against 132, a factor of 2.6. The guard's scaling assertion is what
+   surfaced them: it fills the page the endpoint actually returns, and the guard dataset
+   has eight releases where the endpoint returns two hundred.
+
+   **The same guard then rejected the tidier version of the fix, which is the better
+   argument for it.** Each of the three counts binds `project_id = ?` and matches the
+   page with `release IN (SELECT version FROM page)` — three near-identical branches and
+   the project bound four times, which reads like something to factor out. Joining `page`
+   on `(project_id, version)` instead removes the repetition and binds it once. It also
+   takes the constant away from the planner, which stops opening one index range per
+   branch, drives the joins from `page`, and reconstructs exactly the per-output-row
+   nested loop the whole change existed to delete: **3 368 blocks against 132, 25x.** The
+   duplication is load-bearing, and `ReleaseController`'s javadoc now says so where the
+   next person to tidy it will look.
 
 2. **The issue list's cost is its aggregates, not its list.** The list query is
    558 blocks. The page is 944 107, because the sparkline and the unbounded

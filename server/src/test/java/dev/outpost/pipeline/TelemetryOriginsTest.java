@@ -59,6 +59,22 @@ class TelemetryOriginsTest {
 		verifyNoMoreInteractions(jdbc);
 	}
 
+	/**
+	 * {@code "release":""} is not a Release, and the rest of the product already
+	 * agrees — {@code EventStore} keeps no rollup row for it, the issue-list filter
+	 * rejects it, {@code sentry-cli}'s endpoint refuses to create it. A row here
+	 * would be a nameless Release the page lists with no Issues (#130).
+	 */
+	@Test
+	void skipsBlankReleases() {
+		origins.ensure(List.of(new Origin(1L, "prod", ""), new Origin(1L, "prod", "  "),
+				new Origin(1L, "prod", "shop@1.0.0")));
+
+		verify(jdbc, times(1)).update(contains("INTO environment"), eq(1L), eq("prod"));
+		verify(jdbc, times(1)).update(contains("INTO release"), eq(1L), eq("shop@1.0.0"));
+		verifyNoMoreInteractions(jdbc);
+	}
+
 	@Test
 	void upsertsInASortedOrderSoConcurrentBatchesCannotDeadlock() {
 		origins.ensure(List.of(new Origin(2L, "staging", "shop@1.0.1"), new Origin(1L, "prod", "shop@1.0.0")));

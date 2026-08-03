@@ -38,13 +38,24 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * are different assertions and only the second one can fail when a redundant
  * index is added. It covers ordered, index-only, and bitmap index scans alike —
  * pair it with {@link #ran} when the distinction matters.
+ *
+ * <p>{@link #correlatedSubplans} is the one fact here that is about a query's
+ * <em>shape</em> rather than its cost, and it exists because cost cannot express
+ * what it says. A subquery evaluated once per output row is the defect behind both
+ * #130 and the trace-search regression before it, and the right index makes a
+ * page's worth of those probes cheap enough to sit under any ceiling a guard
+ * fixture can honestly set — so a guard that only counts blocks certifies the
+ * shape it was written to reject. Postgres marks such a node
+ * {@code "Subplan Name": "SubPlan N"}; a {@code CTE} scan carries a
+ * {@code "CTE …"} name instead and is not counted, because a CTE is evaluated
+ * once no matter how many rows read it.
  */
 public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, long tempWrittenBlocks,
 		Set<String> relationsScanned, Set<String> sequentiallyScanned, Set<String> indexesUsed, Set<String> nodeTypes,
-		String plan) {
+		Set<String> correlatedSubplans, String plan) {
 
 	/** The identity for {@link #merge}: a scenario whose plan facts are not yet known. */
-	public static final PlanFacts NONE = new PlanFacts(0, 0, 0, 0, Set.of(), Set.of(), Set.of(), Set.of(), "");
+	public static final PlanFacts NONE = new PlanFacts(0, 0, 0, 0, Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), "");
 
 	private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -82,9 +93,11 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 		indexes.addAll(other.indexesUsed());
 		Set<String> nodes = new TreeSet<>(nodeTypes);
 		nodes.addAll(other.nodeTypes());
+		Set<String> subplans = new TreeSet<>(correlatedSubplans);
+		subplans.addAll(other.correlatedSubplans());
 		return new PlanFacts(sharedHits + other.sharedHits(), sharedReads + other.sharedReads(),
 				tempReadBlocks + other.tempReadBlocks(), tempWrittenBlocks + other.tempWrittenBlocks(), relations,
-				sequential, indexes, nodes, plan.isEmpty() ? other.plan() : plan + "\n" + other.plan());
+				sequential, indexes, nodes, subplans, plan.isEmpty() ? other.plan() : plan + "\n" + other.plan());
 	}
 
 	/** Whether the executor ran a node of this type, e.g. {@code "Sort"} or {@code "Seq Scan"}. */
@@ -153,6 +166,8 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 
 		private final Set<String> nodes = new LinkedHashSet<>();
 
+		private final Set<String> subplans = new LinkedHashSet<>();
+
 		Accumulator(String plan) {
 			this.plan = plan;
 		}
@@ -177,6 +192,12 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 				}
 				if (index != null) {
 					indexes.add(index.asString());
+				}
+				String subplan = text(node, "Subplan Name");
+				// "SubPlan 1" is a subquery the executor re-runs per outer row; "CTE page"
+				// is a name for something evaluated once. Only the first is the defect.
+				if (subplan != null && subplan.startsWith("SubPlan")) {
+					subplans.add(subplan);
 				}
 			}
 			JsonNode children = node.get("Plans");
@@ -218,7 +239,8 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 
 		PlanFacts toFacts() {
 			return new PlanFacts(sharedHits, sharedReads, tempReadBlocks, tempWrittenBlocks, new TreeSet<>(relations),
-					new TreeSet<>(sequential), new TreeSet<>(indexes), new TreeSet<>(nodes), plan);
+					new TreeSet<>(sequential), new TreeSet<>(indexes), new TreeSet<>(nodes), new TreeSet<>(subplans),
+					plan);
 		}
 
 	}

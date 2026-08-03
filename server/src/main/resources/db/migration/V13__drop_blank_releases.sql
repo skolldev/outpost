@@ -1,0 +1,22 @@
+-- A Release nothing could ever be counted against.
+--
+-- `TelemetryOrigins` used to auto-create a Release for an SDK sending
+-- "release":"", which arrives as an empty string. Nothing else in the product
+-- agrees that is a Release: EventStore writes no rollup row for it,
+-- IssueController rejects a blank release filter, and sentry-cli's release
+-- endpoint refuses to create one. Before #130 the Releases page counted its
+-- Issues straight off `event`, so the row at least rendered a number beside its
+-- empty name; now that the count comes from the rollup it would render zero
+-- whatever its Events say. A nameless Release listing zero Issues is worse than
+-- no row.
+--
+-- Ingest no longer creates them (see TelemetryOrigins.ensure); this clears the
+-- ones already created. Separate from V12 because it is the only destructive
+-- step in the pair — V12 adds a column and an index and can be reasoned about on
+-- its own, and an operator reviewing a delete should not have to find it inside
+-- a migration named for something else.
+--
+-- Nothing cascades: artifact uploads key on a version sentry-cli will not leave
+-- blank, and the Events themselves are untouched — they keep their blank
+-- `release` column and stay on their Issues.
+DELETE FROM release WHERE btrim(version) = '';

@@ -73,9 +73,13 @@ public class EventStore {
 			ON CONFLICT DO NOTHING
 			""";
 
+	// project_id is denormalized from the Issue so the Releases page can count a
+	// Project's rows without joining `issue` once per row (#130). It is written on
+	// insert only: an Issue never changes Project, and letting the update touch it
+	// would make a wrong value self-healing rather than impossible.
 	private static final String RELEASE_STATS_UPSERT = """
-			INSERT INTO issue_release_stats (issue_id, release, event_count, last_seen)
-			VALUES (?, ?, 1, ?)
+			INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
+			VALUES (?, ?, ?, 1, ?)
 			ON CONFLICT (issue_id, release) DO UPDATE SET
 			    event_count = issue_release_stats.event_count + 1,
 			    last_seen = GREATEST(issue_release_stats.last_seen, EXCLUDED.last_seen)
@@ -179,11 +183,11 @@ public class EventStore {
 					    event_count = issue_env_stats.event_count + 1,
 					    last_seen = GREATEST(issue_env_stats.last_seen, EXCLUDED.last_seen)
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
-			// Blank as well as null: an SDK sending "release":"" reaches here as an
-			// empty string, and IssueController rejects a blank release filter, so a
-			// row for one could never be matched by the query this rollup exists for.
-			if (event.release() != null && !event.release().isBlank()) {
-				releaseRows.add(new Object[] { issueId, event.release(), Timestamp.from(event.timestamp()) });
+			// Blank as well as null, per Releases.isNamed: a row for one could never be
+			// matched by the queries this rollup exists for.
+			if (Releases.isNamed(event.release())) {
+				releaseRows.add(
+						new Object[] { issueId, event.projectId(), event.release(), Timestamp.from(event.timestamp()) });
 			}
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
