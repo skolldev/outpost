@@ -70,3 +70,11 @@ management:
 
 server:
   shutdown: graceful
+  compression:
+    # Was nginx's job until the UI moved into this process. text/event-stream is
+    # absent by design: compressing the log tail would buffer it.
+    enabled: true
+    # text/javascript, not application/javascript: that is what the bundle is
+    # actually served as, and it is the largest asset by an order of magnitude.
+    mime-types: text/html,text/css,text/javascript,application/javascript,application/json,image/svg+xml
+    min-response-size: 1KB

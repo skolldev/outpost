@@ -1,0 +1,24 @@
+# Build context is the repo root, so everything the two build stages don't need
+# is excluded — most importantly the dependency and build trees, which dwarf the
+# sources and are rebuilt inside the image anyway.
+
+.git
+.github
+.claude
+.scratch
+.env
+
+**/node_modules
+ui/dist
+ui/.angular
+server/build
+server/.gradle
+# The image build supplies this directory exclusively from the UI stage. Local
+# ignored leftovers must not leak into the jar alongside the current bundle.
+server/src/main/resources/static
+
+# Not part of the product.
+demo
+docs
+scripts
+*.md
