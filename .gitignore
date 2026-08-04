@@ -8,6 +8,10 @@ node_modules/
 ui/dist/
 ui/.angular/
 
+# The Angular bundle, staged here by the image build (see Dockerfile). Never
+# checked in — the jar is built from it, not the other way round.
+server/src/main/resources/static/
+
 # IDE
 .idea/
 *.iml

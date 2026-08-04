@@ -17,11 +17,11 @@ Outpost is on-premises observability for individuals and teams who want error mo
 without Sentry's breadth or operational complexity. Point any Sentry SDK at it by changing
 one DSN - no vendor account, no code changes, no telemetry leaving your network.
 
-Three containers, one database. That's the whole product.
+One container, one database. That's the whole product.
 
 ```bash
 git clone https://github.com/skolldev/outpost.git && cd outpost
-docker compose up -d          # UI at http://localhost:8088 - login: admin@local / change-me
+docker compose up -d          # UI at http://localhost:8080 - login: admin@local / change-me
 ```
 
 <picture>
@@ -37,8 +37,8 @@ docker compose up -d          # UI at http://localhost:8088 - login: admin@local
   `@sentry/angular`, `sentry-spring-boot`, and friends need nothing but a new DSN.
 - **One durable dependency.** PostgreSQL. No Kafka, no Redis, no ClickHouse, no object
   store
-- **Small enough to reason about.** A single Spring Boot process, an nginx-served Angular
-  app, and a database - deployed as a single instance, on purpose
+- **Small enough to reason about.** A single Spring Boot process serving both the Angular
+  app and the API, and a database - deployed as a single instance, on purpose
 - **Your data stays yours.** Single-tenant, self-hosted, AGPL-licensed.
 
 ## Features
@@ -59,21 +59,21 @@ kept in the URL, so any screen you're looking at is a link you can share.
 
 ## Quick start
 
-Requires Docker. The bundled `docker-compose.yml` builds both images from source on first
+Requires Docker. The bundled `docker-compose.yml` builds the image from source on first
 run:
 
 ```bash
 docker compose up -d
 ```
 
-Open `http://localhost:8088` and sign in with the seeded admin credentials
+Open `http://localhost:8080` and sign in with the seeded admin credentials
 
 ### Send it some telemetry
 
 Create a Project in `Settings -> Projects`. Outpost shows you a DSN:
 
 ```
-http://<project-key>@localhost:8088/<project-id>
+http://<project-key>@localhost:8080/<project-id>
 ```
 
 Drop that into your app's existing Sentry configuration - nothing else changes:
@@ -81,7 +81,7 @@ Drop that into your app's existing Sentry configuration - nothing else changes:
 ```ts
 // Angular
 Sentry.init({
-  dsn: "http://<project-key>@localhost:8088/<project-id>",
+  dsn: "http://<project-key>@localhost:8080/<project-id>",
   environment: "production",
   release: "my-app@1.4.0",
   tracesSampleRate: 1.0,
@@ -91,7 +91,7 @@ Sentry.init({
 ```yaml
 # Spring Boot (application.yml)
 sentry:
-  dsn: http://<project-key>@localhost:8088/<project-id>
+  dsn: http://<project-key>@localhost:8080/<project-id>
   environment: production
   release: my-api@1.4.0
   traces-sample-rate: 1.0
@@ -126,12 +126,19 @@ drop-in replacement for the Sentry API or feature set.
 
 ## Deployment
 
-Outpost runs as three containers: the API server, the nginx UI (which serves the app and
-proxies both browser API calls and SDK ingest to the server), and Postgres. **Only the UI
-needs to be exposed.** The backend assumes a single instance - do not scale it
-horizontally.
+Outpost runs as two containers: the app - one Spring Boot process serving the UI, the
+browser API and SDK ingest on port 8080 - and Postgres. Image: `outpost/outpost`.
 
-Images: `outpost/outpost-server` and `outpost/outpost-ui`.
+Two constraints are worth knowing before you deploy:
+
+- **Single instance by design.** The app does not coordinate across replicas, so a rolling
+  update is not available: a deploy is stop-then-start, and telemetry sent during that
+  window is dropped unless the SDK retries. Keep `replicas: 1` and a `Recreate` strategy.
+- **Shutdown needs up to 60 seconds.** Accepted envelopes are drained on SIGTERM. Docker's
+  default 10-second stop timeout kills that mid-drain, so `stop_grace_period` (Compose) or
+  `terminationGracePeriodSeconds` (Kubernetes) must be raised.
+
+Served at the host root only. Put it on its own subdomain rather than a URL sub-path.
 
 ### Docker Compose
 
@@ -141,8 +148,9 @@ Self-contained - nothing to clone or build:
 # compose.yml
 services:
   outpost:
-    image: outpost/outpost-server:latest
+    image: outpost/outpost:latest
     restart: unless-stopped
+    ports: ["8080:8080"]
     environment:
       OUTPOST_DB_URL: jdbc:postgresql://db:5432/outpost
       OUTPOST_DB_USER: outpost
@@ -150,14 +158,8 @@ services:
       OUTPOST_PUBLIC_URL: https://outpost.example.com
       OUTPOST_ADMIN_EMAIL: you@example.com
       OUTPOST_ADMIN_PASSWORD: <strong-password>
+    stop_grace_period: 60s
     depends_on: { db: { condition: service_healthy } }
-
-  ui:
-    image: outpost/outpost-ui:latest
-    restart: unless-stopped
-    ports: ["8088:80"]
-    environment: { OUTPOST_API_URL: "http://outpost:8080" }
-    depends_on: [outpost]
 
   db:
     image: postgres:17-alpine
@@ -174,10 +176,15 @@ services:
 volumes: { outpost-pg: {} }
 ```
 
-Put a TLS-terminating reverse proxy (Caddy, Traefik, nginx) in front of port 8088 and point
+Put a TLS-terminating reverse proxy (Caddy, Traefik, nginx) in front of port 8080 and point
 `OUTPOST_PUBLIC_URL` at the URL it serves - that value is rendered into the DSNs shown in
-the UI and into notification deep links. Postgres data lives in the `outpost-pg` named
-volume; back that up.
+the UI and into notification deep links. If that proxy buffers responses, exempt
+`/api/internal/logs`: it is a Server-Sent Events stream and buffering stalls the live log
+tail.
+
+The `outpost-pg` named volume holds the database - back that up. Envelope spooling is a
+bounded-capacity mechanism, not durable storage: Outpost drains acknowledged telemetry on
+graceful shutdown, but a crash or an exceeded drain timeout can still lose it.
 
 ### Kubernetes
 
@@ -187,17 +194,18 @@ Postgres however you normally do (managed database or an operator such as CloudN
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: outpost-server }
+metadata: { name: outpost }
 spec:
   replicas: 1 # single-instance by design - do not scale up
   strategy: { type: Recreate } # avoid two instances running during rollout
-  selector: { matchLabels: { app: outpost-server } }
+  selector: { matchLabels: { app: outpost } }
   template:
-    metadata: { labels: { app: outpost-server } }
+    metadata: { labels: { app: outpost } }
     spec:
+      terminationGracePeriodSeconds: 60 # the ingest drain needs it; the 30s default truncates
       containers:
-        - name: server
-          image: outpost/outpost-server:latest
+        - name: outpost
+          image: outpost/outpost:latest
           ports: [{ containerPort: 8080 }]
           env:
             - {
@@ -214,27 +222,12 @@ spec:
                 { secretKeyRef: { name: outpost, key: admin-password } }
           livenessProbe: { httpGet: { path: /healthz, port: 8080 } }
           readinessProbe: { httpGet: { path: /readyz, port: 8080 } }
----
-apiVersion: apps/v1
-kind: Deployment
-metadata: { name: outpost-ui }
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: outpost-ui } }
-  template:
-    metadata: { labels: { app: outpost-ui } }
-    spec:
-      containers:
-        - name: ui
-          image: outpost/outpost-ui:latest
-          ports: [{ containerPort: 80 }]
-          env: [{ name: OUTPOST_API_URL, value: "http://outpost-server:8080" }]
-          readinessProbe: { httpGet: { path: /nginx-healthz, port: 80 } }
 ```
 
 Add to that a `Secret` named `outpost` holding `db-password` and `admin-password`, a
-`Service` per Deployment (`outpost-server` on 8080, `outpost-ui` on 80), and an Ingress
-routing `/` to the `outpost-ui` service with TLS via your usual mechanism.
+`Service` on 8080, and an Ingress routing `/` to it with TLS via your usual mechanism. If
+the ingress controller buffers proxied responses, disable it for `/api/internal/logs` so
+the live log tail streams.
 
 ## Configuration
 
@@ -259,14 +252,9 @@ All configuration is environment variables.
 | `OUTPOST_INGEST_SPOOL_SWEEP_INTERVAL`             | `5m`                                       | how often the spool directory is swept for orphaned files                                                  |
 | `OUTPOST_SHUTDOWN_PHASE_TIMEOUT`                  | `30s`                                      | maximum time Spring allows each graceful-shutdown lifecycle phase                                           |
 
-**UI**
-
-| Variable          | Default               | What                                         |
-| ----------------- | --------------------- | -------------------------------------------- |
-| `OUTPOST_API_URL` | `http://outpost:8080` | upstream the nginx proxy forwards `/api/` to |
-
-**Health endpoints:** `GET /healthz` (server liveness), `GET /readyz` (server readiness,
-checks the database), `GET /nginx-healthz` (UI container).
+**Health endpoints:** `GET /healthz` (liveness) and `GET /readyz` (readiness, checks the
+database), both on 8080. Metrics are on the separate management port 9090
+(`/actuator/prometheus`), which is deliberately not published.
 
 ## Development
 
@@ -295,12 +283,17 @@ cd server && ./gradlew test    # integration tests via Testcontainers (Docker re
 cd ui && pnpm test
 ```
 
-**Rebuilding containers.** The compose stack runs pre-built images, so `docker compose
+The dev loop is unaffected by the single image: `ng serve` proxies `/api` to a natively
+run server, exactly as before.
+
+**Rebuilding the container.** The compose stack runs a pre-built image, so `docker compose
 restart` will _not_ pick up code changes - rebuild and recreate:
 
 ```bash
-docker compose up -d --build outpost    # or: ui
+docker compose up -d --build outpost
 ```
+
+That builds the UI and the server in one pass, so a change to either rebuilds the jar.
 
 ## Documentation
 

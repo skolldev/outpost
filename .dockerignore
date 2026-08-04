@@ -1,0 +1,21 @@
+# Build context is the repo root, so everything the two build stages don't need
+# is excluded — most importantly the dependency and build trees, which dwarf the
+# sources and are rebuilt inside the image anyway.
+
+.git
+.github
+.claude
+.scratch
+.env
+
+**/node_modules
+ui/dist
+ui/.angular
+server/build
+server/.gradle
+
+# Not part of the product.
+demo
+docs
+scripts
+*.md

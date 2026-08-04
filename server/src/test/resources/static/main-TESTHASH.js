@@ -1,0 +1,44 @@
+// Stand-in for a hashed Angular bundle. The name shape is what matters,
+// and the size: it must exceed server.compression.min-response-size for
+// SpaRoutingIntegrationTest to observe compression at all.
+export const outpost = true;
+export const filler0 = 'padding to clear the compression threshold';
+export const filler1 = 'padding to clear the compression threshold';
+export const filler2 = 'padding to clear the compression threshold';
+export const filler3 = 'padding to clear the compression threshold';
+export const filler4 = 'padding to clear the compression threshold';
+export const filler5 = 'padding to clear the compression threshold';
+export const filler6 = 'padding to clear the compression threshold';
+export const filler7 = 'padding to clear the compression threshold';
+export const filler8 = 'padding to clear the compression threshold';
+export const filler9 = 'padding to clear the compression threshold';
+export const filler10 = 'padding to clear the compression threshold';
+export const filler11 = 'padding to clear the compression threshold';
+export const filler12 = 'padding to clear the compression threshold';
+export const filler13 = 'padding to clear the compression threshold';
+export const filler14 = 'padding to clear the compression threshold';
+export const filler15 = 'padding to clear the compression threshold';
+export const filler16 = 'padding to clear the compression threshold';
+export const filler17 = 'padding to clear the compression threshold';
+export const filler18 = 'padding to clear the compression threshold';
+export const filler19 = 'padding to clear the compression threshold';
+export const filler20 = 'padding to clear the compression threshold';
+export const filler21 = 'padding to clear the compression threshold';
+export const filler22 = 'padding to clear the compression threshold';
+export const filler23 = 'padding to clear the compression threshold';
+export const filler24 = 'padding to clear the compression threshold';
+export const filler25 = 'padding to clear the compression threshold';
+export const filler26 = 'padding to clear the compression threshold';
+export const filler27 = 'padding to clear the compression threshold';
+export const filler28 = 'padding to clear the compression threshold';
+export const filler29 = 'padding to clear the compression threshold';
+export const filler30 = 'padding to clear the compression threshold';
+export const filler31 = 'padding to clear the compression threshold';
+export const filler32 = 'padding to clear the compression threshold';
+export const filler33 = 'padding to clear the compression threshold';
+export const filler34 = 'padding to clear the compression threshold';
+export const filler35 = 'padding to clear the compression threshold';
+export const filler36 = 'padding to clear the compression threshold';
+export const filler37 = 'padding to clear the compression threshold';
+export const filler38 = 'padding to clear the compression threshold';
+export const filler39 = 'padding to clear the compression threshold';
