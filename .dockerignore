@@ -13,6 +13,9 @@ ui/dist
 ui/.angular
 server/build
 server/.gradle
+# The image build supplies this directory exclusively from the UI stage. Local
+# ignored leftovers must not leak into the jar alongside the current bundle.
+server/src/main/resources/static
 
 # Not part of the product.
 demo
