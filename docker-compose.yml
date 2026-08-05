@@ -30,8 +30,43 @@ services:
 
   # ── Demo apps (docker compose --profile demo up -d --build) ────────────────
   # Sentry-SDK-instrumented shop that sends real errors/logs/traces to Outpost.
-  # Setup: seed projects with demo/scripts/demo-setup.sql, resolve project ids
-  # with demo/scripts/print-dsns.sh --write-env, see demo/README.md.
+  # demo-seed creates the two projects + DSN keys the apps need; see demo/README.md.
+
+  # One-shot: waits for Flyway to migrate (the schema does not exist at Postgres
+  # initdb time, so this cannot be an /docker-entrypoint-initdb.d script), then
+  # applies demo-setup.sql — but only when the demo projects are missing, since
+  # that script is a destructive reset and `up` would otherwise wipe the
+  # telemetry you just generated. Logs the resolved DSNs either way.
+  demo-seed:
+    image: postgres:17-alpine # for psql; never serves anything
+    profiles: ["demo"]
+    restart: "no"
+    environment: { PGPASSWORD: outpost }
+    volumes: ["./demo/scripts:/demo:ro"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        psql() { command psql -h db -U outpost -d outpost "$$@"; }
+        echo "waiting for Outpost's Flyway migration to create the schema..."
+        for i in $$(seq 1 120); do
+          [ "$$(psql -Atc "SELECT to_regclass('public.project')")" = project ] && break
+          [ "$$i" = 120 ] && { echo "timed out waiting for the schema"; exit 1; }
+          sleep 1
+        done
+        if [ "$$(psql -Atc "SELECT count(*) FROM project WHERE slug IN ('shop-frontend','shop-backend')")" = 2 ]; then
+          echo "demo projects already exist — keeping them and their telemetry"
+          echo "(to reset: docker compose exec -T db psql -U outpost -d outpost < demo/scripts/demo-setup.sql)"
+        else
+          psql -v ON_ERROR_STOP=1 -f /demo/demo-setup.sql
+        fi
+        psql -Atc "SELECT p.slug || ' (project ' || p.id || '): http://' || k.public_key || '@localhost:8080/' || p.id
+                   FROM project p JOIN project_key k ON k.project_id = p.id AND k.is_active
+                   WHERE p.slug IN ('shop-frontend','shop-backend') ORDER BY p.slug"
+    depends_on:
+      db: { condition: service_healthy }
+      outpost: { condition: service_started }
+
   demo-backend:
     build: { context: demo/backend }
     image: outpost/demo-backend:latest
@@ -47,6 +82,7 @@ services:
       DEMO_TRAFFIC: ${DEMO_TRAFFIC:-true}
     depends_on:
       outpost: { condition: service_started }
+      demo-seed: { condition: service_completed_successfully }
 
   demo-frontend:
     build: { context: demo/frontend }
@@ -63,6 +99,9 @@ services:
       # SENTRY_AUTH_TOKEN (artifacts:write) to enable symbolication.
       OUTPOST_INTERNAL_URL: http://outpost:8080
       SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
-    depends_on: [outpost, demo-backend]
+    depends_on:
+      outpost: { condition: service_started }
+      demo-backend: { condition: service_started }
+      demo-seed: { condition: service_completed_successfully }
 
 volumes: { outpost-pg: {} }

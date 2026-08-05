@@ -1,13 +1,13 @@
 import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
-import { render, screen, waitFor } from '@testing-library/angular';
+import { fireEvent, render, screen, waitFor } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../mocks/node';
 import { GlobalFilters } from '../../core/filters';
-import { LogPage, LogRecord } from '../../core/models';
+import { LogPage, LogRecord, LogTimeline } from '../../core/models';
 import { LogsPage } from './logs';
 
 const BASE = '*/api/internal';
@@ -54,8 +54,49 @@ function fakeFilters(): GlobalFilters {
   return {
     project: signal<number[]>([]),
     environments: signal<string[]>([]),
+    range: signal<string>('14d'),
     from: signal<string | undefined>(undefined),
   } as unknown as GlobalFilters;
+}
+
+/** An hour of one-minute buckets, so bucket N starts at N minutes past. */
+const TIMELINE_FROM = '2026-07-01T00:00:00.000Z';
+
+function timeline(): LogTimeline {
+  return {
+    from: TIMELINE_FROM,
+    to: '2026-07-01T01:00:00.000Z',
+    bucket_seconds: 60,
+    buckets: [{ start: '2026-07-01T00:10:00.000Z', counts: { error: 2, info: 5 } }],
+  };
+}
+
+/**
+ * The chart is pointer-driven and carries no roles (#141), and jsdom gives every
+ * element a zero-sized box — so a test drives it by stubbing the box and firing
+ * pointer events at a clientX, then asserts on the request the selection produces
+ * rather than on the SVG.
+ */
+function brush(container: Element, clientX: number, toClientX = clientX): void {
+  const svg = container.querySelector('svg');
+  if (!svg) throw new Error('no timeline rendered');
+  svg.getBoundingClientRect = () => ({ left: 0, width: 600 }) as DOMRect;
+  fireEvent.pointerDown(svg, { clientX });
+  fireEvent.pointerMove(svg, { clientX: toClientX });
+  fireEvent.pointerUp(svg, { clientX: toClientX });
+}
+
+/** Records the time bounds of every log-list request, which is where a brush shows up. */
+function captureLogWindows(): { from: string | null; to: string | null }[] {
+  const windows: { from: string | null; to: string | null }[] = [];
+  server.use(
+    http.get(`${BASE}/logs`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      windows.push({ from: params.get('from'), to: params.get('to') });
+      return HttpResponse.json(page([LOG]));
+    }),
+  );
+  return windows;
 }
 
 async function renderLogs() {
@@ -74,6 +115,9 @@ describe('LogsPage', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
     globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+    // The page loads the chart on init, so every spec needs this handler whether or
+    // not it looks at the chart.
+    server.use(http.get(`${BASE}/logs/timeline`, () => HttpResponse.json(timeline())));
   });
 
   afterEach(() => {
@@ -160,5 +204,92 @@ describe('LogsPage', () => {
     await waitFor(() =>
       expect(screen.queryByText('streamed under old filter')).not.toBeInTheDocument(),
     );
+  });
+
+  it('narrows the stream to the bucket that was clicked', async () => {
+    const windows = captureLogWindows();
+    const { container } = await renderLogs();
+    await screen.findByText('checkout failed for user');
+
+    // A sixth of the way across 60 one-minute buckets is bucket 10 — 00:10 to 00:11.
+    brush(container, 100);
+
+    await waitFor(() =>
+      expect(windows).toContainEqual({
+        from: '2026-07-01T00:10:00.000Z',
+        to: '2026-07-01T00:11:00.000Z',
+      }),
+    );
+  });
+
+  it('selects the whole dragged span, snapped to bucket edges', async () => {
+    const windows = captureLogWindows();
+    const { container } = await renderLogs();
+    await screen.findByText('checkout failed for user');
+
+    brush(container, 100, 200); // buckets 10 through 20
+
+    await waitFor(() =>
+      expect(windows).toContainEqual({
+        from: '2026-07-01T00:10:00.000Z',
+        to: '2026-07-01T00:21:00.000Z',
+      }),
+    );
+  });
+
+  /** The chart spans the range so a selection can be seen in context (ADR 0011). */
+  it('does not feed the selection back into the chart request', async () => {
+    const chartRequests: { from: string | null; to: string | null }[] = [];
+    server.use(
+      http.get(`${BASE}/logs`, () => HttpResponse.json(page([LOG]))),
+      http.get(`${BASE}/logs/timeline`, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        chartRequests.push({ from: params.get('from'), to: params.get('to') });
+        return HttpResponse.json(timeline());
+      }),
+    );
+    const { container } = await renderLogs();
+    await screen.findByText('checkout failed for user');
+    const before = chartRequests.length;
+
+    brush(container, 100);
+
+    await waitFor(() => expect(screen.getByTitle('Clear the selected time window')).toBeVisible());
+    // The brush must not have re-requested the chart, and nothing it did request
+    // may carry the selection's bounds.
+    expect(chartRequests).toHaveLength(before);
+    expect(chartRequests.every((request) => request.to === null)).toBe(true);
+  });
+
+  it('drops the selection when live tail is switched on', async () => {
+    server.use(http.get(`${BASE}/logs`, () => HttpResponse.json(page([LOG]))));
+    const { container } = await renderLogs();
+    const user = userEvent.setup();
+    await screen.findByText('checkout failed for user');
+    brush(container, 100);
+    await waitFor(() => expect(screen.getByTitle('Clear the selected time window')).toBeVisible());
+
+    await user.click(screen.getByRole('switch', { name: 'Live tail' }));
+
+    // A closed past window and a tail of what is arriving now are contradictory, and
+    // the SSE endpoint takes no time bounds at all.
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(FakeEventSource.instances[0].url).not.toContain('to=');
+    expect(screen.queryByTitle('Clear the selected time window')).not.toBeInTheDocument();
+    expect(container.querySelector('svg')).toBeNull();
+  });
+
+  it('restores the unbrushed window when the selection is cleared', async () => {
+    const windows = captureLogWindows();
+    const { container } = await renderLogs();
+    const user = userEvent.setup();
+    await screen.findByText('checkout failed for user');
+    brush(container, 100);
+    const chip = await screen.findByTitle('Clear the selected time window');
+
+    await user.click(chip);
+
+    await waitFor(() => expect(windows.at(-1)?.to).toBeNull());
+    expect(screen.queryByTitle('Clear the selected time window')).not.toBeInTheDocument();
   });
 });

@@ -31,9 +31,10 @@ import { HlmSpinner } from '@spartan-ng/helm/spinner';
 import { Api } from '../../core/api';
 import { API_BASE } from '../../core/api-base';
 import { GlobalFilters } from '../../core/filters';
-import { LogFilters, LogPage, LogRecord } from '../../core/models';
+import { LogFilters, LogPage, LogRecord, LogTimeline } from '../../core/models';
 import { logParams } from '../../core/query-params';
 import { LevelBadge } from '../../shared/level-badge';
+import { LogTimelineChart, TimelineWindow } from '../../shared/log-timeline';
 
 const BASE = API_BASE;
 const LIVE_BUFFER = 500;
@@ -45,6 +46,7 @@ const LIVE_BUFFER = 500;
     DatePipe,
     FormsModule,
     LevelBadge,
+    LogTimelineChart,
     HlmButton,
     HlmButtonGroup,
     HlmInput,
@@ -77,6 +79,17 @@ export class LogsPage {
   // Page-local filter state lives in the URL (shareable), like everywhere else.
   readonly selectedLevels = computed<string[]>(() => this.multi(this.queryParams()['level']));
   readonly traceId = computed<string>(() => this.queryParams()['trace_id'] ?? '');
+
+  /**
+   * The brush selection, as `window=<fromISO>..<toISO>`. Page-local and deliberately
+   * one opaque param: `from` is also what the global range derives, and a URL
+   * carrying both would invite someone to move this into `GlobalFilters` — which is
+   * the thing ADR 0011 exists to prevent.
+   */
+  readonly window = computed<TimelineWindow | null>(() => {
+    const [from, to] = (this.queryParams()['window'] ?? '').split('..');
+    return from && to ? { from, to } : null;
+  });
   readonly search = signal(this.route.snapshot.queryParams['query'] ?? '');
   readonly debouncedQuery = debounced(this.search, 300);
 
@@ -87,14 +100,34 @@ export class LogsPage {
   readonly expanded = signal<ReadonlySet<string>>(new Set());
   readonly copiedId = signal<string | null>(null);
 
+  /**
+   * Everything that narrows the stream except time. The three consumers below differ
+   * only in which time bounds they add, so they share this rather than each rebuilding
+   * the filter set — and the SSE tail, which understands no time bounds at all, uses
+   * it as is.
+   */
+  private readonly baseFilters = computed<LogFilters>(() => ({
+    project: this.filters.project(),
+    environment: this.filters.environments(),
+    level: this.selectedLevels(),
+    query: this.debouncedQuery.value() || undefined,
+    traceId: this.traceId() || undefined,
+  }));
+
+  /**
+   * What the chart is drawn from: the global range, and deliberately <em>not</em> the
+   * brush. Feeding the selection back in would collapse the chart onto it on every
+   * drag, which is the zoom behaviour ADR 0011 rejects.
+   */
+  private readonly timelineFilters = computed<LogFilters>(() => ({
+    ...this.baseFilters(),
+    from: this.filters.from(),
+  }));
+
   private readonly filterKey = computed(() =>
     JSON.stringify({
-      project: this.filters.project(),
-      environment: this.filters.environments(),
-      from: this.filters.from(),
-      level: this.selectedLevels(),
-      traceId: this.traceId(),
-      query: this.debouncedQuery.value(),
+      ...this.timelineFilters(),
+      window: this.window(),
     }),
   );
 
@@ -113,6 +146,17 @@ export class LogsPage {
           params: logParams({ ...this.currentFilters(), cursor: this.cursor() }),
         },
   );
+
+  // Its own resource, keyed on its own filters: the list refetches on every cursor
+  // and on the brush, and neither has any bearing on the chart. Idle while live,
+  // where the chart is hidden and the SSE tail has no window to speak of.
+  private readonly timeline = httpResource<LogTimeline>(() =>
+    this.live()
+      ? undefined
+      : { url: `${BASE}/logs/timeline`, params: logParams(this.timelineFilters()) },
+  );
+
+  readonly timelineData = computed(() => this.timeline.value());
 
   readonly logs = signal<LogRecord[]>([]);
   readonly loading = this.page.isLoading;
@@ -134,7 +178,10 @@ export class LogsPage {
       // rows the resource already fetched — clear only on the reconnect case.
       if (this.wasLive) this.logs.set([]);
       this.wasLive = true;
-      const source = new EventSource(this.api.logTailUrl(untracked(() => this.currentFilters())));
+      // Base filters, not the list's: a tail has no window. Reading `currentFilters`
+      // here would also race the navigation that clears the brush on the way in, and
+      // connect a live tail bounded to a closed window in the past.
+      const source = new EventSource(this.api.logTailUrl(untracked(() => this.baseFilters())));
       source.onmessage = (message: MessageEvent<string>) => {
         let record: LogRecord;
         try {
@@ -147,6 +194,24 @@ export class LogsPage {
       onCleanup(() => source.close());
     });
 
+    // A brush is a window inside the current scope, so any change of scope makes it
+    // meaningless: the selection would sit outside the new range and empty the stream
+    // with nothing on screen explaining why. Skips its first run so a shared URL
+    // arrives with its selection intact.
+    let lastScope: string | null = null;
+    effect(() => {
+      const scope = JSON.stringify([
+        this.filters.project(),
+        this.filters.environments(),
+        this.filters.range(),
+      ]);
+      const changed = lastScope !== null && lastScope !== scope;
+      lastScope = scope;
+      if (changed && untracked(() => this.window())) {
+        untracked(() => this.syncUrl({ window: null }));
+      }
+    });
+
     let lastSynced = this.search();
     effect(() => {
       const query = this.debouncedQuery.value();
@@ -156,15 +221,22 @@ export class LogsPage {
     });
   }
 
+  /**
+   * The list's filters. A brush selection replaces the range-derived `from` outright
+   * and supplies the `to` the range never has — it is the window, not an extra bound
+   * on top of one.
+   */
   private currentFilters(): LogFilters {
+    const selection = this.window();
     return {
-      project: this.filters.project(),
-      environment: this.filters.environments(),
-      from: this.filters.from(),
-      level: this.selectedLevels(),
-      query: this.debouncedQuery.value() || undefined,
-      traceId: this.traceId() || undefined,
+      ...this.baseFilters(),
+      from: selection ? selection.from : this.filters.from(),
+      to: selection ? selection.to : undefined,
     };
+  }
+
+  selectWindow(selection: TimelineWindow | null): void {
+    this.syncUrl({ window: selection ? `${selection.from}..${selection.to}` : null });
   }
 
   loadMore(): void {
@@ -179,6 +251,11 @@ export class LogsPage {
       this.logs.set([]);
       this.cursor.set(undefined);
       this.wasLive = false;
+    } else if (this.window()) {
+      // Entering live: a closed window in the past and a tail of what is arriving now
+      // are contradictory, and the SSE endpoint takes no time bounds at all — leaving
+      // the selection in the URL would be state the request deliberately ignores.
+      this.syncUrl({ window: null });
     }
     this.live.set(!this.live());
   }

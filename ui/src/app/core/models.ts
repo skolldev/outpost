@@ -140,6 +140,24 @@ export interface LogPage {
   next_cursor: string | null;
 }
 
+/**
+ * One bucket of the log timeline. Levels with no records are omitted, and buckets
+ * with no records are absent from the response entirely — the client places what it
+ * gets by index off `from` and `bucket_seconds`.
+ */
+export interface LogTimelineBucket {
+  start: string;
+  counts: Record<string, number>;
+}
+
+/** The window the server resolved, the width it drew it at, and the non-empty buckets. */
+export interface LogTimeline {
+  from: string;
+  to: string;
+  bucket_seconds: number;
+  buckets: LogTimelineBucket[];
+}
+
 export interface LogFilters {
   project?: number[];
   environment?: string[];

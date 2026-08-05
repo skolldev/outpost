@@ -102,6 +102,29 @@ class LogTimelineIntegrationTest {
 	}
 
 	/**
+	 * A window that does not start on a bucket boundary is snapped down to one, and
+	 * the snapped instant is what comes back.
+	 *
+	 * <p>This is the case every other test here was blind to, because every other
+	 * fixture instant is already aligned. {@code date_bin} bins from a fixed origin,
+	 * so with an unaligned {@code from} the client's
+	 * {@code (bucket.start - from) / width} puts every bucket one index low and floors
+	 * the first to {@code -1}, silently dropping it and shifting the chart a bar left
+	 * — while a spot check of "are the counts right?" passes, because the counts are.
+	 */
+	@Test
+	void anUnalignedWindowIsSnappedOntoTheBucketGrid() {
+		// 30 seconds into the minute, with 1-minute buckets.
+		Map<String, Object> body = timeline(ANCHOR.plusSeconds(30), ANCHOR.plus(1, ChronoUnit.HOURS));
+
+		assertThat(body.get("from")).isEqualTo(ANCHOR.toString());
+		List<Map<String, Object>> buckets = cast(body.get("buckets"));
+		// The first bucket lands at index 0 off the reported `from`, not at -1.
+		assertThat(counts(buckets, ANCHOR)).isEqualTo(Map.of("info", 2));
+		assertThat(counts(buckets, ANCHOR.plus(1, ChronoUnit.MINUTES))).isEqualTo(Map.of("error", 1));
+	}
+
+	/**
 	 * With no {@code from} — the range picker's "All time" — the server supplies the
 	 * left edge and says which one it used, because the client has no way to know how
 	 * far back this installation retains logs.

@@ -14,6 +14,7 @@ import {
   IssuePage,
   LogFilters,
   LogPage,
+  LogTimeline,
   NotificationChannel,
   NotificationChannelInput,
   NotificationHistoryEntry,
@@ -79,6 +80,17 @@ export class Api {
 
   logs(filters: LogFilters): Observable<LogPage> {
     return this.http.get<LogPage>(`${this.base}/logs`, { params: httpParams(logParams(filters)) });
+  }
+
+  /**
+   * Bucketed counts for the chart above the log stream. Takes the same filters as
+   * {@link logs} minus the cursor — and, deliberately, minus the brush selection:
+   * the chart spans the range so a selection can be seen in context (ADR 0011).
+   */
+  logTimeline(filters: LogFilters): Observable<LogTimeline> {
+    return this.http.get<LogTimeline>(`${this.base}/logs/timeline`, {
+      params: httpParams(logParams(filters)),
+    });
   }
 
   /** URL for the SSE live tail — same filters, consumed via EventSource. */

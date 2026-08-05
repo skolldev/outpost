@@ -211,6 +211,10 @@ public class LogController {
 		if (lower.isAfter(upper)) {
 			lower = upper;
 		}
+		// Snapped onto the bucket grid before anything else sees it, so the window the
+		// response reports is the window its buckets actually start on. The first bar
+		// therefore covers a whole bucket, reaching slightly further back than asked.
+		lower = alignDown(lower, timelineBucket(lower, upper));
 
 		SearchQuery search = buildTimelineQuery(project, environment, level, traceId, release, query, attr, lower,
 				upper);
@@ -245,7 +249,8 @@ public class LogController {
 
 	/**
 	 * The bucket width a window of this length is drawn at: the smallest rung
-	 * yielding at most {@value #MAX_TIMELINE_BUCKETS} bars.
+	 * yielding at most {@value #MAX_TIMELINE_BUCKETS} bars once the window has been
+	 * aligned to that rung's grid.
 	 *
 	 * <p>A rule rather than a {@code range -> rung} map because the window is not
 	 * always one of the range picker's: "All time" is however long this installation
@@ -253,15 +258,44 @@ public class LogController {
 	 * windows. Package-visible for the same reason {@code IssueController
 	 * .sparklineSince} is — it decides a bind parameter, so a guard computing its
 	 * own would plan a query the controller never runs.
+	 *
+	 * <p>The bar count is a <em>ceiling</em>, and it counts from {@link
+	 * #alignDown(Instant, Duration) the aligned start}, because both are what the
+	 * client will draw: a window covering 150.9 rungs occupies 151 bars, and one
+	 * starting mid-bucket occupies one more than its length suggests.
 	 */
 	static Duration timelineBucket(Instant from, Instant to) {
-		Duration window = Duration.between(from, to);
 		for (Duration rung : TIMELINE_RUNGS) {
-			if (window.dividedBy(rung) <= MAX_TIMELINE_BUCKETS) {
+			if (barCount(from, to, rung) <= MAX_TIMELINE_BUCKETS) {
 				return rung;
 			}
 		}
 		return TIMELINE_RUNGS.getLast();
+	}
+
+	/** How many whole buckets of {@code rung} the aligned window spans. */
+	private static long barCount(Instant from, Instant to, Duration rung) {
+		long width = rung.toSeconds();
+		long span = to.getEpochSecond() - alignDown(from, rung).getEpochSecond();
+		return Math.max(1, Math.ceilDiv(span, width));
+	}
+
+	/**
+	 * {@code instant} floored onto the grid {@code date_bin} bins to.
+	 *
+	 * <p>Load-bearing, and the reason is easy to miss. {@code date_bin} bins from
+	 * {@link #TIMELINE_ORIGIN}, so a bucket always starts at {@code origin + k·width}
+	 * — never at whatever instant the request happened to ask for. The client places
+	 * buckets by {@code (bucket.start - response.from) / width}, so unless the
+	 * {@code from} it is handed sits on that same grid, every bucket lands one index
+	 * low, the first one floors to {@code -1} and is dropped, and the whole chart
+	 * shifts a bar left. Aligning here — and echoing the aligned instant — is what
+	 * makes the response's own arithmetic come out whole.
+	 */
+	private static Instant alignDown(Instant instant, Duration bucket) {
+		long width = bucket.toSeconds();
+		long offset = instant.getEpochSecond() - TIMELINE_ORIGIN.getEpochSecond();
+		return TIMELINE_ORIGIN.plusSeconds(Math.floorDiv(offset, width) * width);
 	}
 
 	/**
