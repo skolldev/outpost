@@ -3,6 +3,7 @@ package dev.outpost.query;
 import dev.outpost.support.PlanFacts;
 import java.sql.ResultSetMetaData;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -109,6 +110,22 @@ public final class QueryPlans {
 			String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
 		return Built
 			.of(LogController.buildLogQuery(project, environment, level, traceId, release, query, attr, from, to, cursor));
+	}
+
+	public static Built logTimeline(List<Long> project, List<String> environment, List<String> level, String traceId,
+			String release, String query, List<String> attr, Instant from, Instant to) {
+		return Built.of(LogController.buildTimelineQuery(project, environment, level, traceId, release, query, attr,
+				from, to));
+	}
+
+	/**
+	 * The bucket width the timeline would draw this window at, from the controller
+	 * that owns the ladder. Read rather than recomputed, for the reason
+	 * {@link #sparklineSince()} is: it is a bind parameter, and a guard with its own
+	 * copy would {@code EXPLAIN} a grouping the controller never runs.
+	 */
+	public static Duration timelineBucket(Instant from, Instant to) {
+		return LogController.timelineBucket(from, to);
 	}
 
 	public static String logCursorAtPage(JdbcClient jdbc, int pages) {

@@ -4,7 +4,7 @@ import { hlm } from '@spartan-ng/helm/utils';
 import { cva } from 'class-variance-authority';
 
 /** Canonical level buckets; every raw level string is mapped onto one of these. */
-type Level = 'fatal' | 'error' | 'warn' | 'info' | 'muted';
+export type Level = 'fatal' | 'error' | 'warn' | 'info' | 'muted';
 
 const LEVEL_ALIASES: Record<string, Level> = {
   fatal: 'fatal',
@@ -16,6 +16,20 @@ const LEVEL_ALIASES: Record<string, Level> = {
   info: 'info',
   information: 'info',
 };
+
+/**
+ * The canonical bucket a raw level string falls in. Exported so anything colouring
+ * by level — the badge here, the timeline's stacked bars — agrees on which levels
+ * share a colour, rather than each keeping its own alias table.
+ */
+export function resolveLevel(level: string | null | undefined): Level {
+  // Own-property check, not `?? 'muted'`: these strings come from ingested records
+  // and from timeline bucket keys, so a level named `constructor` or `toString`
+  // would otherwise resolve to the truthy inherited function and pass through as
+  // something that is not a Level.
+  const key = level?.toLowerCase() ?? '';
+  return Object.hasOwn(LEVEL_ALIASES, key) ? LEVEL_ALIASES[key] : 'muted';
+}
 
 const levelBadge = cva('font-semibold uppercase', {
   variants: {
@@ -43,9 +57,7 @@ const levelBadge = cva('font-semibold uppercase', {
 export class LevelBadge {
   readonly level = input<string | null | undefined>();
 
-  private readonly resolved = computed<Level>(
-    () => LEVEL_ALIASES[this.level()?.toLowerCase() ?? ''] ?? 'muted',
-  );
+  private readonly resolved = computed<Level>(() => resolveLevel(this.level()));
 
   readonly classes = computed(() => hlm(levelBadge({ level: this.resolved() })));
 }

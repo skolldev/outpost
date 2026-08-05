@@ -13,30 +13,71 @@ was produced end-to-end by the SDKs.
 ## Quick start (docker compose)
 
 ```bash
-# 1. Base stack
+# 1. (recommended) Symbolication: start the base stack, log in to
+#    http://localhost:8080 → Settings → API tokens → create one
+#    (artifacts:write) and export it. The demo-frontend container then
+#    self-uploads its source maps at startup.
 docker compose up -d
-
-# 2. Create the two demo projects (idempotent; wipes only their own telemetry)
-docker compose exec -T db psql -U outpost -d outpost < demo/scripts/demo-setup.sql
-
-# 3. Resolve the DB-assigned project ids into .env (they are NOT guaranteed to be 1/2!)
-demo/scripts/print-dsns.sh --write-env
-
-# 4. (recommended) Symbolication: log in to http://localhost:8080 → Settings →
-#    API tokens → create one (artifacts:write) and export it. The demo-frontend
-#    container then self-uploads its source maps at startup.
 export SENTRY_AUTH_TOKEN=outpost_...
 
-# 5. Demo apps
+# 2. Demo apps — the demo-seed service creates the projects + DSN keys first
 docker compose --profile demo up -d --build
 ```
 
 Open **http://localhost:4300**, sign in as a persona, click scenario buttons — then watch
 **http://localhost:8080** (Issues / Logs / Traces / Releases).
 
-> **Wrong project id = silent 401 drops.** If nothing arrives, compare the DSN project id
-> in `docker compose config` with `demo/scripts/print-dsns.sh` output — step 3 exists
-> because ids are identity-assigned by Postgres.
+### How the projects get created
+
+The `demo-seed` service (demo profile, one-shot) applies `demo/scripts/demo-setup.sql`
+before the demo apps start; they `depends_on` it with `service_completed_successfully`.
+It cannot be a Postgres initdb script — Flyway creates the schema when *Outpost* boots,
+so demo-seed waits for the `project` table to appear first.
+
+- On a database with **no projects yet**, the SQL pins the demo project ids to **1 and 2**,
+  which is what compose's DSN paths default to. Nothing else to do.
+- If other projects already exist, ids are identity-assigned and you must reconcile them:
+  `demo/scripts/print-dsns.sh --write-env`, then re-run step 2.
+
+demo-seed is **non-destructive on re-runs**: if both demo projects already exist it leaves
+them and their telemetry alone, so `docker compose --profile demo up` never wipes a session
+you were in the middle of. Either way it logs the resolved DSNs
+(`docker compose logs demo-seed`). To deliberately reset the demo projects:
+
+```bash
+docker compose exec -T db psql -U outpost -d outpost < demo/scripts/demo-setup.sql
+```
+
+> **Wrong project id = silent 401 drops.** Ingest validates the (project id, key) pair and
+> never the DSN host. If nothing arrives, compare the DSN project id in
+> `docker compose config` against `docker compose logs demo-seed`.
+
+### 30 days of log history (for the log timeline)
+
+The demo apps only emit telemetry for *now*, so the Logs timeline has nothing to draw at any
+range wider than the session you just ran. `demo/scripts/demo-logs-30d.sql` backfills ~60k
+`log_record` rows over the past 30 days — the one place in the demo where data is fabricated
+rather than ingested. Run it by hand (it is **not** wired into compose):
+
+```bash
+docker compose exec -T db psql -U outpost -d outpost < demo/scripts/demo-logs-30d.sql
+```
+
+What it puts on the chart: a diurnal cycle peaking at 14:00 UTC, weekends at ~⅓ of weekday
+volume, `production` + `staging` for both projects, one release cutover per project, and four
+named incidents that spike volume *and* swing the level mix — a 2½h DB pool exhaustion, a
+45-minute payment-gateway outage, a two-day cache stampede (warn-heavy, no error spike), and a
+frontend chunk-load failure after a CDN purge. Brush any of the tall bars and the list below
+narrows to that story.
+
+Every row carries `seeded_by=demo-logs-30d` in its attributes, so `attr=seeded_by=demo-logs-30d`
+selects exactly the backfill (and incident rows also carry `attr=incident=<label>`). Re-running
+is idempotent — it deletes only its own rows. To remove it without touching live telemetry:
+
+```bash
+docker compose exec -T db psql -U outpost -d outpost \
+  -c "DELETE FROM log_record WHERE attributes->>'seeded_by' = 'demo-logs-30d'"
+```
 
 ## Dev-server mode (fast iteration)
 
@@ -89,7 +130,7 @@ and in every filter.
 
 | Variable | Used by | Default | Meaning |
 | --- | --- | --- | --- |
-| `DEMO_FRONTEND_PROJECT_ID` / `DEMO_BACKEND_PROJECT_ID` | compose | `1` / `2` | project ids in the DSN paths (set by `print-dsns.sh --write-env`) |
+| `DEMO_FRONTEND_PROJECT_ID` / `DEMO_BACKEND_PROJECT_ID` | compose | `1` / `2` | project ids in the DSN paths; the defaults are what `demo-seed` pins on a fresh DB — override via `print-dsns.sh --write-env` otherwise |
 | `DEMO_SENTRY_DSN` | both apps | localhost DSNs | full DSN override |
 | `DEMO_SENTRY_ENVIRONMENT` | both apps | `dev` | environment tag (`dev`/`qa`/`prod`/…) |
 | `DEMO_SENTRY_RELEASE` | both apps | `shop-*@x.y.z` | release tag |
@@ -119,7 +160,8 @@ the unimplemented **CSP/security-report and minidump endpoints**.
 
 ## Troubleshooting
 
-- **Nothing arrives at all** → project id mismatch (silent 401s). Re-run
+- **Nothing arrives at all** → project id mismatch (silent 401s). Check
+  `docker compose logs demo-seed` for the real ids, then
   `demo/scripts/print-dsns.sh --write-env` and `docker compose --profile demo up -d`.
 - **Frontend stacks minified / `missing_sourcemap`** → no maps uploaded for the *served*
   build. Compose: set `SENTRY_AUTH_TOKEN` and recreate demo-frontend. Dev: `pnpm demo:prod`.

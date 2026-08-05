@@ -9,6 +9,8 @@ import java.time.format.DateTimeParseException;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.context.event.ContextRefreshedEvent;
@@ -108,13 +110,7 @@ public class PartitionManager {
 			dropTransaction.setTimeout(lockTimeoutSeconds);
 		}
 		String prefix = table + "_p";
-		List<String> partitions = jdbc.sql("""
-				SELECT c.relname
-				FROM pg_inherits i
-				JOIN pg_class c ON c.oid = i.inhrelid
-				JOIN pg_class p ON p.oid = i.inhparent
-				WHERE p.relname = ?
-				""").param(table).query(String.class).list();
+		List<String> partitions = childPartitions(table);
 		int dropped = 0;
 		for (String partition : partitions) {
 			LocalDate weekStart = weekStartOf(partition, prefix);
@@ -144,6 +140,40 @@ public class PartitionManager {
 			}
 		}
 		return dropped;
+	}
+
+	/**
+	 * The lower bound of the oldest surviving partition of {@code table}, or empty
+	 * when it has none.
+	 *
+	 * <p>This is the cheapest honest answer to "how far back does data go": a
+	 * catalogue read with no heap access, where {@code min("timestamp")} would scan
+	 * every partition of the largest table in the product. Two things it is not.
+	 * It is <b>filter-blind</b> — it is when this installation started retaining
+	 * {@code table}, not when any one Project first wrote to it. And it can precede
+	 * the first surviving row by up to a week, because it is the partition's bound
+	 * rather than the earliest row inside it. Both are acceptable to the log
+	 * timeline, which needs a left edge to draw an axis from; a caller needing the
+	 * real minimum has to pay for the scan.
+	 */
+	public Optional<Instant> earliestPartitionStart(String table) {
+		String prefix = table + "_p";
+		return childPartitions(table).stream()
+			.map(partition -> weekStartOf(partition, prefix))
+			.filter(Objects::nonNull)
+			.min(LocalDate::compareTo)
+			.map(week -> week.atStartOfDay(ZoneOffset.UTC).toInstant());
+	}
+
+	/** Every partition currently attached to {@code table}, by relation name. */
+	private List<String> childPartitions(String table) {
+		return jdbc.sql("""
+				SELECT c.relname
+				FROM pg_inherits i
+				JOIN pg_class c ON c.oid = i.inhrelid
+				JOIN pg_class p ON p.oid = i.inhparent
+				WHERE p.relname = ?
+				""").param(table).query(String.class).list();
 	}
 
 	private static LocalDate weekStartOf(String partition, String prefix) {
