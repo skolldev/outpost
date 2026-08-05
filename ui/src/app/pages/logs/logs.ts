@@ -39,6 +39,10 @@ import { LogTimelineChart, TimelineWindow } from '../../shared/log-timeline';
 const BASE = API_BASE;
 const LIVE_BUFFER = 500;
 
+/** Filter sets are values, not identities — see `baseFilters`. */
+const sameFilters = (a: LogFilters, b: LogFilters): boolean =>
+  JSON.stringify(a) === JSON.stringify(b);
+
 /** Logs page: Kibana-lite filterable stream with SSE live tail. */
 @Component({
   selector: 'app-logs',
@@ -116,14 +120,24 @@ export class LogsPage {
    * only in which time bounds they add, so they share this rather than each rebuilding
    * the filter set — and the SSE tail, which understands no time bounds at all, uses
    * it as is.
+   *
+   * <p>Compared by value, and that is load-bearing rather than a micro-optimisation.
+   * `project`, `environments` and `selectedLevels` are all computed off the query
+   * params, so each hands back a fresh array whenever <em>any</em> param changes —
+   * `window` included. On identity alone a brush would therefore rebuild this object,
+   * rebuild the chart's request, and refetch the chart: the one thing ADR 0011 says
+   * must not happen, made visible as the chart blanking and remounting mid-drag.
    */
-  private readonly baseFilters = computed<LogFilters>(() => ({
-    project: this.filters.project(),
-    environment: this.filters.environments(),
-    level: this.selectedLevels(),
-    query: this.debouncedQuery.value() || undefined,
-    traceId: this.traceId() || undefined,
-  }));
+  private readonly baseFilters = computed<LogFilters>(
+    () => ({
+      project: this.filters.project(),
+      environment: this.filters.environments(),
+      level: this.selectedLevels(),
+      query: this.debouncedQuery.value() || undefined,
+      traceId: this.traceId() || undefined,
+    }),
+    { equal: sameFilters },
+  );
 
   /**
    * What the chart is drawn from: the global range, and deliberately <em>not</em> the

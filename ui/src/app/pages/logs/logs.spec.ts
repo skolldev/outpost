@@ -72,21 +72,26 @@ function timeline(): LogTimeline {
 }
 
 /**
+ * The rendered chart. Waited for rather than assumed: callers wait on the log list,
+ * which tracks the `/logs` response, and the chart is an independent request that
+ * can still be in flight.
+ */
+async function timelineSvg(container: Element): Promise<Element> {
+  return waitFor(() => {
+    const svg = container.querySelector('svg');
+    if (!svg) throw new Error('no timeline rendered');
+    return svg;
+  });
+}
+
+/**
  * The chart is pointer-driven and exposes no interactive roles (#141), and jsdom
  * gives every element a zero-sized box — so a test drives it by stubbing the box
  * and firing pointer events at a clientX, then asserts on the request the selection
  * produces rather than on the SVG.
- *
- * <p>Waits for the SVG rather than assuming it: callers wait on the log list, which
- * tracks the `/logs` response, and the chart is an independent request that can
- * still be in flight.
  */
 async function brush(container: Element, clientX: number, toClientX = clientX): Promise<void> {
-  const svg = await waitFor(() => {
-    const found = container.querySelector('svg');
-    if (!found) throw new Error('no timeline rendered');
-    return found;
-  });
+  const svg = await timelineSvg(container);
   svg.getBoundingClientRect = () => ({ left: 0, width: 600 }) as DOMRect;
   fireEvent.pointerDown(svg, { clientX });
   fireEvent.pointerMove(svg, { clientX: toClientX });
@@ -268,6 +273,25 @@ describe('LogsPage', () => {
     expect(before).toBeGreaterThan(0);
     expect(chartRequests).toHaveLength(before);
     expect(chartRequests.every((request) => request.to === null)).toBe(true);
+  });
+
+  /**
+   * The visible half of ADR 0011: not re-requesting the chart is also what keeps it
+   * on screen. A refetch blanks the resource, which empties `bars()`, which drops the
+   * `@if` — and the chart flickers out and back on every brush.
+   */
+  it('keeps the chart mounted when the selection changes', async () => {
+    const windows = captureLogWindows();
+    const { container } = await renderLogs();
+    await screen.findByText('checkout failed for user');
+    const svg = await timelineSvg(container);
+
+    await brush(container, 100);
+
+    // Waiting on the list request the brush causes: the chart's would be issued in
+    // the same cycle, so by the time this lands a refetch would already have blanked it.
+    await waitFor(() => expect(windows.at(-1)?.to).toBe('2026-07-01T00:11:00.000Z'));
+    expect(container.querySelector('svg')).toBe(svg);
   });
 
   it('drops the selection when live tail is switched on', async () => {
