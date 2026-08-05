@@ -1,0 +1,90 @@
+-- A covering index for the log timeline (#141), which is the first query in the log
+-- feature whose cost is O(matching rows) rather than O(page).
+--
+-- V11 bought the log list an ordered walk that stops once 100 rows are in hand. An
+-- aggregate cannot stop early: the timeline groups every record in its window into
+-- buckets, so it reads the window. Measured at 2 000 010 records over 13 weekly
+-- partitions (1 428 MB heap, 777 MB of indexes) on 2026-08-05, against the 409
+-- blocks page 1 of the list costs beside it:
+--
+--   shape                        none    +index
+--   1h                         33 488     5 699
+--   24h                        33 648     5 686
+--   14d (the default)         130 805    21 244
+--   30d                       178 005    28 722
+--   All time                  250 106    40 191
+--   14d, one project          137 827     5 369
+--   14d, one environment      130 810    21 247
+--   All time, one project     265 035    10 596
+--   log list page 1               409       409
+--
+-- Two readings of that table, both of which decided this index.
+--
+-- **Unindexed, the chart costs 320x the page it sits above.** 130 805 blocks to draw
+-- 84 bars over a list that cost 409 to fill. At the wide end it is worse than a full
+-- scan of the table (~178 000 blocks for the 1 428 MB heap): All time read 250 106,
+-- because the aggregate touches the heap for `level` on every row it counts. A
+-- ceiling above a full scan cannot fail, so that shape could not have been guarded
+-- at all — the feature would have had to refuse it.
+--
+-- **The aggregate has no ORDER BY, which is why one index serves every shape.** The
+-- list needs its index to deliver rows in ("timestamp", id) order, so a leading
+-- column that is not "timestamp" cannot serve it — that is V11's central finding and
+-- why a multi-value project filter falls back to the global index there. The
+-- timeline has no such constraint: it hashes into buckets, so any index carrying
+-- every column it touches can be scanned index-only whatever the column order, and
+-- partition pruning still bounds it to the window. That is the whole reason a single
+-- four-column index answers the global, project-filtered and environment-filtered
+-- shapes alike.
+--
+-- Column order is then chosen for the one thing it still decides: `project_id` leads
+-- so a single-project filter becomes a range scan rather than a full index scan,
+-- worth 21 244 -> 5 369 blocks. The other shapes scan the whole index of the
+-- in-window partitions either way.
+--
+-- Alternatives measured at guard scale (40 010 records, full scan 5 052 blocks),
+-- both rejected:
+--
+--   shape                    none  (ts,level)  (proj,ts,level,env)  V11's two + INCLUDE
+--   14d global              3 135         373                  599                  767
+--   30d global              4 299         499                  771                2 060
+--   All time global         5 066         608                  936                3 244
+--   14d, one project        3 135       3 135                  264                  336
+--   14d, one environment    3 135       3 146                  539                  653
+--
+-- ("timestamp", level) is the cheapest index and serves only the unfiltered chart;
+-- the moment a project or environment filter is applied it falls back to the heap
+-- and buys nothing. Widening V11's two existing indexes with INCLUDE (level,
+-- project_id, environment) needs no new index and costs about half the storage, and
+-- it is the option to revisit if this one's storage becomes the problem — but it
+-- degrades on exactly the wide global windows that are the expensive case, because
+-- `idx_log_ts_id` also carries the uuid `id`, which makes its entries nearly as wide
+-- as the heap rows they point at.
+--
+-- Storage is what this costs. 104 MB on 2 000 010 records — 49 bytes per record,
+-- taking log_record's index storage up ~12 %, against the ~90 bytes per record V11's
+-- two cost together. log_record is append-only, so each insert writes one more index
+-- entry and no update has to be re-checked for HOT eligibility. A bulk insert of
+-- 200 000 rows measured 4 311 ms without this index and 4 135 ms with it: the write
+-- cost is below what that probe can resolve, which is not the same as free — the
+-- second run had the warmer cache. Read it as "not measurable at 200 000 rows", and
+-- see docs/performance/measuring-ingest.md for the throughput question proper.
+--
+-- Locking, exactly as V11: a plain CREATE INDEX holds a ShareLock on log_record for
+-- the length of the build, which conflicts with the RowExclusiveLock an INSERT needs,
+-- so log ingest blocks until it finishes. Measured at 886 ms for these 2 000 010
+-- records. CONCURRENTLY is not available — Postgres rejects it on a partitioned table
+-- outright (SQLSTATE 0A000) — so an install large enough to care should build this by
+-- hand before upgrading, after which this migration finds it present and is a no-op:
+--
+--   CREATE INDEX idx_log_timeline ON ONLY log_record (project_id, "timestamp", level, environment);
+--   -- then, per partition:
+--   CREATE INDEX CONCURRENTLY idx_log_timeline_p20260601
+--       ON log_record_p20260601 (project_id, "timestamp", level, environment);
+--   ALTER INDEX idx_log_timeline ATTACH PARTITION idx_log_timeline_p20260601;
+--
+-- What this does not fix: the timeline still costs 21 244 blocks against the list's
+-- 409 on the default view. The index makes the chart affordable, not cheap, and it
+-- remains the most expensive thing the logs page does.
+
+CREATE INDEX IF NOT EXISTS idx_log_timeline ON log_record (project_id, "timestamp", level, environment);
