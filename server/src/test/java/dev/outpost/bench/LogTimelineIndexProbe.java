@@ -88,7 +88,7 @@ class LogTimelineIndexProbe {
 		System.out.printf("%n=== build blocked ingest for %d ms (ShareLock on log_record for the whole build)%n",
 				buildMillis);
 		System.out.printf("=== index adds %s — %d bytes/record, taking index storage from %s to %s (+%d %%)%n",
-				pretty(added), added / Math.max(1, records()), pretty(indexBytesBefore), indexSize(),
+				pretty(added), added / Math.max(1, records), pretty(indexBytesBefore), indexSize(),
 				100 * added / Math.max(1, indexBytesBefore));
 		System.out.println("=== read path WITH the covering index");
 		readShapes(now, allTimeFrom);

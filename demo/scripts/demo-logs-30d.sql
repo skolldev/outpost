@@ -55,7 +55,12 @@ BEGIN
     END LOOP;
 END $$;
 
-DELETE FROM log_record WHERE attributes->>'seeded_by' = 'demo-logs-30d';
+-- Scoped to the demo projects as well as the marker: `seeded_by` is an ordinary
+-- log attribute, and this script has no business deleting a real project's rows
+-- just because someone copied the attribute filter it advertises.
+DELETE FROM log_record
+WHERE project_id IN (SELECT id FROM project WHERE slug IN ('shop-frontend','shop-backend'))
+  AND attributes->>'seeded_by' = 'demo-logs-30d';
 
 -- The backfill spans environments and releases the live demo apps never emit, so
 -- the facet lists have to be told about them explicitly (ingest would normally
@@ -298,10 +303,13 @@ COMMIT;
 \echo 'Backfilled logs by project and level:'
 SELECT p.slug, l.environment, l.level, count(*)
 FROM log_record l JOIN project p ON p.id = l.project_id
-WHERE l.attributes->>'seeded_by' = 'demo-logs-30d'
+WHERE p.slug IN ('shop-frontend','shop-backend')
+  AND l.attributes->>'seeded_by' = 'demo-logs-30d'
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 
 \echo 'Window:'
 SELECT min("timestamp") AS oldest, max("timestamp") AS newest, count(*) AS rows
-FROM log_record WHERE attributes->>'seeded_by' = 'demo-logs-30d';
+FROM log_record
+WHERE project_id IN (SELECT id FROM project WHERE slug IN ('shop-frontend','shop-backend'))
+  AND attributes->>'seeded_by' = 'demo-logs-30d';

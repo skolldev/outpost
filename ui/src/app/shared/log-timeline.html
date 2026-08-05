@@ -2,6 +2,8 @@
   <svg
     [attr.viewBox]="'0 0 ' + bucketCount() + ' ' + height"
     preserveAspectRatio="none"
+    role="img"
+    aria-label="Log volume by level"
     class="block h-16 w-full cursor-crosshair touch-none select-none"
     (pointerdown)="onPointerDown($event)"
     (pointermove)="onPointerMove($event)"

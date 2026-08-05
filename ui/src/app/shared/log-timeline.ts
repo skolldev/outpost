@@ -29,6 +29,18 @@ const HEIGHT = 100;
 /** Gap between bars, in bar-width units. */
 const GAP = 0.18;
 
+/**
+ * Hoisted because `label` runs once per bucket and `bars` recomputes on every
+ * pointer move during a drag — constructing the formatter is the expensive part of
+ * `Intl`, and at 150 buckets a single drag would build thousands of them.
+ */
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
 interface Segment {
   level: Level;
   fill: string;
@@ -127,16 +139,23 @@ export class LogTimelineChart {
       const byLevel = this.byCanonicalLevel(counts.get(index));
       const total = STACK_ORDER.reduce((sum, level) => sum + (byLevel[level] ?? 0), 0);
 
-      // Stack downward from the top of the bar so the worst level sits on top.
-      let y = HEIGHT - Math.round((total / max) * HEIGHT);
-      const segments: Segment[] = [];
-      for (const level of STACK_ORDER) {
+      // Height every level first, then put the top edge at their sum. Rounding the
+      // total separately would disagree with the rounded-and-floored segments: a
+      // bucket holding one record out of a max of 1000 rounds to a top edge of
+      // HEIGHT, and its 1-unit segment is then drawn below the viewBox and clipped
+      // away — so every quiet-but-non-empty bucket next to a spike vanishes.
+      const heights = STACK_ORDER.map((level) => {
         const value = byLevel[level] ?? 0;
-        if (!value) continue;
-        const h = Math.max(1, Math.round((value / max) * HEIGHT));
-        segments.push({ level, fill: LEVEL_FILL[level], y, h });
-        y += h;
-      }
+        return value ? Math.max(1, Math.round((value / max) * HEIGHT)) : 0;
+      });
+      // Stack downward from the top of the bar so the worst level sits on top.
+      let y = Math.max(0, HEIGHT - heights.reduce((a, b) => a + b, 0));
+      const segments: Segment[] = [];
+      STACK_ORDER.forEach((level, i) => {
+        if (!heights[i]) return;
+        segments.push({ level, fill: LEVEL_FILL[level], y, h: heights[i] });
+        y += heights[i];
+      });
 
       return {
         index,
@@ -208,13 +227,7 @@ export class LogTimelineChart {
     byLevel: Partial<Record<Level, number>>,
     total: number,
   ): string {
-    const time = new Intl.DateTimeFormat(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const span = `${time.format(start)} – ${time.format(end)}`;
+    const span = `${TIME_FORMAT.format(start)} – ${TIME_FORMAT.format(end)}`;
     if (!total) return `${span} — no records`;
     const breakdown = STACK_ORDER.filter((level) => byLevel[level])
       .map((level) => `${byLevel[level]} ${level}`)

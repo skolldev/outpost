@@ -85,10 +85,21 @@ export class LogsPage {
    * one opaque param: `from` is also what the global range derives, and a URL
    * carrying both would invite someone to move this into `GlobalFilters` — which is
    * the thing ADR 0011 exists to prevent.
+   *
+   * <p>Validated here rather than at each use, because this one parse feeds three
+   * consumers that all take a hand-typed URL badly: `currentFilters` would forward
+   * the garbage to the API, the chart would compute NaN bounds and dim every bar
+   * with nothing explaining why, and the clear chip's `DatePipe` throws outright.
+   * A repeated `?window=` is the same problem — Angular hands back an array, which
+   * has no `.split`.
    */
   readonly window = computed<TimelineWindow | null>(() => {
-    const [from, to] = (this.queryParams()['window'] ?? '').split('..');
-    return from && to ? { from, to } : null;
+    const [raw] = this.multi(this.queryParams()['window']);
+    const [from, to] = (raw ?? '').split('..');
+    if (!from || !to) return null;
+    const bounds = [Date.parse(from), Date.parse(to)];
+    if (bounds.some(Number.isNaN) || bounds[0] >= bounds[1]) return null;
+    return { from, to };
   });
   readonly search = signal(this.route.snapshot.queryParams['query'] ?? '');
   readonly debouncedQuery = debounced(this.search, 300);

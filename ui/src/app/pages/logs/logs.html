@@ -55,6 +55,7 @@
           class="cursor-pointer"
           (click)="selectWindow(null)"
           title="Clear the selected time window"
+          aria-label="Clear the selected time window"
         >
           {{ window()!.from | date: 'MMM d, HH:mm' }} –
           {{ window()!.to | date: 'MMM d, HH:mm' }}

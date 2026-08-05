@@ -141,6 +141,21 @@ class LogTimelineIntegrationTest {
 		assertThat((List<?>) body.get("buckets")).isNotEmpty();
 	}
 
+	/**
+	 * A backwards window is clamped to an empty one rather than rejected or quietly
+	 * inverted — a request the range picker cannot produce, but a hand-edited URL can,
+	 * and {@code date_bin} over an inverted window is not a shape worth finding out.
+	 */
+	@Test
+	void aReversedWindowCollapsesToAnEmptyOne() {
+		Map<String, Object> body = timeline(ANCHOR.plus(1, ChronoUnit.HOURS), ANCHOR);
+
+		// `from` is the clamp aligned down onto the bucket grid, so at or before `to`.
+		assertThat(Instant.parse((String) body.get("from"))).isBeforeOrEqualTo(ANCHOR);
+		assertThat(body.get("to")).isEqualTo(ANCHOR.toString());
+		assertThat((List<?>) body.get("buckets")).isEmpty();
+	}
+
 	/** The chart carries the list's filters, so a filter that excludes everything empties it. */
 	@Test
 	void filtersApplyToTheChartAsTheyDoToTheList() {

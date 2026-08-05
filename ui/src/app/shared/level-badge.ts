@@ -23,7 +23,12 @@ const LEVEL_ALIASES: Record<string, Level> = {
  * share a colour, rather than each keeping its own alias table.
  */
 export function resolveLevel(level: string | null | undefined): Level {
-  return LEVEL_ALIASES[level?.toLowerCase() ?? ''] ?? 'muted';
+  // Own-property check, not `?? 'muted'`: these strings come from ingested records
+  // and from timeline bucket keys, so a level named `constructor` or `toString`
+  // would otherwise resolve to the truthy inherited function and pass through as
+  // something that is not a Level.
+  const key = level?.toLowerCase() ?? '';
+  return Object.hasOwn(LEVEL_ALIASES, key) ? LEVEL_ALIASES[key] : 'muted';
 }
 
 const levelBadge = cva('font-semibold uppercase', {

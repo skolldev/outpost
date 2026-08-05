@@ -110,13 +110,7 @@ public class PartitionManager {
 			dropTransaction.setTimeout(lockTimeoutSeconds);
 		}
 		String prefix = table + "_p";
-		List<String> partitions = jdbc.sql("""
-				SELECT c.relname
-				FROM pg_inherits i
-				JOIN pg_class c ON c.oid = i.inhrelid
-				JOIN pg_class p ON p.oid = i.inhparent
-				WHERE p.relname = ?
-				""").param(table).query(String.class).list();
+		List<String> partitions = childPartitions(table);
 		int dropped = 0;
 		for (String partition : partitions) {
 			LocalDate weekStart = weekStartOf(partition, prefix);
@@ -164,21 +158,22 @@ public class PartitionManager {
 	 */
 	public Optional<Instant> earliestPartitionStart(String table) {
 		String prefix = table + "_p";
+		return childPartitions(table).stream()
+			.map(partition -> weekStartOf(partition, prefix))
+			.filter(Objects::nonNull)
+			.min(LocalDate::compareTo)
+			.map(week -> week.atStartOfDay(ZoneOffset.UTC).toInstant());
+	}
+
+	/** Every partition currently attached to {@code table}, by relation name. */
+	private List<String> childPartitions(String table) {
 		return jdbc.sql("""
 				SELECT c.relname
 				FROM pg_inherits i
 				JOIN pg_class c ON c.oid = i.inhrelid
 				JOIN pg_class p ON p.oid = i.inhparent
 				WHERE p.relname = ?
-				""")
-			.param(table)
-			.query(String.class)
-			.list()
-			.stream()
-			.map(partition -> weekStartOf(partition, prefix))
-			.filter(Objects::nonNull)
-			.min(LocalDate::compareTo)
-			.map(week -> week.atStartOfDay(ZoneOffset.UTC).toInstant());
+				""").param(table).query(String.class).list();
 	}
 
 	private static LocalDate weekStartOf(String partition, String prefix) {

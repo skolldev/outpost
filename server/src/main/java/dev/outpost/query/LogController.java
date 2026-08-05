@@ -214,7 +214,8 @@ public class LogController {
 		// Snapped onto the bucket grid before anything else sees it, so the window the
 		// response reports is the window its buckets actually start on. The first bar
 		// therefore covers a whole bucket, reaching slightly further back than asked.
-		lower = alignDown(lower, timelineBucket(lower, upper));
+		Duration bucket = timelineBucket(lower, upper);
+		lower = alignDown(lower, bucket);
 
 		SearchQuery search = buildTimelineQuery(project, environment, level, traceId, release, query, attr, lower,
 				upper);
@@ -224,7 +225,10 @@ public class LogController {
 				.put(rs.getString("level"), rs.getLong("n"));
 		}, search.params().toArray());
 
-		return new Timeline(lower, upper, timelineBucket(lower, upper).toSeconds(),
+		// The same width the query binned on: recomputing it here would be correct today
+		// only because `alignDown` can't push the window onto a finer rung, which is not
+		// an argument a later change to the ladder would keep true.
+		return new Timeline(lower, upper, bucket.toSeconds(),
 				buckets.entrySet().stream().map(entry -> new TimelineBucket(entry.getKey(), entry.getValue())).toList());
 	}
 

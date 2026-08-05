@@ -72,14 +72,21 @@ function timeline(): LogTimeline {
 }
 
 /**
- * The chart is pointer-driven and carries no roles (#141), and jsdom gives every
- * element a zero-sized box — so a test drives it by stubbing the box and firing
- * pointer events at a clientX, then asserts on the request the selection produces
- * rather than on the SVG.
+ * The chart is pointer-driven and exposes no interactive roles (#141), and jsdom
+ * gives every element a zero-sized box — so a test drives it by stubbing the box
+ * and firing pointer events at a clientX, then asserts on the request the selection
+ * produces rather than on the SVG.
+ *
+ * <p>Waits for the SVG rather than assuming it: callers wait on the log list, which
+ * tracks the `/logs` response, and the chart is an independent request that can
+ * still be in flight.
  */
-function brush(container: Element, clientX: number, toClientX = clientX): void {
-  const svg = container.querySelector('svg');
-  if (!svg) throw new Error('no timeline rendered');
+async function brush(container: Element, clientX: number, toClientX = clientX): Promise<void> {
+  const svg = await waitFor(() => {
+    const found = container.querySelector('svg');
+    if (!found) throw new Error('no timeline rendered');
+    return found;
+  });
   svg.getBoundingClientRect = () => ({ left: 0, width: 600 }) as DOMRect;
   fireEvent.pointerDown(svg, { clientX });
   fireEvent.pointerMove(svg, { clientX: toClientX });
@@ -212,7 +219,7 @@ describe('LogsPage', () => {
     await screen.findByText('checkout failed for user');
 
     // A sixth of the way across 60 one-minute buckets is bucket 10 — 00:10 to 00:11.
-    brush(container, 100);
+    await brush(container, 100);
 
     await waitFor(() =>
       expect(windows).toContainEqual({
@@ -227,7 +234,7 @@ describe('LogsPage', () => {
     const { container } = await renderLogs();
     await screen.findByText('checkout failed for user');
 
-    brush(container, 100, 200); // buckets 10 through 20
+    await brush(container, 100, 200); // buckets 10 through 20
 
     await waitFor(() =>
       expect(windows).toContainEqual({
@@ -252,11 +259,13 @@ describe('LogsPage', () => {
     await screen.findByText('checkout failed for user');
     const before = chartRequests.length;
 
-    brush(container, 100);
+    await brush(container, 100);
 
     await waitFor(() => expect(screen.getByTitle('Clear the selected time window')).toBeVisible());
     // The brush must not have re-requested the chart, and nothing it did request
-    // may carry the selection's bounds.
+    // may carry the selection's bounds. `before` is asserted non-zero so the two
+    // checks below can't pass over an empty list.
+    expect(before).toBeGreaterThan(0);
     expect(chartRequests).toHaveLength(before);
     expect(chartRequests.every((request) => request.to === null)).toBe(true);
   });
@@ -266,7 +275,7 @@ describe('LogsPage', () => {
     const { container } = await renderLogs();
     const user = userEvent.setup();
     await screen.findByText('checkout failed for user');
-    brush(container, 100);
+    await brush(container, 100);
     await waitFor(() => expect(screen.getByTitle('Clear the selected time window')).toBeVisible());
 
     await user.click(screen.getByRole('switch', { name: 'Live tail' }));
@@ -284,7 +293,7 @@ describe('LogsPage', () => {
     const { container } = await renderLogs();
     const user = userEvent.setup();
     await screen.findByText('checkout failed for user');
-    brush(container, 100);
+    await brush(container, 100);
     const chip = await screen.findByTitle('Clear the selected time window');
 
     await user.click(chip);
