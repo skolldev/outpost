@@ -228,6 +228,10 @@ export class Api {
     return this.http.post<AppUser>(`${this.base}/users`, { email, password, role });
   }
 
+  deleteUser(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/users/${id}`);
+  }
+
   dataRetention(): Observable<DataRetentionSetting> {
     return this.http.get<DataRetentionSetting>(`${this.base}/settings/data-retention`);
   }

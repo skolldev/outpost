@@ -45,6 +45,7 @@
       <tr>
         <th class="px-4 py-2 font-medium">Email</th>
         <th class="px-4 py-2 font-medium">Role</th>
+        <th class="px-4 py-2"></th>
       </tr>
     </thead>
     <tbody>
@@ -52,6 +53,21 @@
         <tr class="border-b border-border/60 last:border-0">
           <td class="px-4 py-2">{{ user.email }}</td>
           <td class="px-4 py-2 text-muted-foreground">{{ user.role }}</td>
+          <td class="px-4 py-2 text-right whitespace-nowrap">
+            @if (confirmDeleteUserId() === user.id) {
+              <span class="mr-2 text-xs text-muted-foreground">Delete this user?</span>
+              <button hlmBtn variant="destructive" size="xs" (click)="deleteUser(user.id)">
+                Confirm
+              </button>
+              <button hlmBtn variant="outline" size="xs" class="ml-2" (click)="cancelDeleteUser()">
+                Cancel
+              </button>
+            } @else {
+              <button hlmBtn variant="destructive" size="xs" (click)="requestDeleteUser(user.id)">
+                Delete
+              </button>
+            }
+          </td>
         </tr>
       }
     </tbody>

@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { httpResource } from '@angular/common/http';
+import { HttpErrorResponse, httpResource } from '@angular/common/http';
 import { email, form, FormField, FormRoot, minLength, required } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { HlmButton } from '@spartan-ng/helm/button';
@@ -54,6 +54,31 @@ export class OutpostUsersSettings {
       },
     },
   );
+
+  readonly confirmDeleteUserId = signal<number | null>(null);
+
+  requestDeleteUser(id: number): void {
+    this.confirmDeleteUserId.set(id);
+  }
+
+  cancelDeleteUser(): void {
+    this.confirmDeleteUserId.set(null);
+  }
+
+  async deleteUser(id: number): Promise<void> {
+    try {
+      await firstValueFrom(this.api.deleteUser(id));
+      this.confirmDeleteUserId.set(null);
+      this.usersResource.reload();
+      this.feedback.success('User deleted.');
+    } catch (error) {
+      // The server refuses self-deletion and the last admin with a 409; the
+      // reason is the whole message, so pass it through rather than flattening
+      // both to "could not delete".
+      const detail = (error as HttpErrorResponse | undefined)?.error?.detail;
+      this.feedback.error(typeof detail === 'string' ? detail : 'Could not delete user.');
+    }
+  }
 
   // Single source of truth for the role picker; the trigger label is derived
   // from it. member/admin are the only roles an Outpost User can hold.

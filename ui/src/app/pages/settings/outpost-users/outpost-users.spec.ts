@@ -115,6 +115,72 @@ describe('OutpostUsersSettings', () => {
     expect(await screen.findByText('Password must be at least 8 characters.')).toBeInTheDocument();
   });
 
+  it('deletes a user behind a two-step confirm and reloads the list', async () => {
+    let users = [USER];
+    let deleted: string | null = null;
+    server.use(
+      http.get(`${BASE}/users`, () => HttpResponse.json(users)),
+      http.delete(`${BASE}/users/:id`, ({ params }) => {
+        deleted = params['id'] as string;
+        users = [];
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await renderUsers();
+    const user = userEvent.setup();
+    const table = () => within(screen.getByRole('table'));
+
+    await user.click(await table().findByRole('button', { name: 'Delete' }));
+    // First click only arms the confirm; nothing is sent yet.
+    expect(deleted).toBeNull();
+
+    await user.click(table().getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => expect(deleted).toBe('5'));
+    await waitFor(() => expect(table().queryByText('member@example.com')).not.toBeInTheDocument());
+    expect(feedback.success).toHaveBeenCalledWith('User deleted.');
+  });
+
+  it('cancels the delete confirm without sending a request', async () => {
+    let deleted = false;
+    server.use(
+      http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
+      http.delete(`${BASE}/users/:id`, () => {
+        deleted = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await renderUsers();
+    const user = userEvent.setup();
+    const table = () => within(screen.getByRole('table'));
+
+    await user.click(await table().findByRole('button', { name: 'Delete' }));
+    await user.click(table().getByRole('button', { name: 'Cancel' }));
+
+    expect(deleted).toBe(false);
+    expect(table().getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('reports the reason a delete was refused', async () => {
+    server.use(
+      http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
+      http.delete(`${BASE}/users/:id`, () =>
+        HttpResponse.json({ detail: 'You cannot delete your own account.' }, { status: 409 }),
+      ),
+    );
+    await renderUsers();
+    const user = userEvent.setup();
+    const table = () => within(screen.getByRole('table'));
+
+    await user.click(await table().findByRole('button', { name: 'Delete' }));
+    await user.click(table().getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() =>
+      expect(feedback.error).toHaveBeenCalledWith('You cannot delete your own account.'),
+    );
+    expect(within(screen.getByRole('table')).getByText('member@example.com')).toBeInTheDocument();
+  });
+
   it('surfaces an error when user creation fails', async () => {
     server.use(
       http.get(`${BASE}/users`, () => HttpResponse.json([USER])),
