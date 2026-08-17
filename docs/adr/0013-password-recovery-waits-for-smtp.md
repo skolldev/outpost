@@ -1,0 +1,9 @@
+# Password recovery waits for SMTP
+
+An [[Outpost User]] can change their own password while signed in, but one who has forgotten it cannot recover access unaided; the sanctioned procedure is for an [[Admin]] to delete the account and create it again with a fresh password, communicated out of band. Outpost has no SMTP configuration yet — it arrives with email as a Notification Channel type — and every substitute available without mail is worse than it looks. An Admin-set password means the Admin knows the user's password and nothing compels a change. An Admin-minted one-time reset link is the textbook answer, but with no mailbox to send it to it gets pasted into a chat message, which leaves a plaintext credential in the client's chat history instead of in the user's mail, and it buys that outcome with a `password_reset` table, a token lifecycle, and a second unauthenticated endpoint on an API that currently has exactly one. Delete-and-recreate costs nothing to build and loses nothing, because `app_user` holds no history beyond its identifier and creation time and no other table references it.
+
+## Consequences
+
+- **`app_user` staying free of inbound foreign keys is now load-bearing.** The procedure is lossless only while nothing points at the row. The first feature to reference an Outpost User by id — an assignee, an audit trail, a saved view — makes delete-and-recreate destructive and forces this decision to be reopened rather than merely revisited.
+- **Recovery is not containment.** Per ADR-0012, recreating an account does not invalidate Sessions issued to the old one, so this procedure restores access to the rightful user without removing it from anyone else. It answers "I forgot my password," not "my password has leaked."
+- **The reset flow is the natural first consumer of SMTP,** and wanting it is a reason to prioritise mail configuration rather than to build a mail-free reset path in the meantime.

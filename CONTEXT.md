@@ -64,6 +64,10 @@ _Avoid_: Administrator
 An Outpost User who can inspect telemetry and change Issue status but cannot manage installation-wide resources or settings.
 _Avoid_: Read-only user
 
+**Session**:
+A period of authenticated access granted to an Outpost User at sign-in. It expires on its own schedule and outlives changes to the account it was granted to.
+_Avoid_: Login, cookie, token
+
 ### Operations
 
 **Data Retention Policy**:
