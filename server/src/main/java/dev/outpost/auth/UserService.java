@@ -12,7 +12,19 @@ import org.springframework.stereotype.Service;
 @Service
 public class UserService {
 
+	/**
+	 * Minimum password length, per NIST SP 800-63B, which sets the floor at 8 and
+	 * argues against composition rules and forced rotation. Raising it invalidates
+	 * no existing hash.
+	 */
+	public static final int MIN_PASSWORD_LENGTH = 8;
+
 	public record User(long id, String email, String role, Instant createdAt) {
+	}
+
+	/** The one password policy — callers phrase their own message around it. */
+	public static boolean isAcceptablePassword(String password) {
+		return password != null && password.length() >= MIN_PASSWORD_LENGTH;
 	}
 
 	private final JdbcClient jdbc;
@@ -53,6 +65,18 @@ public class UserService {
 			.query((rs, i) -> new User(rs.getLong("id"), rs.getString("email"), rs.getString("role"),
 					rs.getTimestamp("created_at").toInstant()))
 			.single();
+	}
+
+	/**
+	 * Replaces the password hash for an existing account. Callers are responsible
+	 * for having established that the holder of the session is the account owner;
+	 * per ADR-0012 any Session already issued survives the change.
+	 */
+	public void changePassword(String email, String newPassword) {
+		jdbc.sql("UPDATE app_user SET password_hash = ? WHERE lower(email) = lower(?)")
+			.param(passwordEncoder.encode(newPassword))
+			.param(email)
+			.update();
 	}
 
 	public long count() {

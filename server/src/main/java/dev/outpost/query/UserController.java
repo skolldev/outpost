@@ -38,8 +38,9 @@ public class UserController {
 		if (request.email() == null || !request.email().contains("@")) {
 			return ResponseEntity.badRequest().body(Map.of("detail", "valid email required"));
 		}
-		if (request.password() == null || request.password().length() < 8) {
-			return ResponseEntity.badRequest().body(Map.of("detail", "password must be at least 8 characters"));
+		if (!UserService.isAcceptablePassword(request.password())) {
+			return ResponseEntity.badRequest()
+				.body(Map.of("detail", "password must be at least " + UserService.MIN_PASSWORD_LENGTH + " characters"));
 		}
 		String role = "admin".equals(request.role()) ? "admin" : "member";
 		try {
