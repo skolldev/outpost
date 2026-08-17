@@ -1,6 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { render, screen, waitFor } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -76,7 +76,9 @@ async function renderShell(
   return render(Shell, {
     providers: [
       provideHttpClient(),
-      provideRouter([]),
+      // A stub /account so the account menu's link resolves and navigates; the
+      // real page is exercised in pages/account/account.spec.ts.
+      provideRouter([{ path: 'account', children: [] }]),
       { provide: Session, useValue: session },
       { provide: GlobalFilters, useValue: filters as unknown as GlobalFilters },
     ],
@@ -105,11 +107,18 @@ describe('Shell account menu', () => {
 
     await user.click(await screen.findByRole('button', { name: 'me@example.com' }));
 
-    expect(await screen.findByRole('menuitem', { name: 'Account' })).toHaveAttribute(
-      'href',
-      '/account',
-    );
+    expect(await screen.findByRole('menuitem', { name: 'Account' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument();
+  });
+
+  it('navigates to /account from the menu', async () => {
+    const { fixture } = await renderShell(fakeFilters([]), () => []);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'me@example.com' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Account' }));
+
+    expect(fixture.debugElement.injector.get(Router).url).toBe('/account');
   });
 
   it('logs out from the menu', async () => {

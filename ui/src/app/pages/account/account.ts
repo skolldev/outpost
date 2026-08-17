@@ -8,10 +8,8 @@ import { HlmFieldImports } from '@spartan-ng/helm/field';
 
 import { Api } from '../../core/api';
 import { Feedback } from '../../core/feedback';
+import { MIN_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH_MESSAGE } from '../../core/password-policy';
 import { Session } from '../../core/session';
-
-/** Mirrors the server's minimum (UserService.MIN_PASSWORD_LENGTH). */
-const MIN_PASSWORD_LENGTH = 8;
 
 /**
  * The signed-in user's own account: the one authenticated surface that is not
@@ -40,9 +38,7 @@ export class AccountPage {
     (path) => {
       required(path.currentPassword, { message: 'Current password is required.' });
       required(path.newPassword, { message: 'New password is required.' });
-      minLength(path.newPassword, MIN_PASSWORD_LENGTH, {
-        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-      });
+      minLength(path.newPassword, MIN_PASSWORD_LENGTH, { message: MIN_PASSWORD_LENGTH_MESSAGE });
       required(path.confirmPassword, { message: 'Confirm the new password.' });
       // Cross-field: reported on the confirmation, which is the field the user
       // can fix. The server has no equivalent check — the confirmation exists

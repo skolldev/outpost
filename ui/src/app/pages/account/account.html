@@ -1,8 +1,6 @@
 <div class="max-w-md">
   <h1 class="text-lg font-semibold text-foreground">Account</h1>
-  <p class="mt-1 text-sm text-muted-foreground">
-    Signed in as {{ session.user()?.email }} ({{ session.user()?.role }}).
-  </p>
+  <p class="mt-1 text-sm text-muted-foreground">Signed in as {{ session.user()?.email }}.</p>
 
   <form [formRoot]="passwordForm" class="mt-6">
     <h2 class="mb-4 text-sm font-medium text-foreground">Change password</h2>

@@ -160,15 +160,10 @@ describe('AccountPage change password', () => {
 });
 
 describe('AccountPage reachability', () => {
-  it('renders for a Member — the page is authenticated, not Admin-gated', async () => {
-    await renderAccount('member');
-
-    expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument();
-  });
-
   it('lets a Member navigate to /account through the real route table', async () => {
     // The whole /settings tree is Admin-only; this asserts /account is not, by
-    // driving the actual routes rather than trusting the config by inspection.
+    // driving the actual routes with a non-admin Session rather than trusting
+    // the route config by inspection.
     server.use(
       http.get(`${BASE}/projects`, () => HttpResponse.json([])),
       http.get(`${BASE}/projects/environments`, () => HttpResponse.json([])),

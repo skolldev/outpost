@@ -50,7 +50,7 @@
         }
       </nav>
       <div class="ml-auto flex items-center text-sm text-muted-foreground">
-        <button hlmBtn variant="outline" size="sm" [hlmDropdownMenuTrigger]="accountMenu">
+        <button hlmBtn variant="ghost" size="sm" [hlmDropdownMenuTrigger]="accountMenu">
           {{ session.user()?.email }}
         </button>
         <ng-template #accountMenu>
