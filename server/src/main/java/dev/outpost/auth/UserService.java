@@ -46,21 +46,22 @@ public class UserService {
 	private record UserWithHash(User user, String passwordHash) {
 	}
 
+	private User mapUser(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+		return new User(rs.getLong("id"), rs.getString("email"), rs.getString("role"),
+				rs.getTimestamp("created_at").toInstant());
+	}
+
 	public Optional<User> authenticate(String email, String password) {
 		return jdbc.sql("SELECT id, email, password_hash, role, created_at FROM app_user WHERE lower(email) = lower(?)")
 			.param(email)
-			.query((rs, i) -> new UserWithHash(new User(rs.getLong("id"), rs.getString("email"), rs.getString("role"),
-					rs.getTimestamp("created_at").toInstant()), rs.getString("password_hash")))
+			.query((rs, i) -> new UserWithHash(mapUser(rs, i), rs.getString("password_hash")))
 			.optional()
 			.filter(u -> passwordEncoder.matches(password, u.passwordHash()))
 			.map(UserWithHash::user);
 	}
 
 	public List<User> list() {
-		return jdbc.sql("SELECT id, email, role, created_at FROM app_user ORDER BY id")
-			.query((rs, i) -> new User(rs.getLong("id"), rs.getString("email"), rs.getString("role"),
-					rs.getTimestamp("created_at").toInstant()))
-			.list();
+		return jdbc.sql("SELECT id, email, role, created_at FROM app_user ORDER BY id").query(this::mapUser).list();
 	}
 
 	public User create(String email, String password, String role) {
@@ -71,8 +72,7 @@ public class UserService {
 			.param(email)
 			.param(passwordEncoder.encode(password))
 			.param(role)
-			.query((rs, i) -> new User(rs.getLong("id"), rs.getString("email"), rs.getString("role"),
-					rs.getTimestamp("created_at").toInstant()))
+			.query(this::mapUser)
 			.single();
 	}
 
@@ -100,6 +100,41 @@ public class UserService {
 			.param(email)
 			.update();
 		return true;
+	}
+
+	public Optional<User> find(long id) {
+		return jdbc.sql("SELECT id, email, role, created_at FROM app_user WHERE id = ?")
+			.param(id)
+			.query(this::mapUser)
+			.optional();
+	}
+
+	/**
+	 * Hard-deletes an account, refusing to remove the last remaining Admin.
+	 * Returns false when the row survived that guard, or was already gone.
+	 *
+	 * <p>The guard is not made redundant by the controller's no-self-deletion
+	 * check: two Admins, each holding a live Session, can delete each other in
+	 * turn. {@code AdminBootstrap} only seeds when {@code app_user} is completely
+	 * empty, and no endpoint can promote a Member, so an Installation left with
+	 * Members and no Admin is unadministrable forever — recoverable only by
+	 * database surgery. Do not remove this.
+	 *
+	 * <p>Guard and delete are one statement, and the surviving Admin is locked
+	 * with {@code FOR UPDATE} so two concurrent deletions cannot each observe the
+	 * other's Admin and both proceed — under read committed the plain subquery
+	 * count the guard reads as would let exactly that happen. The lock lets two
+	 * Admins deleting each other at the same instant deadlock, which surfaces as
+	 * a 500 rather than the 409 one of them deserves; that is the better failure,
+	 * because the alternative outcome is an Installation with no Admin at all.
+	 */
+	public boolean delete(long id) {
+		return jdbc.sql("""
+				DELETE FROM app_user
+				WHERE id = ?
+					AND (role <> 'admin'
+						OR EXISTS (SELECT 1 FROM app_user other WHERE other.role = 'admin' AND other.id <> ? FOR UPDATE))
+				""").param(id).param(id).update() == 1;
 	}
 
 	public long count() {
