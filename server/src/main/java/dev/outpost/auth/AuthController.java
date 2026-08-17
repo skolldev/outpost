@@ -69,12 +69,10 @@ public class AuthController {
 				.body(Map.of("detail", "new password must be at least " + UserService.MIN_PASSWORD_LENGTH
 						+ " characters"));
 		}
-		String email = principal.getName();
-		if (users.authenticate(email, request.currentPassword()).isEmpty()) {
+		if (!users.changePassword(principal.getName(), request.currentPassword(), request.newPassword())) {
 			return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
 				.body(Map.of("detail", "current password is incorrect"));
 		}
-		users.changePassword(email, request.newPassword());
 		return ResponseEntity.noContent().build();
 	}
 

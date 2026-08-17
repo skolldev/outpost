@@ -7,24 +7,33 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Local accounts: argon2id-hashed passwords, roles admin | member. */
 @Service
 public class UserService {
 
 	/**
-	 * Minimum password length, per NIST SP 800-63B, which sets the floor at 8 and
-	 * argues against composition rules and forced rotation. Raising it invalidates
-	 * no existing hash.
+	 * Minimum password length. NIST SP 800-63B puts the verifier floor at 8 and
+	 * recommends 15 for a password used as the only factor, which is what login is
+	 * here; we take the floor, because an Installation runs inside the operator's
+	 * own network and its accounts are few and human-administered. What we do keep
+	 * from the same document is the part that matters more: no composition rules,
+	 * no forced rotation. Raising this invalidates no existing hash — it is checked
+	 * only when a password is set.
 	 */
 	public static final int MIN_PASSWORD_LENGTH = 8;
 
 	public record User(long id, String email, String role, Instant createdAt) {
 	}
 
-	/** The one password policy — callers phrase their own message around it. */
+	/**
+	 * The one password policy — callers phrase their own message around it. Length
+	 * is counted in code points, so eight emoji are eight characters rather than
+	 * the sixteen UTF-16 units {@code String.length} would report.
+	 */
 	public static boolean isAcceptablePassword(String password) {
-		return password != null && password.length() >= MIN_PASSWORD_LENGTH;
+		return password != null && password.codePointCount(0, password.length()) >= MIN_PASSWORD_LENGTH;
 	}
 
 	private final JdbcClient jdbc;
@@ -68,15 +77,29 @@ public class UserService {
 	}
 
 	/**
-	 * Replaces the password hash for an existing account. Callers are responsible
-	 * for having established that the holder of the session is the account owner;
-	 * per ADR-0012 any Session already issued survives the change.
+	 * Re-verifies {@code currentPassword} and replaces the hash, returning false —
+	 * and touching nothing — when it does not match or the account is gone. Both
+	 * halves happen in one transaction with the row locked, so two changes racing
+	 * each other cannot both verify against the same hash and have the loser
+	 * overwrite a password the owner has already been told is theirs. Callers still
+	 * decide <em>whose</em> account this is; per ADR-0012 any Session already issued
+	 * survives the change.
 	 */
-	public void changePassword(String email, String newPassword) {
+	@Transactional
+	public boolean changePassword(String email, String currentPassword, String newPassword) {
+		Optional<String> currentHash = jdbc
+			.sql("SELECT password_hash FROM app_user WHERE lower(email) = lower(?) FOR UPDATE")
+			.param(email)
+			.query(String.class)
+			.optional();
+		if (currentHash.isEmpty() || !passwordEncoder.matches(currentPassword, currentHash.get())) {
+			return false;
+		}
 		jdbc.sql("UPDATE app_user SET password_hash = ? WHERE lower(email) = lower(?)")
 			.param(passwordEncoder.encode(newPassword))
 			.param(email)
 			.update();
+		return true;
 	}
 
 	public long count() {

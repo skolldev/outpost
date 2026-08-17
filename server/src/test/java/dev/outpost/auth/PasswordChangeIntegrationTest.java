@@ -67,6 +67,14 @@ class PasswordChangeIntegrationTest {
 		assertThat(loginStatus(MEMBER_EMAIL, MEMBER_PASSWORD)).isEqualTo(HttpStatus.UNAUTHORIZED);
 	}
 
+	/** Per ADR-0012 the cookie is signed, not stored: changing the password does not revoke it. */
+	@Test
+	void leavesTheSessionThatMadeTheChangeUsable() {
+		changePassword(memberCookie, Map.of("current_password", MEMBER_PASSWORD, "new_password", NEW_PASSWORD));
+
+		assertThat(get("/api/internal/auth/me", memberCookie).getStatusCode()).isEqualTo(HttpStatus.OK);
+	}
+
 	@Test
 	void rejectsAWrongCurrentPassword() {
 		ResponseEntity<Map> response = changePassword(memberCookie,
@@ -84,6 +92,16 @@ class PasswordChangeIntegrationTest {
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 		assertThat(response.getBody()).containsEntry("detail", "new password must be at least 8 characters");
+		assertThat(loginStatus(MEMBER_EMAIL, MEMBER_PASSWORD)).isEqualTo(HttpStatus.OK);
+	}
+
+	/** Eight is eight characters as a person counts them, not as UTF-16 does. */
+	@Test
+	void rejectsANewPasswordOfFewerThanEightCodePoints() {
+		ResponseEntity<Map> response = changePassword(memberCookie,
+				Map.of("current_password", MEMBER_PASSWORD, "new_password", "😀😀😀😀"));
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 		assertThat(loginStatus(MEMBER_EMAIL, MEMBER_PASSWORD)).isEqualTo(HttpStatus.OK);
 	}
 
@@ -125,6 +143,13 @@ class PasswordChangeIntegrationTest {
 		headers.set(HttpHeaders.COOKIE, cookie);
 		return rest.exchange(url("/api/internal/auth/password"), HttpMethod.POST, new HttpEntity<>(body, headers),
 				Map.class);
+	}
+
+	@SuppressWarnings("rawtypes")
+	private ResponseEntity<Map> get(String path, String cookie) {
+		HttpHeaders headers = new HttpHeaders();
+		headers.set(HttpHeaders.COOKIE, cookie);
+		return rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), Map.class);
 	}
 
 	@SuppressWarnings("rawtypes")
