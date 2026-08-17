@@ -42,6 +42,16 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/uptime/uptime').then((m) => m.UptimePage),
       },
       {
+        // The signed-in user's own account. Authenticated but deliberately not
+        // Admin-guarded, and deliberately not a Settings tab: /settings is
+        // Admin-only in its entirety (see settings.routes.ts and the Member
+        // definition in CONTEXT.md), so hanging this off it would mean
+        // weakening or special-casing that guard just so a Member can change a
+        // password. A top-level route keeps that invariant intact.
+        path: 'account',
+        loadComponent: () => import('./pages/account/account').then((m) => m.AccountPage),
+      },
+      {
         path: 'settings',
         loadChildren: () =>
           import('./pages/settings/settings.routes').then((m) => m.SETTINGS_ROUTES),

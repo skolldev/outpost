@@ -1,0 +1,63 @@
+<div class="max-w-md">
+  <h1 class="text-lg font-semibold text-foreground">Account</h1>
+  <p class="mt-1 text-sm text-muted-foreground">
+    Signed in as {{ session.user()?.email }} ({{ session.user()?.role }}).
+  </p>
+
+  <form [formRoot]="passwordForm" class="mt-6">
+    <h2 class="mb-4 text-sm font-medium text-foreground">Change password</h2>
+
+    <div hlmField class="mb-4">
+      <label hlmFieldLabel for="current-password">Current password</label>
+      <input
+        hlmInput
+        id="current-password"
+        type="password"
+        autocomplete="current-password"
+        class="w-full"
+        [formField]="passwordForm.currentPassword"
+      />
+      @for (error of passwordForm.currentPassword().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    <div hlmField class="mb-4">
+      <label hlmFieldLabel for="new-password">New password</label>
+      <input
+        hlmInput
+        id="new-password"
+        type="password"
+        autocomplete="new-password"
+        class="w-full"
+        [formField]="passwordForm.newPassword"
+      />
+      @for (error of passwordForm.newPassword().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    <div hlmField class="mb-6">
+      <label hlmFieldLabel for="confirm-password">Confirm new password</label>
+      <input
+        hlmInput
+        id="confirm-password"
+        type="password"
+        autocomplete="new-password"
+        class="w-full"
+        [formField]="passwordForm.confirmPassword"
+      />
+      @for (error of passwordForm.confirmPassword().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    <button
+      hlmBtn
+      type="submit"
+      [disabled]="passwordForm().invalid() || passwordForm().submitting()"
+    >
+      {{ passwordForm().submitting() ? 'Changing…' : 'Change password' }}
+    </button>
+  </form>
+</div>

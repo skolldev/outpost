@@ -49,9 +49,17 @@
           >
         }
       </nav>
-      <div class="ml-auto flex items-center gap-3 text-sm text-muted-foreground">
-        <span>{{ session.user()?.email }}</span>
-        <button hlmBtn variant="outline" size="sm" (click)="session.logout()">Log out</button>
+      <div class="ml-auto flex items-center text-sm text-muted-foreground">
+        <button hlmBtn variant="outline" size="sm" [hlmDropdownMenuTrigger]="accountMenu">
+          {{ session.user()?.email }}
+        </button>
+        <ng-template #accountMenu>
+          <hlm-dropdown-menu class="w-40">
+            <a hlmDropdownMenuItem routerLink="/account">Account</a>
+            <hlm-dropdown-menu-separator />
+            <button hlmDropdownMenuItem (click)="session.logout()">Log out</button>
+          </hlm-dropdown-menu>
+        </ng-template>
       </div>
     </div>
     <div class="mx-auto flex max-w-[96rem] flex-wrap items-center gap-3 px-4 pb-3">
