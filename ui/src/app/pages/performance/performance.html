@@ -1,15 +1,67 @@
-<div class="mb-4 flex flex-wrap items-center gap-3">
+<div class="mb-3 flex flex-wrap items-center gap-3">
   <h1 class="text-lg font-semibold text-foreground">Performance</h1>
   <p class="text-sm text-muted-foreground">
-    Transaction Groups ranked by total time. Figures cover Transactions Outpost received, not
-    requests served — SDK trace sampling affects them.
+    Figures cover Transactions Outpost received, not requests served — SDK trace sampling affects
+    them.
   </p>
-  @if (loading()) {
-    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
-  }
   @if (projectIds().length > 0) {
     <app-project-legend class="ml-auto" [projectIds]="projectIds()" />
   }
+</div>
+
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <input
+    hlmInput
+    type="search"
+    placeholder="Search by transaction name…"
+    aria-label="Search by transaction name"
+    class="h-8 w-72"
+    [ngModel]="search()"
+    (ngModelChange)="search.set($event)"
+  />
+  <!--
+    Labels are visually hidden rather than absent: each control says what it is in its
+    own option text ("All releases", "Sort: p95"), so a visible label would be the
+    same word twice, and a `<label for>` is what actually names the inner `<select>`
+    — an aria-label here would land on the wrapper element instead.
+
+    The Release filter can only list versions when one Project's Releases are the right
+    list to show (see `releaseProject`). With nothing to choose and nothing to clear it
+    is disabled and says why, rather than going missing.
+  -->
+  <label class="sr-only" for="performance-release">Filter by Release</label>
+  <hlm-native-select
+    size="sm"
+    selectId="performance-release"
+    [value]="release()"
+    [disabled]="releaseFilterUnavailable()"
+    (change)="onReleaseChange($event)"
+  >
+    <option hlmNativeSelectOption value="">All releases</option>
+    @for (version of releases(); track version) {
+      <option hlmNativeSelectOption [value]="version">{{ version }}</option>
+    }
+  </hlm-native-select>
+  @if (releaseProject() === undefined) {
+    <span class="text-xs text-muted-foreground">
+      Select a single Project to filter by Release — a version belongs to one Project.
+    </span>
+  }
+  @if (loading()) {
+    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
+  }
+  <label class="sr-only" for="performance-sort">Sort Transaction Groups</label>
+  <hlm-native-select
+    size="sm"
+    selectId="performance-sort"
+    class="ml-auto"
+    [value]="sort()"
+    (change)="onSortChange($event)"
+  >
+    @for (option of sorts; track option.value) {
+      <option hlmNativeSelectOption [value]="option.value">{{ option.label }}</option>
+    }
+  </hlm-native-select>
 </div>
 
 @if (rangeClamped()) {
@@ -63,8 +115,8 @@
     role="status"
     class="mb-4 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
   >
-    Showing the top {{ formatCount(groups().length) }} Transaction Groups by total time. There is no
-    next page — narrow by Project, environment or range to reach the rest.
+    Showing the top {{ formatCount(groups().length) }} Transaction Groups for this sort. There is no
+    next page — narrow by Project, environment, Release, name or range to reach the rest.
   </p>
 }
 

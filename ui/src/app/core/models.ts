@@ -363,9 +363,24 @@ export interface TransactionGroupPage {
   groups: TransactionGroup[];
 }
 
+/**
+ * `release` matches a version exactly and `query` a case-insensitive substring of
+ * the transaction name, as they do on the Traces page. Neither joins the grouping
+ * key: they narrow the Transactions a Transaction Group is computed from, so the
+ * same group filtered to a Release reports what it cost on that version.
+ *
+ * `sort` is a server-side whitelist — `total_ms` (the default), `p95`, `p50` or
+ * `count`. Anything else is rejected by the server rather than coerced, so this
+ * type stays a union rather than a bare string.
+ */
+export type TransactionGroupSort = 'total_ms' | 'p95' | 'p50' | 'count';
+
 export interface TransactionGroupFilters {
   project?: number[];
   environment?: string[];
+  release?: string;
+  query?: string;
+  sort?: TransactionGroupSort;
   from?: string;
 }
 

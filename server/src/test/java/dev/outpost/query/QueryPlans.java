@@ -145,8 +145,15 @@ public final class QueryPlans {
 
 	// ------------------------------------------------------- transaction groups
 
-	public static Built transactionGroups(List<Long> project, List<String> environment, Instant from, Instant to) {
-		return Built.of(TransactionGroupController.buildLeaderboardQuery(project, environment, from, to));
+	public static Built transactionGroups(List<Long> project, List<String> environment, String release, String query,
+			String sort, Instant from, Instant to) {
+		return Built
+			.of(TransactionGroupController.buildLeaderboardQuery(project, environment, release, query, sort, from, to));
+	}
+
+	/** The sorts the leaderboard whitelists, so a guard covers every ranking the UI can ask for. */
+	public static List<String> transactionGroupSorts() {
+		return TransactionGroupController.sortKeys();
 	}
 
 	/**
@@ -154,9 +161,10 @@ public final class QueryPlans {
 	 * a second pass over the same window, so the page's cost is the two together and
 	 * guarding only the first would understate it by half.
 	 */
-	public static Built transactionGroupCardinality(List<Long> project, List<String> environment, Instant from,
-			Instant to) {
-		return Built.of(TransactionGroupController.buildDistinctGroupQuery(project, environment, from, to));
+	public static Built transactionGroupCardinality(List<Long> project, List<String> environment, String release,
+			String query, Instant from, Instant to) {
+		return Built
+			.of(TransactionGroupController.buildDistinctGroupQuery(project, environment, release, query, from, to));
 	}
 
 	/**

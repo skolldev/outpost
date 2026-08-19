@@ -52,6 +52,28 @@ class TransactionGroupIntegrationTest {
 	private static final String CHECKOUT = "GET /api/checkout/{id}";
 
 	/**
+	 * The sort and Release fixtures live in Environment Names of their own so they can
+	 * be filtered to exactly, and so the tests that count the groups the base fixture
+	 * holds are not rewritten every time one is added. Both are seeded per test rather
+	 * than in {@code setUp}, for the same reason.
+	 */
+	private static final String SORT_FIXTURE = "sort-fixture";
+
+	private static final String RELEASE_FIXTURE = "release-fixture";
+
+	private static final String HOT = "GET /api/search";
+
+	private static final String SLOW = "GET /api/reports";
+
+	private static final String SPIKY = "POST /api/import";
+
+	private static final String PRICING = "GET /api/pricing";
+
+	private static final String FAST_RELEASE = "shop@1.0.0";
+
+	private static final String SLOW_RELEASE = "shop@2.0.0";
+
+	/**
 	 * The controller's minimum-sample floor, restated rather than imported: it is part
 	 * of the contract this test speaks for, and a test that read the constant would
 	 * still pass if someone changed it to 1.
@@ -211,6 +233,59 @@ class TransactionGroupIntegrationTest {
 		assertThat(names(body)).hasSize(3);
 	}
 
+	/**
+	 * Each sort ranks the same three groups differently, and the fixture is built so
+	 * that <b>no two of the four orders agree</b> — see {@link #seedSortFixture()}. A
+	 * controller that ignored {@code sort}, or mapped two of them to the same
+	 * expression, therefore fails here rather than passing on a list that happened to
+	 * come out the same way.
+	 */
+	@Test
+	void eachSortRanksTheListAsItClaims() {
+		seedSortFixture();
+		String filter = "&project=" + project + "&environment=" + SORT_FIXTURE;
+
+		assertThat(names(leaderboard(filter))).as("default").containsExactly(HOT, SLOW, SPIKY);
+		assertThat(names(leaderboard(filter + "&sort=total_ms"))).as("total_ms").containsExactly(HOT, SLOW, SPIKY);
+		assertThat(names(leaderboard(filter + "&sort=count"))).as("count").containsExactly(HOT, SPIKY, SLOW);
+		assertThat(names(leaderboard(filter + "&sort=p50"))).as("p50").containsExactly(SLOW, HOT, SPIKY);
+		assertThat(names(leaderboard(filter + "&sort=p95"))).as("p95").containsExactly(SPIKY, SLOW, HOT);
+	}
+
+	/**
+	 * An unrecognised sort is rejected, and the message says what the endpoint does
+	 * accept — a client that guessed wrong can only fix itself if it is told the set.
+	 * Coercing it to the default instead would hand back a different ranking than the
+	 * one asked for, which the client would then read as the one it asked for.
+	 */
+	@Test
+	void anUnrecognisedSortIsRejected() {
+		ResponseEntity<Map> response = get(GROUPS + "?project=" + project + "&sort=worst", adminCookie);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+		assertThat((String) response.getBody().get("detail")).contains("total_ms", "p95", "p50", "count");
+	}
+
+	/**
+	 * And a sort carrying SQL is rejected by the same whitelist rather than reaching a
+	 * statement. The order is chosen from a map of literals written in the controller;
+	 * a request supplies a key, never an expression, so there is nothing here to
+	 * escape and nothing to get wrong.
+	 */
+	@Test
+	void aSortCarryingSqlIsRejectedRatherThanInterpolated() {
+		String injection = "total_ms; DROP TABLE txn";
+
+		ResponseEntity<Map> response = get(
+				GROUPS + "?project=" + project + "&sort=" + java.net.URLEncoder
+					.encode(injection, java.nio.charset.StandardCharsets.UTF_8),
+				adminCookie);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+		// The list still answers, which it could not do if the statement had run.
+		assertThat(names(leaderboard("&project=" + project + "&environment=production"))).startsWith(CHECKOUT);
+	}
+
 	@Test
 	void theProjectFilterNarrowsTheList() {
 		assertThat(groups("&project=" + otherProject)).extracting(g -> g.get("name"))
@@ -221,6 +296,63 @@ class TransactionGroupIntegrationTest {
 	void theEnvironmentFilterNarrowsTheList() {
 		assertThat(groups("&project=" + project + "&environment=staging")).extracting(g -> g.get("name"))
 			.containsExactly("GET /api/staging-only");
+	}
+
+	/** The name search narrows the list, and matches a substring however it is cased. */
+	@Test
+	void theNameSearchNarrowsTheList() {
+		assertThat(groups("&project=" + project + "&environment=production&query=CART"))
+			.extracting(g -> g.get("name"))
+			.containsExactly("GET /api/cart");
+	}
+
+	/**
+	 * The cardinality count is taken over the searched slice too. It annotates the
+	 * list, so a count over a wider set than the list it sits beside would warn about
+	 * names the user has just filtered away.
+	 */
+	@Test
+	void theNameSearchNarrowsTheCardinalityCountWithIt() {
+		Map<String, Object> body = leaderboard("&project=" + project + "&environment=production&query=checkout");
+
+		// The two ops of the checkout group, and nothing else — not the four the
+		// unsearched window holds.
+		assertThat(body).containsEntry("distinct_groups", 2);
+	}
+
+	/**
+	 * The Release filter narrows the Transactions that are aggregated, and that is the
+	 * whole point of it: Release is <b>not</b> part of the Transaction Group key, so
+	 * one group spanning two versions stays one group, and filtering to a version
+	 * re-states its statistics for that version. This is what "attribute a change in
+	 * duration to a specific version" means in practice — the same group, twice, at a
+	 * fifth of the duration.
+	 */
+	@Test
+	void theReleaseFilterNarrowsTheTransactionsAGroupIsComputedFrom() {
+		seedReleaseFixture();
+		String filter = "&project=" + project + "&environment=" + RELEASE_FIXTURE;
+
+		Map<String, Object> both = groups(filter).get(0);
+		assertThat(both).containsEntry("name", PRICING).containsEntry("count", 10).containsEntry("avg_ms", 300.0);
+
+		Map<String, Object> regressed = groups(filter + "&release=" + SLOW_RELEASE).get(0);
+		assertThat(regressed).containsEntry("name", PRICING).containsEntry("count", 5).containsEntry("avg_ms", 500.0);
+
+		Map<String, Object> before = groups(filter + "&release=" + FAST_RELEASE).get(0);
+		assertThat(before).containsEntry("count", 5).containsEntry("avg_ms", 100.0);
+	}
+
+	/** And it excludes groups that carry no Transaction on that Release at all. */
+	@Test
+	void theReleaseFilterExcludesGroupsThatNeverRanOnIt() {
+		seedReleaseFixture();
+
+		Map<String, Object> body = leaderboard("&project=" + project + "&release=" + SLOW_RELEASE);
+
+		// Every other group in the fixture was seeded with no release.
+		assertThat(names(body)).containsExactly(PRICING);
+		assertThat(body).containsEntry("distinct_groups", 1);
 	}
 
 	/**
@@ -372,19 +504,73 @@ class TransactionGroupIntegrationTest {
 		}
 	}
 
+	/**
+	 * Three Transaction Groups whose four rankings are four <em>different</em> orders,
+	 * which is what makes each sort assertion able to fail:
+	 *
+	 * <pre>
+	 *   group                              count  total  p50     p95
+	 *   GET /api/search   40 x 200ms          40   8000  200     200
+	 *   GET /api/reports   8 x 300ms           8   2400  300     300
+	 *   POST /api/import   9 x 10ms + 1000ms  10   1090   10   554.5
+	 *
+	 *   total_ms: search, reports, import     p50: reports, search, import
+	 *   count:    search, import, reports     p95: import, reports, search
+	 * </pre>
+	 *
+	 * The shapes are the three the sorts exist to tell apart: a hot path that is fine
+	 * but called constantly, an endpoint that is uniformly slow, and one that is fast
+	 * until it is not.
+	 */
+	private void seedSortFixture() {
+		for (int i = 0; i < 40; i++) {
+			seed(project, HOT, "http.server", SORT_FIXTURE, 200.0);
+		}
+		for (int i = 0; i < 8; i++) {
+			seed(project, SLOW, "http.server", SORT_FIXTURE, 300.0);
+		}
+		for (int i = 0; i < 9; i++) {
+			seed(project, SPIKY, "http.server", SORT_FIXTURE, 10.0);
+		}
+		seed(project, SPIKY, "http.server", SORT_FIXTURE, 1000.0);
+	}
+
+	/**
+	 * One Transaction Group that got five times slower between two Releases — the
+	 * question the Release filter exists to answer. It is one group, not two: Release
+	 * filters the input to the aggregate and is not part of the (Project, name, op)
+	 * key.
+	 */
+	private void seedReleaseFixture() {
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seedRelease(FAST_RELEASE, PRICING, 100.0);
+			seedRelease(SLOW_RELEASE, PRICING, 500.0);
+		}
+	}
+
 	private void seed(long projectId, String name, String op, String environment, double durationMs) {
-		seedAt(ANCHOR, projectId, name, op, environment, durationMs);
+		seedAt(ANCHOR, projectId, name, op, environment, null, durationMs);
+	}
+
+	private void seedRelease(String release, String name, double durationMs) {
+		seedAt(ANCHOR, project, name, "http.server", RELEASE_FIXTURE, release, durationMs);
 	}
 
 	private void seedAt(Instant start, long projectId, String name, String op, String environment, double durationMs) {
+		seedAt(start, projectId, name, op, environment, null, durationMs);
+	}
+
+	private void seedAt(Instant start, long projectId, String name, String op, String environment, String release,
+			double durationMs) {
 		jdbc.sql("""
-				INSERT INTO txn (id, project_id, environment, trace_id, span_id, name, op, start_ts, end_ts,
+				INSERT INTO txn (id, project_id, environment, release, trace_id, span_id, name, op, start_ts, end_ts,
 				                 duration_ms, status)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')
 				""")
 			.param(UUID.randomUUID())
 			.param(projectId)
 			.param(environment)
+			.param(release)
 			.param(UUID.randomUUID().toString().replace("-", ""))
 			.param(UUID.randomUUID().toString().replace("-", "").substring(0, 16))
 			.param(name)
