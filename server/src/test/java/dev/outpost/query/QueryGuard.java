@@ -50,9 +50,16 @@ final class QueryGuard {
 	 * Per table, a column no index covers — aggregating it forces the heap read that
 	 * makes {@link #fullScanCost} an honest upper bound. {@code count(*)} may be
 	 * answered from an index and would understate it.
+	 *
+	 * <p>{@code txn} uses {@code status} rather than the {@code name} it used to,
+	 * because {@code V15} put {@code name} in a covering index: {@code count(name)}
+	 * then became an index-only scan measuring 447 blocks where the heap costs 2 691,
+	 * which would have quietly turned every {@code txn} ceiling into one that cannot
+	 * fail. Any future index over one of these columns has the same effect — pick a
+	 * different one rather than accepting the smaller number.
 	 */
 	private static final Map<String, String> FULL_SCAN_COLUMNS = Map.of(PartitionManager.EVENT, "message",
-			PartitionManager.LOG_RECORD, "body", PartitionManager.TXN, "name", PartitionManager.SPAN, "description");
+			PartitionManager.LOG_RECORD, "body", PartitionManager.TXN, "status", PartitionManager.SPAN, "description");
 
 	private static final DateTimeFormatter PARTITION_SUFFIX = DateTimeFormatter.BASIC_ISO_DATE;
 

@@ -106,6 +106,10 @@ _Avoid_: Request (when the operation crosses more than one request)
 A single instance of an activity a Project measures within a Trace, such as a page load, navigation, request, or asynchronous task. It may contain child Spans and need not be the root of the whole Trace.
 _Avoid_: Database transaction, business transaction
 
+**Transaction Group**:
+The recurring activity that Transactions sharing a Project, name, and op are instances of. Its duration statistics describe the Transactions Outpost received, which is a sample of real activity whenever a Project's SDK samples traces.
+_Avoid_: Endpoint, route, operation, transaction
+
 **Span**:
 An individual timed operation within a Trace, such as a database query, HTTP request, or UI rendering task. It records duration and may carry attributes that provide debugging context.
 _Avoid_: Transaction

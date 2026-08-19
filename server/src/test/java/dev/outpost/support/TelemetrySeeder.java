@@ -48,6 +48,14 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * trace, and there are three spans per transaction — giving them the event
  * payload would add gigabytes to the seed to model something no span has.
  * Empty is the one thing they must not be, or every span row is free.
+ * <li><b>Transactions span hundreds of Transaction Groups, not a handful.</b> The
+ * Performance leaderboard groups {@code txn} by (project, name, op) and returns
+ * the top 100, so a fixture with four names would build fewer groups than the
+ * limit discards and certify nothing about the plan a real Project produces.
+ * {@link #TRANSACTION_GROUPS_PER_PROJECT} of them, with a null-op third, and tens
+ * of Transactions in each at {@link Scale#GUARD} — enough that a percentile over a
+ * group is a percentile, and enough to survive the minimum-sample floor the list
+ * is due to grow (#160).
  * <li><b>{@code trace_id}s are drawn from one pool shared by all four tables</b>,
  * so the trace-detail fan-out has real work to do in each.
  * <li><b>Issue counters are derived from the events</b>, not invented, because
@@ -377,6 +385,56 @@ public final class TelemetrySeeder {
 			.update());
 	}
 
+	/** Distinct transaction names: 3 methods x 8 resources x 3 API versions. */
+	private static final int TRANSACTION_NAMES = 3 * 8 * 3;
+
+	/** Ops a Transaction is given, one of them {@code NULL}. */
+	private static final int TRANSACTION_OPS = 3;
+
+	/** Distinct Transaction Groups per Project: every name under every op. */
+	public static final int TRANSACTION_GROUPS_PER_PROJECT = TRANSACTION_NAMES * TRANSACTION_OPS;
+
+	/**
+	 * Names, cycling with a period of {@link #TRANSACTION_NAMES}: three methods x
+	 * eight resources x three API versions. Modular rather than random so the group
+	 * count is a property of the fixture rather than of a seed — a guard whose
+	 * cardinality drifts run to run cannot have a ceiling calibrated against it.
+	 *
+	 * <p><b>Every divisor is a multiple of {@code projects}, and that is what makes
+	 * the count come out right.</b> Rows are round-robined over the Projects by
+	 * {@code g % projects}, so one Project only ever sees an arithmetic progression
+	 * of {@code g} — and a cycle whose period shares a factor with that stride shows
+	 * that Project half its groups. Dividing through by {@code projects} first turns
+	 * {@code g} into the Project's own row number, so each Project gets the whole
+	 * cycle.
+	 *
+	 * <p>Single {@code %} in the result rather than {@code %%}: this is substituted
+	 * into the insert as a {@code %s} argument, and {@link String#formatted} does not
+	 * re-scan what it substitutes.
+	 */
+	private static String transactionName(int projects) {
+		return """
+				(ARRAY['GET','POST','PUT'])[1 + ((g / %1$d) %% 3)::int] || ' /api/v'
+				           || (1 + ((g / %3$d) %% 3))::text || '/'
+				           || (ARRAY['orders','checkout','cart','profile','search','account','pricing','inventory'])[1 + ((g / %2$d) %% 8)::int]
+				           || '/{id}'""".formatted(projects, projects * 3, projects * 24);
+	}
+
+	/**
+	 * Ops, cycling one rung slower than the names so the two are independent and
+	 * every name really appears under every op — the Performance leaderboard keys on
+	 * (project, name, op), and a fixture where op were a function of name would make
+	 * that key look like (project, name).
+	 *
+	 * <p>{@code NULL} is one of the three on purpose: {@code txn.op} is nullable and
+	 * "no op" is a legitimate Transaction Group, so a fixture without one would let
+	 * a {@code GROUP BY} that quietly drops null keys pass.
+	 */
+	private static String transactionOp(int projects) {
+		return "(ARRAY['http.server','navigation',NULL])[1 + ((g / %d) %% 3)::int]"
+			.formatted(projects * TRANSACTION_NAMES);
+	}
+
 	/**
 	 * Spans are inserted from the transactions' own {@code RETURNING} in the same
 	 * statement, so every span really belongs to the transaction it names and shares
@@ -395,8 +453,8 @@ public final class TelemetrySeeder {
 				           lpad(to_hex(floor(random() * ?)::bigint), 32, '0'),
 				           lpad(to_hex(g), 16, '0'),
 				           CASE WHEN g %% 3 = 0 THEN lpad(to_hex(g + 1), 16, '0') END,
-				           'GET /api/' || (ARRAY['orders','checkout','cart','profile'])[1 + (g %% 4)::int] || '/{id}',
-				           'http.server',
+				           %s,
+				           %s,
 				           r.ts, r.ts + make_interval(secs => r.duration / 1000.0), r.duration, 'ok',
 				           ?::jsonb
 				    FROM (%s) r
@@ -411,6 +469,7 @@ public final class TelemetrySeeder {
 				       i.start_ts + make_interval(secs => s * 0.005 + 0.04), 40, 'ok', ?::jsonb
 				FROM inserted i CROSS JOIN generate_series(1, ?) s
 				""".formatted(projectArray(projectIds), projectIds.size(), environmentArray(), ENVIRONMENTS.size(),
+				transactionName(projectIds.size()), transactionOp(projectIds.size()),
 				rowVariables("""
 						now() - (power(random(), 2) * ?::double precision) * interval '1 day' AS ts,
 						       20 + random() * 480 AS duration""")))

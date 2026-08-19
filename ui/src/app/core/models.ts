@@ -315,6 +315,51 @@ export interface TraceDetail {
   logs: LogRecord[];
 }
 
+// --- Performance ---
+
+/**
+ * One Transaction Group on the Performance leaderboard: the recurring activity
+ * that Transactions sharing a Project, name and op are instances of.
+ *
+ * Every figure describes the Transactions Outpost **received**, not the requests
+ * the Project served — SDKs sample traces and Outpost stores no sample rate, so
+ * nothing here is extrapolated (ADR-0014). There is no `min_ms`: the fastest
+ * Transaction in a group is a cache hit, and no failure signal appears at all —
+ * "is it broken" is answered by Issues.
+ */
+export interface TransactionGroup {
+  project_id: number;
+  name: string;
+  op: string | null;
+  count: number;
+  total_ms: number;
+  avg_ms: number;
+  max_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+}
+
+/**
+ * The leaderboard plus the window it was actually computed over. `range_clamped`
+ * is set when the server narrowed the requested window to the 30-day cap
+ * (ADR-0015) — the page has to say so, or the numbers quietly disagree with the
+ * range filter the user can see. There is no cursor: keyset pagination is
+ * impossible on an aggregate.
+ */
+export interface TransactionGroupPage {
+  from: string;
+  to: string;
+  range_clamped: boolean;
+  groups: TransactionGroup[];
+}
+
+export interface TransactionGroupFilters {
+  project?: number[];
+  environment?: string[];
+  from?: string;
+}
+
 // Uptime monitoring
 
 export interface UptimeMonitor {
