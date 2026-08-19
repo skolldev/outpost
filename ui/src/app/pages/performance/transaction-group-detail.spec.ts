@@ -178,6 +178,26 @@ describe('TransactionGroupDetailPage', () => {
     expect(await screen.findByText(/Showing the last 30 days/i)).toBeInTheDocument();
   });
 
+  it('shows the clamp notice when a clamped window contains no Transactions', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () =>
+        HttpResponse.json(
+          {
+            detail: 'no Transactions',
+            from: '2026-07-20T00:00:00Z',
+            to: '2026-08-19T00:00:00Z',
+            range_clamped: true,
+          },
+          { status: 404 },
+        ),
+      ),
+    );
+    await renderDetail({ ...KEY, range: 'all' });
+
+    expect(await screen.findByText(/Showing the last 30 days/i)).toBeInTheDocument();
+    expect(screen.queryByText(/widen/i)).not.toBeInTheDocument();
+  });
+
   /**
    * A key that names nothing in this window is the expected outcome of a shared link to
    * an endpoint that has since gone quiet — a state to explain, not a failure to report.
@@ -253,6 +273,20 @@ describe('TransactionGroupDetailPage', () => {
     expect(params['max_duration']).toBe('310');
   });
 
+  it('preserves fractional percentile thresholds in Trace links', async () => {
+    const fractional = { ...CHECKOUT, p50_ms: 42.4, p95_ms: 310.6 };
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(fractional))),
+    );
+    await renderDetail();
+    await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
+
+    const params = await clickAndReadParams(/typical traces/i);
+
+    expect(params['min_duration']).toBe('42.4');
+    expect(params['max_duration']).toBe('310.6');
+  });
+
   /**
    * The Traces page has to open on the slice the user was just reading, and nothing
    * else: Project, Environment Name and range come with them, while `name` and `op`
@@ -273,5 +307,19 @@ describe('TransactionGroupDetailPage', () => {
     expect(params['range']).toBe('7d');
     expect(params['name']).toBeUndefined();
     expect(params['op']).toBeUndefined();
+  });
+
+  it('replaces an all-time range with the effective clamped window in Trace links', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () =>
+        HttpResponse.json(detail(CHECKOUT, { range_clamped: true })),
+      ),
+    );
+    await renderDetail({ ...KEY, range: 'all' });
+    await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
+
+    const params = await clickAndReadParams(/slow traces/i);
+
+    expect(params['range']).toBe('30d');
   });
 });

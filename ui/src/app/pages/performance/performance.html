@@ -165,15 +165,14 @@
           keeps them pointed at the right Project's Traces.
         -->
         @for (group of groups(); track groupKey(group)) {
-          <tr
-            hlmTr
-            class="cursor-pointer [&_td]:px-3 [&_td]:py-2"
-            routerLink="/performance/group"
-            [queryParams]="{ project: group.project_id, name: group.name, op: group.op }"
-            queryParamsHandling="merge"
-          >
+          <tr hlmTr class="[&_td]:px-3 [&_td]:py-2">
             <td hlmTd class="whitespace-normal">
-              <div class="flex items-center gap-2">
+              <a
+                class="flex items-center gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                routerLink="/performance/group"
+                [queryParams]="{ project: group.project_id, name: group.name, op: group.op }"
+                queryParamsHandling="merge"
+              >
                 <span
                   class="inline-block size-2.5 shrink-0 rounded-full"
                   [style.background-color]="projectColor(group.project_id)"
@@ -185,7 +184,7 @@
                     {{ projects.name(group.project_id) }}
                   </div>
                 </div>
-              </div>
+              </a>
             </td>
             <td hlmTd>
               @if (group.op) {

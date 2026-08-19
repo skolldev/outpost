@@ -170,6 +170,10 @@ public class TransactionGroupController {
 	public record GroupDetail(Instant from, Instant to, boolean rangeClamped, TransactionGroup group) {
 	}
 
+	/** A missing group still carries the resolved window, so a clamp is never silent. */
+	public record GroupDetailNotFound(Instant from, Instant to, boolean rangeClamped, String detail) {
+	}
+
 	private final JdbcClient jdbc;
 
 	public TransactionGroupController(JdbcClient jdbc) {
@@ -283,7 +287,8 @@ public class TransactionGroupController {
 			.<ResponseEntity<?>>map(
 					found -> ResponseEntity.ok(new GroupDetail(window.from(), window.to(), window.clamped(), found)))
 			.orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
-				.body(Map.of("detail", "no Transactions in this Transaction Group for the current filters")));
+				.body(new GroupDetailNotFound(window.from(), window.to(), window.clamped(),
+						"no Transactions in this Transaction Group for the current filters")));
 	}
 
 	/**

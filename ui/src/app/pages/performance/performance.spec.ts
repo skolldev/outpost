@@ -403,12 +403,21 @@ describe('PerformancePage', () => {
    * contain slashes), and `project` is the same param the global Project filter uses —
    * a Transaction Group belongs to exactly one Project, so opening one narrows to it.
    */
-  it('opens the detail view for the Transaction Group whose row was clicked', async () => {
+  it('exposes each Transaction Group detail route as a native link', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
+    await renderPerformance();
+
+    const link = await screen.findByRole('link', { name: /GET \/api\/checkout/ });
+
+    expect(link).toHaveAttribute('href', expect.stringContaining('/performance/group'));
+  });
+
+  it('opens the detail view for the Transaction Group whose link was clicked', async () => {
     server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
     await renderPerformance();
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole('row', { name: /GET \/api\/checkout/ }));
+    await user.click(await screen.findByRole('link', { name: /GET \/api\/checkout/ }));
 
     const params = await navigatedTo('/performance/group');
     expect(params).toMatchObject({
@@ -424,7 +433,7 @@ describe('PerformancePage', () => {
     await renderPerformance();
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole('row', { name: /process outbox/ }));
+    await user.click(await screen.findByRole('link', { name: /process outbox/ }));
 
     const params = await navigatedTo('/performance/group');
     expect(params['name']).toBe('process outbox');
@@ -436,7 +445,7 @@ describe('PerformancePage', () => {
     await renderPerformance(fakeFilters(), PROJECTS, { environment: 'production', range: '7d' });
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole('row', { name: /GET \/api\/checkout/ }));
+    await user.click(await screen.findByRole('link', { name: /GET \/api\/checkout/ }));
 
     const params = await navigatedTo('/performance/group');
     expect(params['environment']).toBe('production');

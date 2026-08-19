@@ -601,7 +601,12 @@ class TransactionGroupIntegrationTest {
 
 		// Every Transaction it holds is outside the clamped window, so there is no group
 		// left to describe.
-		assertThat(detailStatus(key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS))).isEqualTo(HttpStatus.NOT_FOUND);
+		ResponseEntity<Map> empty = get(
+				GROUP + "?" + (key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS)).replaceFirst("^&", ""),
+				adminCookie);
+		assertThat(empty.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(empty.getBody()).containsEntry("range_clamped", true).containsKeys("from", "to");
+		assertThat(window(empty.getBody())).isEqualTo(30 * 24 * 60);
 		// And the clamp is what excluded it, not a fixture that was never there: a window
 		// inside the cap, over the same rows, finds it.
 		assertThat(detail(key + "&from=" + old.minus(1, ChronoUnit.DAYS) + "&to=" + old.plus(1, ChronoUnit.DAYS)))

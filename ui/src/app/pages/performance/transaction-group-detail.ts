@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { httpResource } from '@angular/common/http';
+import { HttpErrorResponse, httpResource } from '@angular/common/http';
 import { ActivatedRoute, Params, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { HlmBadge } from '@spartan-ng/helm/badge';
@@ -15,7 +15,11 @@ import { HlmSpinner } from '@spartan-ng/helm/spinner';
 
 import { API_BASE } from '../../core/api-base';
 import { GlobalFilters } from '../../core/filters';
-import { TransactionGroup, TransactionGroupDetail } from '../../core/models';
+import {
+  TransactionGroup,
+  TransactionGroupDetail,
+  TransactionGroupDetailNotFound,
+} from '../../core/models';
 import { ProjectsStore } from '../../core/projects';
 import { transactionGroupDetailParams } from '../../core/query-params';
 import { formatDuration, formatTotalDuration, projectColor } from '../../shared/ui';
@@ -146,9 +150,10 @@ export class TransactionGroupDetailPage {
   /** Missing from the URL entirely — a hand-edited or truncated link. */
   readonly incompleteLink = computed(() => this.project() == null || !this.name());
 
-  readonly rangeClamped = computed(() =>
-    this.detail.hasValue() ? this.detail.value().range_clamped : false,
-  );
+  readonly rangeClamped = computed(() => {
+    if (this.detail.hasValue()) return this.detail.value().range_clamped;
+    return this.notFoundBody()?.range_clamped ?? false;
+  });
 
   /** The header, in the leaderboard's own column order so the eye lands in the same places. */
   readonly statistics = computed<Statistic[]>(() => {
@@ -180,7 +185,7 @@ export class TransactionGroupDetailPage {
    */
   readonly slowTracesParams = computed<Params>(() => ({
     ...this.tracesLink(),
-    min_duration: Math.round(this.group()?.p95_ms ?? 0),
+    min_duration: this.group()?.p95_ms ?? 0,
     max_duration: null,
   }));
 
@@ -194,8 +199,8 @@ export class TransactionGroupDetailPage {
    */
   readonly typicalTracesParams = computed<Params>(() => ({
     ...this.tracesLink(),
-    min_duration: Math.round(this.group()?.p50_ms ?? 0),
-    max_duration: Math.round(this.group()?.p95_ms ?? 0),
+    min_duration: this.group()?.p50_ms ?? 0,
+    max_duration: this.group()?.p95_ms ?? 0,
   }));
 
   readonly formatDuration = formatDuration;
@@ -211,12 +216,26 @@ export class TransactionGroupDetailPage {
   readonly backToListParams: Params = { name: null, op: null };
 
   private tracesLink(): Params {
-    return { query: this.name(), name: null, op: null };
+    return {
+      query: this.name(),
+      name: null,
+      op: null,
+      // The server answers an all-time request over its 30-day ceiling. Override the
+      // merged global range so Traces searches the same duration window as the
+      // percentile thresholds were computed from.
+      ...(this.rangeClamped() ? { range: '30d' } : {}),
+    };
   }
 
   private status(): number | undefined {
-    const error = this.detail.error() as { status?: number } | undefined;
+    const error = this.detail.error() as HttpErrorResponse | undefined;
     return error?.status;
+  }
+
+  private notFoundBody(): TransactionGroupDetailNotFound | null {
+    const error = this.detail.error() as HttpErrorResponse | undefined;
+    if (error?.status !== 404 || !error.error || typeof error.error !== 'object') return null;
+    return error.error as TransactionGroupDetailNotFound;
   }
 
   private first(raw: unknown): string | undefined {

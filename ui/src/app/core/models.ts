@@ -397,6 +397,14 @@ export interface TransactionGroupDetail {
   group: TransactionGroup;
 }
 
+/** A missing group still echoes the effective window so a clamp is never silent. */
+export interface TransactionGroupDetailNotFound {
+  detail: string;
+  from: string;
+  to: string;
+  range_clamped: boolean;
+}
+
 /**
  * The identity of one Transaction Group, plus the filters its statistics are computed
  * under. `name` matches exactly here — the leaderboard's substring `query` is how the

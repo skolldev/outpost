@@ -14,6 +14,10 @@
   }
 </div>
 
+@if (rangeClamped()) {
+  <app-range-clamp-notice />
+}
+
 @if (incompleteLink()) {
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
@@ -39,8 +43,12 @@
       <h3 hlmEmptyTitle>No Transactions in this Transaction Group.</h3>
       <p hlmEmptyDescription>
         <span class="font-medium text-foreground">{{ name() }}</span> received no Transactions in
-        the selected Project, environment and time range. Widen the range or clear the filters
-        above.
+        the selected Project, environment and time range.
+        @if (rangeClamped()) {
+          The requested range was capped at the last 30 days; clear the other filters above.
+        } @else {
+          Widen the range or clear the filters above.
+        }
       </p>
     </div>
   </div>
@@ -68,10 +76,6 @@
     Figures cover Transactions Outpost received, not requests served — SDK trace sampling affects
     them.
   </p>
-
-  @if (rangeClamped()) {
-    <app-range-clamp-notice />
-  }
 
   <dl class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
     @for (statistic of statistics(); track statistic.label) {
