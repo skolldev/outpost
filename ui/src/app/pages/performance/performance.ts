@@ -22,6 +22,22 @@ import { formatDuration, projectColor } from '../../shared/ui';
 const BASE = API_BASE;
 
 /**
+ * Distinct Transaction Groups past which the page stops assuming the instrumentation
+ * is fine.
+ *
+ * The two populations this has to tell apart are three orders of magnitude apart, so
+ * the exact number matters less than sitting between them. A well-instrumented
+ * Project has tens to low hundreds of Transaction Groups — a route per endpoint,
+ * times an op or two — and the unfiltered view sums that across every Project, so a
+ * large Installation can reach a few thousand honestly. A Project that does not
+ * parameterize its URLs emits one Transaction Group per distinct URL and reaches
+ * hundreds of thousands in a month. 5 000 is the middle of that gap: high enough
+ * that a real Installation does not trip it by growing, low enough that no amount of
+ * honest routing gets there.
+ */
+const HIGH_CARDINALITY_GROUPS = 5_000;
+
+/**
  * Performance page: Transaction Groups ranked by the total time each accounts
  * for, so the top of the list is where fixing something pays off most.
  *
@@ -31,6 +47,14 @@ const BASE = API_BASE;
  * global range filter to reach it the page says so — numbers that silently
  * disagree with the filter on screen are the failure this notice exists to
  * prevent.
+ *
+ * The same principle covers the other two notices. Groups too small to have a
+ * percentile are excluded from the ranking, and groups past the limit are cut from
+ * it; both exclusions are stated rather than left for the user to infer from a list
+ * that looks wrong. The cardinality warning goes further and names the likely cause,
+ * because "you have 400 000 Transaction Groups" is not actionable on its own and the
+ * action — parameterize the URLs in the SDK's routing integration — is in the user's
+ * application, not in Outpost.
  */
 @Component({
   selector: 'app-performance',
@@ -75,6 +99,14 @@ export class PerformancePage {
   readonly rangeClamped = computed(() =>
     this.page.hasValue() ? this.page.value().range_clamped : false,
   );
+  readonly truncated = computed(() => (this.page.hasValue() ? this.page.value().truncated : false));
+
+  /** Every Transaction Group in the window, including the ones the list does not show. */
+  readonly distinctGroups = computed(() =>
+    this.page.hasValue() ? this.page.value().distinct_groups : 0,
+  );
+
+  readonly highCardinality = computed(() => this.distinctGroups() > HIGH_CARDINALITY_GROUPS);
 
   /** Distinct project ids in the loaded groups, for the color legend. */
   readonly projectIds = computed(() => [...new Set(this.groups().map((g) => g.project_id))]);

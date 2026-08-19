@@ -150,6 +150,16 @@ public final class QueryPlans {
 	}
 
 	/**
+	 * The cardinality count the leaderboard endpoint issues alongside the list. It is
+	 * a second pass over the same window, so the page's cost is the two together and
+	 * guarding only the first would understate it by half.
+	 */
+	public static Built transactionGroupCardinality(List<Long> project, List<String> environment, Instant from,
+			Instant to) {
+		return Built.of(TransactionGroupController.buildDistinctGroupQuery(project, environment, from, to));
+	}
+
+	/**
 	 * The window the leaderboard would answer this request over, from the controller
 	 * that owns the 30-day cap. Read rather than recomputed, for the reason
 	 * {@link #sparklineSince()} is: it decides the bind parameters that prune the

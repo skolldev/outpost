@@ -346,11 +346,20 @@ export interface TransactionGroup {
  * (ADR-0015) — the page has to say so, or the numbers quietly disagree with the
  * range filter the user can see. There is no cursor: keyset pagination is
  * impossible on an aggregate.
+ *
+ * `distinct_groups` counts every (Project, name, op) in the window, including the
+ * ones too small to be ranked and the ones past the limit. That is what makes it
+ * worth reporting: a Project whose SDK does not parameterize its URLs emits a
+ * Transaction Group per URL, each holding one or two Transactions, so the count is
+ * enormous while `groups` is short. Names are never rewritten to fix that
+ * (ADR-0014); the gap is disclosed instead.
  */
 export interface TransactionGroupPage {
   from: string;
   to: string;
   range_clamped: boolean;
+  distinct_groups: number;
+  truncated: boolean;
   groups: TransactionGroup[];
 }
 
