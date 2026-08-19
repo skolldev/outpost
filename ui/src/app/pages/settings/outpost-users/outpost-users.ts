@@ -11,6 +11,7 @@ import { Api } from '../../../core/api';
 import { API_BASE } from '../../../core/api-base';
 import { Feedback } from '../../../core/feedback';
 import { AppUser } from '../../../core/models';
+import { MIN_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH_MESSAGE } from '../../../core/password-policy';
 
 @Component({
   selector: 'app-outpost-user-settings',
@@ -35,7 +36,7 @@ export class OutpostUsersSettings {
       required(path.email, { message: 'Email is required.' });
       email(path.email, { message: 'Enter a valid email address.' });
       required(path.password, { message: 'Password is required.' });
-      minLength(path.password, 8, { message: 'Password must be at least 8 characters.' });
+      minLength(path.password, MIN_PASSWORD_LENGTH, { message: MIN_PASSWORD_LENGTH_MESSAGE });
       required(path.role, { message: 'Select a role.' });
     },
     {

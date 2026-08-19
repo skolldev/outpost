@@ -53,6 +53,18 @@ export class Api {
     return this.http.get<SessionUser>(`${this.base}/auth/me`);
   }
 
+  /**
+   * Changes the signed-in user's own password. The account is the one holding
+   * the session — the server takes the identity from the principal, never from
+   * this body, so there is no email to send.
+   */
+  changePassword(currentPassword: string, newPassword: string): Observable<void> {
+    return this.http.post<void>(`${this.base}/auth/password`, {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  }
+
   issues(filters: IssueFilters): Observable<IssuePage> {
     return this.http.get<IssuePage>(`${this.base}/issues`, {
       params: httpParams(issueParams(filters)),

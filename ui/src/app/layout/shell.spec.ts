@@ -1,7 +1,8 @@
 import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { render, screen, waitFor } from '@testing-library/angular';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../mocks/node';
@@ -29,9 +30,9 @@ const PROJECTS: Project[] = [
   },
 ];
 
-function fakeSession(): Session {
+function fakeSession(logout = () => Promise.resolve()): Session {
   const user = signal<SessionUser | null>({ email: 'me@example.com', role: 'admin' });
-  return { user, isAdmin: () => true, logout: () => Promise.resolve() } as unknown as Session;
+  return { user, isAdmin: () => true, logout } as unknown as Session;
 }
 
 /**
@@ -60,6 +61,7 @@ function fakeFilters(project: number[], environments: string[] = []) {
 async function renderShell(
   filters: ReturnType<typeof fakeFilters>,
   intersectionFor: (projectIds: string[]) => string[] | 'error' | Promise<string[] | 'error'>,
+  session: Session = fakeSession(),
 ) {
   server.use(
     http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)),
@@ -74,8 +76,10 @@ async function renderShell(
   return render(Shell, {
     providers: [
       provideHttpClient(),
-      provideRouter([]),
-      { provide: Session, useValue: fakeSession() },
+      // A stub /account so the account menu's link resolves and navigates; the
+      // real page is exercised in pages/account/account.spec.ts.
+      provideRouter([{ path: 'account', children: [] }]),
+      { provide: Session, useValue: session },
       { provide: GlobalFilters, useValue: filters as unknown as GlobalFilters },
     ],
   });
@@ -93,6 +97,39 @@ describe('Shell project multi-select', () => {
     await renderShell(fakeFilters([]), () => []);
 
     await waitFor(() => expect(screen.getByPlaceholderText('All projects')).toBeInTheDocument());
+  });
+});
+
+describe('Shell account menu', () => {
+  it('opens from the signed-in email and offers Account and Log out', async () => {
+    await renderShell(fakeFilters([]), () => []);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'me@example.com' }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Account' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument();
+  });
+
+  it('navigates to /account from the menu', async () => {
+    const { fixture } = await renderShell(fakeFilters([]), () => []);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'me@example.com' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Account' }));
+
+    expect(fixture.debugElement.injector.get(Router).url).toBe('/account');
+  });
+
+  it('logs out from the menu', async () => {
+    const logout = vi.fn(() => Promise.resolve());
+    await renderShell(fakeFilters([]), () => [], fakeSession(logout));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'me@example.com' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Log out' }));
+
+    expect(logout).toHaveBeenCalled();
   });
 });
 

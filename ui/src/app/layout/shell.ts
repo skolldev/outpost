@@ -5,6 +5,7 @@ import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmSelectImports } from '@spartan-ng/helm/select';
 import { HlmComboboxImports } from '@spartan-ng/helm/combobox';
+import { HlmDropdownMenuImports } from '@spartan-ng/helm/dropdown-menu';
 
 import { API_BASE } from '../core/api-base';
 import { GlobalFilters } from '../core/filters';
@@ -28,6 +29,7 @@ import { lucideTowerControl } from '@ng-icons/lucide';
     HlmBadge,
     HlmSelectImports,
     HlmComboboxImports,
+    HlmDropdownMenuImports,
     NgIconComponent,
   ],
   providers: [provideIcons({ lucideTowerControl })],
