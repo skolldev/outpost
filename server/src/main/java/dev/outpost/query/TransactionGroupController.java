@@ -8,7 +8,9 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,7 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
  * The Performance leaderboard: {@code txn} aggregated into Transaction Groups —
  * the recurring activity that Transactions sharing a (Project, name, op) are
  * instances of — ranked by the total time each one accounts for, or by whichever
- * of {@link #SORTS} the request asks for.
+ * of {@link #SORTS} the request asks for — and the detail view one of those rows
+ * opens into, which is the same statistics for a single group.
  *
  * <p>Session-authenticated with no Admin restriction: Members inspect telemetry.
  *
@@ -104,6 +107,26 @@ public class TransactionGroupController {
 		return Collections.unmodifiableMap(sorts);
 	}
 
+	/**
+	 * Every statistic a Transaction Group reports, as one select list shared by the
+	 * leaderboard and the detail view.
+	 *
+	 * <p>Shared rather than written twice because the detail view is the header the
+	 * leaderboard row opens into: two copies of this list would let the same group
+	 * report a different p95 on the two screens the user reads in sequence, and the
+	 * difference would be invisible until someone compared them. One ordered-set
+	 * aggregate, not three — {@code percentile_cont(ARRAY[…])} sorts each group's
+	 * durations once and reads all three probes off that single sort — and no
+	 * {@code min}, which measures cache hits.
+	 */
+	private static final String STATISTICS = """
+			count(*) AS txn_count,
+			       sum(duration_ms) AS total_ms,
+			       avg(duration_ms) AS avg_ms,
+			       max(duration_ms) AS max_ms,
+			       percentile_cont(ARRAY[0.5, 0.95, 0.99]::double precision[])
+			           WITHIN GROUP (ORDER BY duration_ms) AS percentiles""";
+
 	/** One Transaction Group's duration statistics over the resolved window. */
 	public record TransactionGroup(long projectId, String name, String op, long count, double totalMs, double avgMs,
 			double maxMs, double p50Ms, double p95Ms, double p99Ms) {
@@ -133,6 +156,18 @@ public class TransactionGroupController {
 	 */
 	public record Leaderboard(Instant from, Instant to, boolean rangeClamped, long distinctGroups, boolean truncated,
 			List<TransactionGroup> groups) {
+	}
+
+	/**
+	 * One Transaction Group's statistics, plus the window they were computed over.
+	 *
+	 * <p>The window is echoed and {@code rangeClamped} raised for the same reason
+	 * {@link Leaderboard} does it: this view is reached from a row on that one, over the
+	 * same global range filter, and a detail header that quietly covered a different
+	 * window than the list it opened from would disagree with the number the user just
+	 * clicked.
+	 */
+	public record GroupDetail(Instant from, Instant to, boolean rangeClamped, TransactionGroup group) {
 	}
 
 	private final JdbcClient jdbc;
@@ -184,6 +219,70 @@ public class TransactionGroupController {
 
 		return ResponseEntity
 			.ok(new Leaderboard(window.from(), window.to(), window.clamped(), distinctGroups, truncated, groups));
+	}
+
+	/**
+	 * One Transaction Group's statistics over the resolved window, for the detail view
+	 * a leaderboard row opens into.
+	 *
+	 * <p>The identity travels in query params rather than a path segment because
+	 * transaction names contain slashes — {@code GET /api/checkout/{id}} is a name, not
+	 * a path — and percent-encoding a name into a segment would put the same string in
+	 * two shapes on the wire for no gain.
+	 *
+	 * <p><b>An absent {@code op} means {@code op} is null, not "any op".</b> (Project,
+	 * name, op) is the whole key, so "any op" identifies a set of Transaction Groups
+	 * rather than one, and averaging them is exactly what the key exists to prevent —
+	 * the same route measured as a pageload and as a navigation are not one number.
+	 *
+	 * <p><b>{@link #MIN_SAMPLES} is not applied here.</b> The floor keeps a group too
+	 * small to have a percentile out of a <em>ranking</em>, where it would take a slot
+	 * from a real problem; this view ranks nothing, and the request names one group. The
+	 * count is on screen beside the percentiles, which is what says how much they are
+	 * worth.
+	 *
+	 * @return 404 when no Transaction in the window matches the key, which is what a
+	 * shared link to a group that has since gone quiet looks like
+	 */
+	@GetMapping("/transaction-group")
+	public ResponseEntity<?> detail(@RequestParam long project, @RequestParam String name,
+			@RequestParam(required = false) String op, @RequestParam(required = false) List<String> environment,
+			@RequestParam(required = false) String release, @RequestParam(required = false) Instant from,
+			@RequestParam(required = false) Instant to) {
+		if (from != null && to != null && !from.isBefore(to)) {
+			return ResponseEntity.badRequest().body(Map.of("detail", "from must be before to"));
+		}
+		if (name.isBlank()) {
+			return ResponseEntity.badRequest().body(Map.of("detail", "name is required"));
+		}
+
+		// Blank is null: a query param the client left empty and one it omitted mean the
+		// same group, and no SDK sends an op of "".
+		String resolvedOp = op != null && !op.isBlank() ? op : null;
+		Window window = Window.resolve(from, to);
+		SearchQuery search = buildDetailQuery(project, name, resolvedOp, environment, release, window.from(),
+				window.to());
+
+		// An aggregate with no GROUP BY returns exactly one row whatever the window holds,
+		// so "no such group here" is a count of zero rather than an empty result set — and
+		// every other statistic is null in that row, which is why they are read after it.
+		Optional<TransactionGroup> group = jdbc.sql(search.sql()).params(search.params()).query((rs, i) -> {
+			long count = rs.getLong("txn_count");
+			if (count == 0) {
+				return null;
+			}
+			// percentile_cont(ARRAY[…]) returns one array, in the order the probes were
+			// given: p50, p95, p99.
+			Double[] p = (Double[]) rs.getArray("percentiles").getArray();
+			return new TransactionGroup(project, name, resolvedOp, count, rs.getDouble("total_ms"),
+					rs.getDouble("avg_ms"), rs.getDouble("max_ms"), p[0], p[1], p[2]);
+		}).optional();
+
+		return group
+			.<ResponseEntity<?>>map(
+					found -> ResponseEntity.ok(new GroupDetail(window.from(), window.to(), window.clamped(), found)))
+			.orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
+				.body(Map.of("detail", "no Transactions in this Transaction Group for the current filters")));
 	}
 
 	/**
@@ -253,14 +352,9 @@ public class TransactionGroupController {
 		StringBuilder sql = new StringBuilder("""
 				SELECT * FROM (
 				SELECT project_id, name, op,
-				       count(*) AS txn_count,
-				       sum(duration_ms) AS total_ms,
-				       avg(duration_ms) AS avg_ms,
-				       max(duration_ms) AS max_ms,
-				       percentile_cont(ARRAY[0.5, 0.95, 0.99]::double precision[])
-				           WITHIN GROUP (ORDER BY duration_ms) AS percentiles
+				       %s
 				FROM txn WHERE 1=1
-				""");
+				""".formatted(STATISTICS));
 		List<Object> params = new ArrayList<>();
 		appendFilters(sql, project, environment, release, query, from, to, params);
 
@@ -276,6 +370,51 @@ public class TransactionGroupController {
 				ORDER BY %s DESC, project_id, name, op
 				LIMIT %d
 				""".formatted(MIN_SAMPLES, order, MAX_GROUPS + 1));
+		return new SearchQuery(sql.toString(), params);
+	}
+
+	/**
+	 * One Transaction Group's statistics, extracted per {@link SearchQuery} so the guard
+	 * {@code EXPLAIN}s this statement rather than a copy of it.
+	 *
+	 * <p><b>No {@code GROUP BY}.</b> The key is fully bound — one Project, one name, one
+	 * op — so grouping would produce the single row the aggregate already produces, and
+	 * only that way round does an empty window come back as a count of zero rather than
+	 * as no row at all. That distinction is what lets the endpoint tell "this group has
+	 * gone quiet" apart from an error.
+	 *
+	 * <p><b>The op predicate is built in Java rather than written as {@code IS NOT
+	 * DISTINCT FROM}.</b> That operator would express "equal, or both null" in one
+	 * expression and one parameter, and Postgres cannot use an index for it — the scan
+	 * would fall back to reading every op under this (Project, name) and filtering. Both
+	 * {@code = ?} and {@code IS NULL} are index conditions on the third column of
+	 * {@code idx_txn_performance}, whose first two this statement has already bound.
+	 *
+	 * <p>The filters are the leaderboard's, through the same helper: a detail view
+	 * narrowed differently from the list it was opened from would report statistics the
+	 * user cannot reconcile with the row they clicked. {@code query} is the exception it
+	 * does not take — a substring search over names is how the leaderboard is narrowed to
+	 * find this group, and once found the group is identified by its exact name.
+	 */
+	static SearchQuery buildDetailQuery(long project, String name, String op, List<String> environment, String release,
+			Instant from, Instant to) {
+
+		StringBuilder sql = new StringBuilder("""
+				SELECT %s
+				FROM txn WHERE 1=1
+				""".formatted(STATISTICS));
+		List<Object> params = new ArrayList<>();
+		appendFilters(sql, List.of(project), environment, release, null, from, to, params);
+
+		sql.append(" AND name = ?");
+		params.add(name);
+		if (op == null) {
+			sql.append(" AND op IS NULL");
+		}
+		else {
+			sql.append(" AND op = ?");
+			params.add(op);
+		}
 		return new SearchQuery(sql.toString(), params);
 	}
 

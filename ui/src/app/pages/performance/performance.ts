@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmAlert, HlmAlertDescription, HlmAlertTitle } from '@spartan-ng/helm/alert';
@@ -98,6 +98,7 @@ const DEFAULT_SORT: TransactionGroupSort = 'total_ms';
   selector: 'app-performance',
   imports: [
     FormsModule,
+    RouterLink,
     HlmBadge,
     HlmAlert,
     HlmAlertTitle,

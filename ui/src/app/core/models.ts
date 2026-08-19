@@ -384,6 +384,35 @@ export interface TransactionGroupFilters {
   from?: string;
 }
 
+/**
+ * One Transaction Group's statistics, for the detail view a leaderboard row opens
+ * into. Same figures, same window, echoed the same way — the header is read beside
+ * the row it was opened from, so a `range_clamped` the detail view swallowed would
+ * disagree with the number the user just clicked.
+ */
+export interface TransactionGroupDetail {
+  from: string;
+  to: string;
+  range_clamped: boolean;
+  group: TransactionGroup;
+}
+
+/**
+ * The identity of one Transaction Group, plus the filters its statistics are computed
+ * under. `name` matches exactly here — the leaderboard's substring `query` is how the
+ * group is *found*, not how it is identified — and **an absent `op` means `op` is
+ * null**, because (project, name, op) is the whole key and "any op" names a set of
+ * Transaction Groups rather than one.
+ */
+export interface TransactionGroupDetailFilters {
+  project: number;
+  name: string;
+  op?: string | null;
+  environment?: string[];
+  release?: string;
+  from?: string;
+}
+
 // Uptime monitoring
 
 export interface UptimeMonitor {

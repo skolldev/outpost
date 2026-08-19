@@ -19,7 +19,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the Performance leaderboard (#159, #160, #161). Baselines
+ * Performance guards for the Performance leaderboard (#159, #160, #161) and the
+ * Transaction Group detail view it opens into (#162). Baselines
  * measured 2026-08-19 against {@link TelemetrySeeder.Scale#GUARD}: 8 004 transactions in
  * 433 Transaction Groups over nine weekly partitions, where a full scan of {@code txn}
  * costs 2 691 blocks.
@@ -55,6 +56,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  *   30d, release + name search   713     571
  *   30d, sort=p95 / sort=p50     855     571
  *   30d, sort=count              713     571
+ *
+ *   30d, one group's detail       42           the key bounds it, not the window
  * </pre>
  *
  * <p>The count is cheaper than the list on every shape without being cheap: it reads no
@@ -117,6 +120,24 @@ class TransactionGroupPerformanceTest {
 	 * re-calibrate.
 	 */
 	private static final long MAX_LEADERBOARD_BLOCKS = 2_000;
+
+	/**
+	 * The detail view (#162) binds the whole Transaction Group key to constants, so it
+	 * reads one group's slice of {@code idx_txn_performance} rather than the window's:
+	 * 42 blocks measured, against the 713 the list costs over the same 30 days.
+	 *
+	 * <p>200 rather than a tight multiple of 42, because the <b>first</b> {@code EXPLAIN}
+	 * of a session touches ~65 blocks more than every later one — catalogue and index
+	 * pages that are hits by the second call — and a ceiling under that is a flake
+	 * waiting for whichever test happens to run first. What it catches is a detail view
+	 * that stopped being bounded by its key at all: a 30-day aggregate over the whole
+	 * window is 713, and a sequential scan of {@code txn} is 2 691.
+	 *
+	 * <p>What it cannot catch is
+	 * {@link #everyPredicateOnTheDetailViewIsAnIndexCondition}'s regression, which costs
+	 * nothing at this scale. That is asserted on the plan instead.
+	 */
+	private static final long MAX_DETAIL_BLOCKS = 200;
 
 	@Autowired
 	JdbcClient jdbc;
@@ -295,6 +316,106 @@ class TransactionGroupPerformanceTest {
 			assertThat(facts.correlatedSubplans()).as("subplans re-run per output row by %s%n%s", what, facts.plan())
 				.isEmpty();
 		}
+	}
+
+	/**
+	 * The detail view a leaderboard row opens into (#162) pays the same guards, over the
+	 * same window, for both shapes of its op predicate.
+	 *
+	 * <p>It is bounded by an equality on the leading columns of
+	 * {@code idx_txn_performance} rather than by the window alone, so it costs a
+	 * seventeenth of the list it opens from — but it is the same aggregate over the same
+	 * table, and nothing stops a change to the shared statistics select list from
+	 * landing here. Both ops are covered because they are two different index
+	 * conditions, {@code = ?} and {@code IS NULL}, and therefore two plans.
+	 */
+	@Test
+	void theDetailViewIsGuardedLikeTheListItOpensFrom() {
+		for (Group group : detailGroups()) {
+			QueryPlans.Built built = detail(group);
+			PlanFacts facts = built.explain(jdbc);
+			String what = "detail — " + group.label();
+
+			// A plan explained over a key that matches nothing reads nothing, and passes
+			// every assertion below for the wrong reason.
+			assertThat((Long) built.rows(jdbc).get(0).get("txn_count")).as("Transactions in %s", what)
+				.isGreaterThan(0);
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+			QueryGuard.assertUnderCeiling(facts, MAX_DETAIL_BLOCKS, what);
+			QueryGuard.assertNoTempFiles(facts, what);
+			assertThat(facts.correlatedSubplans()).as("subplans re-run per output row by %s%n%s", what, facts.plan())
+				.isEmpty();
+		}
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_DETAIL_BLOCKS, "txn");
+	}
+
+	/**
+	 * Every predicate the detail view carries is an index <em>condition</em>, and none
+	 * of them is a filter the scan re-checks per row.
+	 *
+	 * <p>This is the assertion the ceiling above cannot make. The regression it guards —
+	 * an op predicate written as {@code op IS NOT DISTINCT FROM ?}, which says "equal,
+	 * or both null" in one expression and is not indexable — costs exactly the same 42
+	 * blocks here as the indexable form, because at guard scale a name's three ops share
+	 * the index pages their one op would have read. Measured both ways on 2026-08-19:
+	 * identical block counts, and the only difference in the plan is that the widened
+	 * form moves {@code op} out of {@code Index Cond} into {@code Filter} and reports
+	 * rows removed by it. What is free on 8 004 Transactions is a scan three times wider
+	 * on a real one, so the plan is asserted rather than the cost.
+	 */
+	@Test
+	void everyPredicateOnTheDetailViewIsAnIndexCondition() {
+		for (Group group : detailGroups()) {
+			PlanFacts facts = detail(group).explain(jdbc);
+
+			// The JSON key, quoted: "Rows Removed by Filter" contains the bare word too.
+			assertThat(facts.plan()).as("detail — %s re-checks a predicate per row rather than seeking on it%n%s",
+					group.label(), facts.plan())
+				.doesNotContain("\"Filter\"");
+		}
+	}
+
+	/** And prunes to its window, which is the only other thing bounding it. */
+	@Test
+	void theDetailViewPrunesToItsWindow() {
+		Group group = detailGroups().get(0);
+
+		PlanFacts facts = detail(group).explain(jdbc);
+
+		QueryGuard.assertPrunesFrom(jdbc, facts, "txn", window(uiShapes().get(0)).from(), "a 30-day detail view");
+	}
+
+	/** One Transaction Group key, as the detail view is asked for it. */
+	private record Group(String label, long project, String name, String op) {
+	}
+
+	/**
+	 * The two groups whose detail the guard explains: the one holding the most
+	 * Transactions in the fixture, and one whose op is null.
+	 *
+	 * <p>Read from the fixture rather than named here, because the seeder builds its
+	 * names in SQL and a constant restating them would drift the day it changed. The
+	 * busiest group is the worst case for the aggregate; the null-op one takes the other
+	 * branch of the op predicate, which is a different index condition
+	 * ({@code IS NULL}, not {@code = ?}) and therefore a different plan.
+	 */
+	private List<Group> detailGroups() {
+		return List.of(busiestGroup("busiest group", "op IS NOT NULL"), busiestGroup("null op", "op IS NULL"));
+	}
+
+	private Group busiestGroup(String label, String where) {
+		return jdbc.sql("""
+				SELECT project_id, name, op FROM txn WHERE %s
+				GROUP BY project_id, name, op ORDER BY count(*) DESC, project_id, name LIMIT 1
+				""".formatted(where))
+			.query((rs, i) -> new Group(label, rs.getLong("project_id"), rs.getString("name"), rs.getString("op")))
+			.single();
+	}
+
+	private QueryPlans.Built detail(Group group) {
+		TransactionGroupController.Window window = window(uiShapes().get(0));
+		return QueryPlans.transactionGroupDetail(group.project(), group.name(), group.op(), null, null, window.from(),
+				window.to());
 	}
 
 	private QueryPlans.Built leaderboard(Shape shape) {

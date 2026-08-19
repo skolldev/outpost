@@ -168,6 +168,17 @@ public final class QueryPlans {
 	}
 
 	/**
+	 * The statistics behind one Transaction Group's detail view (#162). It reads the
+	 * same window as the leaderboard it is opened from, so it is guarded alongside it —
+	 * a detail view is one row of that list, and nothing about the aggregate underneath
+	 * is cheaper for having its key bound unless the index says so.
+	 */
+	public static Built transactionGroupDetail(long project, String name, String op, List<String> environment,
+			String release, Instant from, Instant to) {
+		return Built.of(TransactionGroupController.buildDetailQuery(project, name, op, environment, release, from, to));
+	}
+
+	/**
 	 * The window the leaderboard would answer this request over, from the controller
 	 * that owns the 30-day cap. Read rather than recomputed, for the reason
 	 * {@link #sparklineSince()} is: it decides the bind parameters that prune the

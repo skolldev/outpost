@@ -159,8 +159,25 @@
         </tr>
       </thead>
       <tbody hlmTBody>
+        <!--
+          The row carries the whole Transaction Group key into the URL, because that is
+          what identifies it: the name goes in a query param rather than a path segment
+          (names contain slashes), and `op` is omitted when it is null, which is how the
+          detail view is told to resolve the null-op group.
+
+          `project` is the same param the global Project filter uses. A Transaction
+          Group belongs to exactly one Project, so opening one narrows the view to that
+          Project — and the deep links out of the detail view inherit it, which is what
+          keeps them pointed at the right Project's Traces.
+        -->
         @for (group of groups(); track groupKey(group)) {
-          <tr hlmTr class="[&_td]:px-3 [&_td]:py-2">
+          <tr
+            hlmTr
+            class="cursor-pointer [&_td]:px-3 [&_td]:py-2"
+            routerLink="/performance/group"
+            [queryParams]="{ project: group.project_id, name: group.name, op: group.op }"
+            queryParamsHandling="merge"
+          >
             <td hlmTd class="whitespace-normal">
               <div class="flex items-center gap-2">
                 <span
