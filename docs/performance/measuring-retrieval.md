@@ -34,6 +34,8 @@ gets quoted as a capacity claim.
 | `LogQueryPerformanceTest` | The log stream: ordering, trace lookup, pruning, attribute filters |
 | `ReleaseQueryPerformanceTest` | The releases page: what it reads, and what its cost scales with |
 | `TraceSearchPerformanceTest` | The 350x correlated-subquery regression, still locked out |
+| `LogTimelinePerformanceTest` | The log timeline: the first query here whose cost is O(matching rows) |
+| `TransactionGroupPerformanceTest` | The Performance leaderboard: the second, and the one whose grouping cannot be hashed |
 
 Each `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`s the **controller's own SQL**,
 reached through `QueryPlans` — never a copy. A guard holding its own copy of a

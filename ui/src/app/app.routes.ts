@@ -34,6 +34,11 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/traces/trace-detail').then((m) => m.TraceDetailPage),
       },
       {
+        path: 'performance',
+        loadComponent: () =>
+          import('./pages/performance/performance').then((m) => m.PerformancePage),
+      },
+      {
         path: 'releases',
         loadComponent: () => import('./pages/releases/releases').then((m) => m.ReleasesPage),
       },

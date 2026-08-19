@@ -3,7 +3,7 @@
 // Array values become repeated params (environment=a&environment=b); empty /
 // undefined filters are omitted so the resource request stays stable.
 
-import { IssueFilters, LogFilters, TraceFilters } from './models';
+import { IssueFilters, LogFilters, TraceFilters, TransactionGroupFilters } from './models';
 
 /** Value shape accepted by both HttpParams and httpResource's `params` field. */
 export type QueryParams = Record<
@@ -48,5 +48,19 @@ export function traceParams(filters: TraceFilters & { cursor?: string }): QueryP
   if (filters.from) params['from'] = filters.from;
   if (filters.to) params['to'] = filters.to;
   if (filters.cursor) params['cursor'] = filters.cursor;
+  return params;
+}
+
+/**
+ * No `cursor`: the leaderboard is an aggregate, which has no key to seek on, so
+ * it returns a top-N and nothing else (ADR-0015). No `to` either — the global
+ * range filter's upper edge is always now, and the server resolves it and echoes
+ * the window it used.
+ */
+export function transactionGroupParams(filters: TransactionGroupFilters): QueryParams {
+  const params: QueryParams = {};
+  if (filters.project?.length) params['project'] = filters.project;
+  if (filters.environment?.length) params['environment'] = filters.environment;
+  if (filters.from) params['from'] = filters.from;
   return params;
 }

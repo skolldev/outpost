@@ -99,6 +99,25 @@ class TelemetrySeederTest {
 		assertThat(releases).isBetween(2L, (long) SCALE.releases() + 1);
 	}
 
+	/**
+	 * The Performance leaderboard returns the top 100 Transaction Groups. A fixture
+	 * with fewer groups than that never exercises the limit, never builds a grouping
+	 * big enough to be worth sorting, and would certify a plan shape no real Project
+	 * produces — so the group count is asserted here rather than assumed by the guard.
+	 */
+	@Test
+	void seedsMoreTransactionGroupsThanTheLeaderboardReturns() {
+		long groups = jdbc.sql("SELECT count(*) FROM (SELECT 1 FROM txn GROUP BY project_id, name, op) g")
+			.query(Long.class)
+			.single();
+		long nullOp = jdbc.sql("SELECT count(*) FROM txn WHERE op IS NULL").query(Long.class).single();
+
+		assertThat(groups).as("distinct Transaction Groups across the seeded Projects")
+			.isGreaterThanOrEqualTo((long) SCALE.projects() * TelemetrySeeder.TRANSACTION_GROUPS_PER_PROJECT);
+		// A GROUP BY that quietly dropped null keys would pass every other assertion.
+		assertThat(nullOp).as("Transactions with no op — 'no op' is a legitimate group").isPositive();
+	}
+
 	/** Trace detail fans out across four tables; a trace present in only one measures nothing. */
 	@Test
 	void sharesTheKnownTraceAcrossAllFourTables() {

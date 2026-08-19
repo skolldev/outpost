@@ -56,6 +56,16 @@
   --level-muted-bg: oklch(0.94 0.006 90);
   --level-success: oklch(0.55 0.15 150);
   --level-success-bg: oklch(0.94 0.05 150);
+
+  /* Stable project identity palette used by cross-project telemetry views. */
+  --project-1: oklch(0.55 0.19 25);
+  --project-2: oklch(0.52 0.14 70);
+  --project-3: oklch(0.5 0.13 135);
+  --project-4: oklch(0.5 0.13 175);
+  --project-5: oklch(0.52 0.15 225);
+  --project-6: oklch(0.53 0.18 270);
+  --project-7: oklch(0.53 0.17 310);
+  --project-8: oklch(0.55 0.18 350);
 }
 
 :root.dark {
@@ -101,6 +111,15 @@
   --level-muted-bg: oklch(1 0 0 / 6%);
   --level-success: oklch(0.75 0.15 150);
   --level-success-bg: oklch(0.55 0.15 150 / 20%);
+
+  --project-1: oklch(0.72 0.16 25);
+  --project-2: oklch(0.76 0.13 70);
+  --project-3: oklch(0.72 0.13 135);
+  --project-4: oklch(0.72 0.12 175);
+  --project-5: oklch(0.73 0.14 225);
+  --project-6: oklch(0.74 0.16 270);
+  --project-7: oklch(0.74 0.15 310);
+  --project-8: oklch(0.74 0.16 350);
 }
 
 @layer base {

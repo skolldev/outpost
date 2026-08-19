@@ -25,11 +25,19 @@ import {
   TraceDetail,
   TraceFilters,
   TracePage,
+  TransactionGroupFilters,
+  TransactionGroupPage,
   UptimeMonitor,
   UptimeOverview,
   UptimeTestResult,
 } from './models';
-import { issueParams, logParams, QueryParams, traceParams } from './query-params';
+import {
+  issueParams,
+  logParams,
+  QueryParams,
+  traceParams,
+  transactionGroupParams,
+} from './query-params';
 
 /** Turn a plain params record (arrays → repeated params) into HttpParams. */
 function httpParams(params: QueryParams): HttpParams {
@@ -119,6 +127,12 @@ export class Api {
 
   trace(traceId: string): Observable<TraceDetail> {
     return this.http.get<TraceDetail>(`${this.base}/traces/${encodeURIComponent(traceId)}`);
+  }
+
+  transactionGroups(filters: TransactionGroupFilters): Observable<TransactionGroupPage> {
+    return this.http.get<TransactionGroupPage>(`${this.base}/transaction-groups`, {
+      params: httpParams(transactionGroupParams(filters)),
+    });
   }
 
   projects(): Observable<Project[]> {

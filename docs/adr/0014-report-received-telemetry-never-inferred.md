@@ -1,0 +1,22 @@
+# The Performance view reports received telemetry, never inferred telemetry
+
+The Performance view aggregates [[Transaction]]s into [[Transaction Group]]s keyed by ([[Project]], name, op). Three times over while designing it, the same shape of decision came up: Outpost holds data that is incomplete or unreliable in a known way, and could paper over the gap with a plausible guess. In all three we refused, and report the gap instead. Recording the principle once, because each instance individually looks like an oversight and will be "fixed" separately otherwise.
+
+**Transaction names are never normalized.** `txn.name` is stored exactly as the SDK sent it. A Project whose SDK does not parameterize URLs produces one Transaction Group per distinct URL — `GET /api/orders/12345`, `GET /api/orders/12346` — and hundreds of thousands of groups in a 30-day window. We do not rewrite these into `GET /api/orders/:id`, at ingest or at query time. The initial leaderboard deliberately reports the received groups as-is; the follow-up cardinality slice (#160) adds `distinct_groups`, names the likely cause in the UI, and applies the sample floor that keeps one-sample groups from dominating a percentile sort.
+
+**Sampling is labelled, never extrapolated.** Sentry SDKs sample traces, and Outpost stores no sample rate — the rate travels in the envelope's dynamic sampling context, which the pipeline does not read. Counts and total time therefore describe Transactions received, not requests served, and the columns say so. We do not divide by a client-supplied rate to estimate true volume.
+
+**No failure signal is synthesized.** `txn.status` is stored verbatim from `contexts.trace.status`, unnormalized and frequently absent. A `failure_rate` column derived from it would be a second, weaker answer to a question [[Issue]]s already answer from error [[Event]]s — and the two would disagree. The Performance view measures duration; "is it broken" belongs to Issues.
+
+## Considered options
+
+- **Normalizing names at ingest.** Solves cardinality everywhere at once and keeps the aggregate cheap forever. Rejected: it destroys the original name irreversibly, makes the trace detail view and the Performance view disagree about what the same Transaction is called, and the heuristic is unavoidably wrong at the margins — `/api/v2/orders` and `/users/me` are not id segments, and no regex knows that. It also fights ADR-0002: ingestion stores what it was given, it does not interpret it.
+- **Normalizing names at query time.** Leaves stored rows untouched, so trace detail still shows what the SDK sent. Rejected for the same wrongness at the margins, plus the grouping expression is computed and therefore unindexable — and the Performance view would then be the only surface in Outpost calling a Transaction something no other surface calls it.
+- **A hard cardinality ceiling.** Pre-count distinct groups and refuse above a threshold. Rejected: it makes the feature unavailable precisely to the installations whose instrumentation is worst, which is where a diagnostic is most wanted. Reporting the number achieves the same disclosure without withholding the answer.
+- **Extrapolating counts from a captured sample rate.** Would require reading the rate off the envelope header, a schema column, and a pipeline change; and it is only valid for rows ingested after it ships, so any window spanning the change mixes estimated and measured totals. Rejected as false precision built on an unverifiable client-supplied number.
+
+## Consequences
+
+- **Aggregate cost stays unbounded and visible rather than capped and hidden.** A high-cardinality Project builds every group before `LIMIT` discards it. This is accepted; the banner exists so the cost is attributable rather than mysterious.
+- **The default sort can be skewed by per-transaction sampling, and we cannot detect it.** `tracesSampler` lets a Project sample `/health` at 0.001 and `/checkout` at 1.0, which reorders a total-time ranking. Uniform sampling scales every group equally and leaves the ranking intact; non-uniform sampling does not, and nothing in the data reveals which case an installation is in. The UI discloses the possibility; it cannot resolve it.
+- **A Project with disciplined instrumentation gets a materially better view than one without.** That asymmetry is deliberate: the fix is in the user's SDK routing integration, and a view that quietly compensates removes the signal that anything is wrong.

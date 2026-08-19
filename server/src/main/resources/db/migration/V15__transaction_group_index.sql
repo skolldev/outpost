@@ -1,0 +1,78 @@
+-- A covering index for the Performance leaderboard (#159), which is the second query
+-- in the codebase whose cost is O(matching rows) rather than O(page) — after the log
+-- timeline V14 exists for.
+--
+-- `GET /transaction-groups` aggregates txn into Transaction Groups keyed by
+-- (project_id, name, op) over a window capped at 30 days (ADR-0015), returning
+-- count/sum/avg/max plus p50/p95/p99 from one ordered-set aggregate. Percentiles are
+-- exact, which forecloses pre-aggregation — a p95 of p95s is not a p95 — so this
+-- query always reads raw rows and the only levers are how wide each row is and
+-- whether the grouping has to sort.
+--
+-- Measured on 2026-08-19 at 500 004 transactions over nine weekly partitions, where a
+-- full scan of txn costs 277 812 blocks:
+--
+--   shape                  none   (p,t,e,n,o,d)  (t,p,e,n,o,d)  (p,t)+INCL   this index
+--   30d                 238 242          25 374         25 124      25 368       21 113
+--   14d                 175 503          18 537         16 991      18 537       15 418
+--   30d, one project    226 727           6 315         24 927       6 315        5 298
+--   30d, one env        238 182          25 194         24 942      25 188       20 958
+--   1h                   58 863           6 218            792       6 218        4 963
+--   temp blocks, 30d     21 664          21 704         21 712      21 704            0
+--
+-- **The column order is the Transaction Group key, and that is the whole point.** Every
+-- other candidate leads with the filters — the shape V14 chose for the timeline, which
+-- hashes into buckets and therefore does not care what order rows arrive in. This
+-- aggregate does care: `percentile_cont` is an ordered-set aggregate, which disqualifies
+-- hashed grouping outright (`numOrderedAggs > 0`), so Postgres must produce the input
+-- sorted by the grouping key. Given a filter-leading index it sorts 500 000 rows to get
+-- there, and at 4 MB of work_mem that sort spills — 21 704 temp blocks, on every shape
+-- wide enough to matter. Leading with (project_id, name, op) makes each partition's
+-- index scan already sorted by the grouping key, Merge Append preserves that across
+-- partitions, and GroupAggregate reads it straight through. The sort disappears, and
+-- with it the spill.
+--
+-- That also bounds the per-group tuplesort `percentile_cont` builds. Under GroupAggregate
+-- one group is open at a time, so the durations being sorted are one group's, not the
+-- window's — which is what makes "the percentile sort must not spill" a property the
+-- guard can assert rather than a hope.
+--
+-- The cost of leading with the key is that `start_ts` is a filter rather than an index
+-- condition, so a window narrower than a partition still reads the whole week: the 1h
+-- shape measures 4 963 blocks where a start_ts-leading index reads 792. That is the one
+-- column where (t,p,e,n,o,d) wins, and it loses everywhere else — including 24 927 to
+-- 5 298 on the single-project shape, which is the one a user actually narrows to. A view
+-- whose default window is 14 days and whose ceiling is 30 is not optimized for the hour.
+--
+-- `duration_ms` sits in INCLUDE rather than in the key because nothing filters or orders
+-- by it; it only has to be present for the scan to stay index-only. `environment` is a
+-- key column so the environment filter is an index condition rather than a recheck.
+--
+-- Storage: 46 MB for 500 004 transactions — ~96 bytes per row, against the ~1.4 KB the
+-- heap row costs (txn.data holds the full transaction payload), which is why reading
+-- this index instead of the heap is worth an order of magnitude. It leads with a text
+-- column, so a Project whose SDK does not parameterize URLs makes it wider as well as
+-- making the leaderboard noisier; ADR-0014 covers why the answer to that is a warning
+-- rather than normalization. txn is append-only, so each insert writes one more index
+-- entry and no update has to be re-checked for HOT eligibility.
+--
+-- Locking, exactly as V11 and V14: a plain CREATE INDEX holds a ShareLock on txn for the
+-- length of the build, blocking transaction ingest until it finishes. CONCURRENTLY is
+-- rejected on a partitioned table outright (SQLSTATE 0A000), so an install large enough
+-- to care should build this by hand before upgrading, after which this migration finds
+-- it present and is a no-op:
+--
+--   CREATE INDEX idx_txn_performance ON ONLY txn (project_id, name, op, environment, start_ts) INCLUDE (duration_ms);
+--   -- then, per partition:
+--   CREATE INDEX CONCURRENTLY idx_txn_performance_p20260817
+--       ON txn_p20260817 (project_id, name, op, environment, start_ts) INCLUDE (duration_ms);
+--   ALTER INDEX idx_txn_performance ATTACH PARTITION idx_txn_performance_p20260817;
+--
+-- What this does not fix: the aggregate is still O(rows in the window), and a 30-day
+-- global view still reads 21 113 blocks against the ~1 800 a page of trace search costs.
+-- The index makes the leaderboard affordable, not cheap. If volume outgrows it, ADR-0015
+-- names the escape — duration histograms, whose buckets are mergeable — and it is not a
+-- rollup of these statistics.
+
+CREATE INDEX IF NOT EXISTS idx_txn_performance
+    ON txn (project_id, name, op, environment, start_ts) INCLUDE (duration_ms);

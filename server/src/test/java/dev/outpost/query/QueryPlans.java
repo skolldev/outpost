@@ -143,6 +143,23 @@ public final class QueryPlans {
 		return walk(jdbc, LogController.logPage(), build, pages);
 	}
 
+	// ------------------------------------------------------- transaction groups
+
+	public static Built transactionGroups(List<Long> project, List<String> environment, Instant from, Instant to) {
+		return Built.of(TransactionGroupController.buildLeaderboardQuery(project, environment, from, to));
+	}
+
+	/**
+	 * The window the leaderboard would answer this request over, from the controller
+	 * that owns the 30-day cap. Read rather than recomputed, for the reason
+	 * {@link #sparklineSince()} is: it decides the bind parameters that prune the
+	 * partitions, so a guard computing its own would {@code EXPLAIN} a window the
+	 * controller never runs.
+	 */
+	public static TransactionGroupController.Window transactionGroupWindow(Instant from, Instant to) {
+		return TransactionGroupController.window(from, to);
+	}
+
 	// ---------------------------------------------------------- traces/releases
 
 	public static Built traceSearch(List<Long> project, List<String> environment, String release, String query,
