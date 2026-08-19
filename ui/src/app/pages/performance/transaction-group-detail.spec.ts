@@ -94,7 +94,7 @@ async function renderDetail(
 function recordParam(param: string, body: TransactionGroupDetail): (string | null)[] {
   const seen: (string | null)[] = [];
   server.use(
-    http.get(`${BASE}/transaction-group`, ({ request }) => {
+    http.get(`${BASE}/transaction-groups/detail`, ({ request }) => {
       seen.push(new URL(request.url).searchParams.get(param));
       return HttpResponse.json(body);
     }),
@@ -113,7 +113,9 @@ async function clickAndReadParams(name: RegExp): Promise<Record<string, string>>
 
 describe('TransactionGroupDetailPage', () => {
   it('shows the statistics of the Transaction Group named by the link', async () => {
-    server.use(http.get(`${BASE}/transaction-group`, () => HttpResponse.json(detail(CHECKOUT))));
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
     await renderDetail();
 
     expect(await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' })).toBeVisible();
@@ -142,7 +144,7 @@ describe('TransactionGroupDetailPage', () => {
   it('carries the Project, Environment Name and time range into the request', async () => {
     const seen: URLSearchParams[] = [];
     server.use(
-      http.get(`${BASE}/transaction-group`, ({ request }) => {
+      http.get(`${BASE}/transaction-groups/detail`, ({ request }) => {
         seen.push(new URL(request.url).searchParams);
         return HttpResponse.json(detail(CHECKOUT));
       }),
@@ -167,7 +169,7 @@ describe('TransactionGroupDetailPage', () => {
 
   it('says so when the server clamped the range to 30 days', async () => {
     server.use(
-      http.get(`${BASE}/transaction-group`, () =>
+      http.get(`${BASE}/transaction-groups/detail`, () =>
         HttpResponse.json(detail(CHECKOUT, { range_clamped: true })),
       ),
     );
@@ -182,7 +184,7 @@ describe('TransactionGroupDetailPage', () => {
    */
   it('explains an empty window rather than reporting an error', async () => {
     server.use(
-      http.get(`${BASE}/transaction-group`, () =>
+      http.get(`${BASE}/transaction-groups/detail`, () =>
         HttpResponse.json({ detail: 'no Transactions' }, { status: 404 }),
       ),
     );
@@ -196,7 +198,7 @@ describe('TransactionGroupDetailPage', () => {
 
   it('shows a load error when the statistics cannot be computed', async () => {
     server.use(
-      http.get(`${BASE}/transaction-group`, () =>
+      http.get(`${BASE}/transaction-groups/detail`, () =>
         HttpResponse.json({ detail: 'failed' }, { status: 500 }),
       ),
     );
@@ -206,7 +208,9 @@ describe('TransactionGroupDetailPage', () => {
   });
 
   it('says a link naming no Transaction Group cannot be opened', async () => {
-    server.use(http.get(`${BASE}/transaction-group`, () => HttpResponse.json(detail(CHECKOUT))));
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
     await renderDetail({ op: 'http.server' });
 
     expect(await screen.findByText(/does not name a Transaction Group/)).toBeInTheDocument();
@@ -217,7 +221,9 @@ describe('TransactionGroupDetailPage', () => {
    * above p95, with no upper bound.
    */
   it('links to the Traces page filtered to this group’s slow Traces', async () => {
-    server.use(http.get(`${BASE}/transaction-group`, () => HttpResponse.json(detail(CHECKOUT))));
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
     await renderDetail(KEY, fakeFilters(undefined, ['production']));
     await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
 
@@ -234,7 +240,9 @@ describe('TransactionGroupDetailPage', () => {
    * window, which diffs against a slow request no more usefully than another slow one.
    */
   it('links to the Traces page filtered to this group’s typical Traces', async () => {
-    server.use(http.get(`${BASE}/transaction-group`, () => HttpResponse.json(detail(CHECKOUT))));
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
     await renderDetail();
     await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
 
@@ -252,7 +260,9 @@ describe('TransactionGroupDetailPage', () => {
    * page that set them.
    */
   it('carries the current Project, environment and range through to the Traces page', async () => {
-    server.use(http.get(`${BASE}/transaction-group`, () => HttpResponse.json(detail(CHECKOUT))));
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
     await renderDetail({ ...KEY, environment: 'production', range: '7d' });
     await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
 

@@ -18,7 +18,8 @@ import { GlobalFilters } from '../../core/filters';
 import { TransactionGroup, TransactionGroupDetail } from '../../core/models';
 import { ProjectsStore } from '../../core/projects';
 import { transactionGroupDetailParams } from '../../core/query-params';
-import { formatDuration, projectColor } from '../../shared/ui';
+import { formatDuration, formatTotalDuration, projectColor } from '../../shared/ui';
+import { RangeClampNotice } from './range-clamp-notice';
 
 const BASE = API_BASE;
 
@@ -67,6 +68,7 @@ interface Statistic {
     HlmEmptyTitle,
     HlmEmptyDescription,
     HlmSpinner,
+    RangeClampNotice,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex min-h-0 flex-1 flex-col' },
@@ -110,7 +112,7 @@ export class TransactionGroupDetailPage {
     const project = this.project();
     if (project == null || !this.name()) return undefined;
     return {
-      url: `${BASE}/transaction-group`,
+      url: `${BASE}/transaction-groups/detail`,
       params: transactionGroupDetailParams({
         project,
         name: this.name(),
@@ -154,7 +156,7 @@ export class TransactionGroupDetailPage {
     if (!group) return [];
     return [
       { label: 'Received', value: group.count.toLocaleString(), hint: 'Transactions' },
-      { label: 'Total time', value: this.formatTotal(group.total_ms) },
+      { label: 'Total time', value: formatTotalDuration(group.total_ms) },
       { label: 'p50', value: formatDuration(group.p50_ms) },
       { label: 'p95', value: formatDuration(group.p95_ms) },
       { label: 'p99', value: formatDuration(group.p99_ms) },
@@ -198,9 +200,15 @@ export class TransactionGroupDetailPage {
 
   readonly formatDuration = formatDuration;
 
-  /** Total time runs to minutes on a busy group, where `formatDuration` would print "312.4s". */
-  readonly formatTotal = (ms: number): string =>
-    ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}min` : formatDuration(ms);
+  /**
+   * Back to the list this was opened from, with the key cleared.
+   *
+   * Everything else merges — the leaderboard is meant to reopen on the slice the user
+   * left it in — but `name` and `op` identify one Transaction Group and nothing on that
+   * page reads them, so carrying them back would leave a URL describing a view it is
+   * not showing.
+   */
+  readonly backToListParams: Params = { name: null, op: null };
 
   private tracesLink(): Params {
     return { query: this.name(), name: null, op: null };

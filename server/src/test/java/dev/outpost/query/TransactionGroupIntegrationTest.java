@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.within;
 
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -21,6 +22,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -50,11 +52,12 @@ class TransactionGroupIntegrationTest {
 	private static final String GROUPS = "/api/internal/transaction-groups";
 
 	/**
-	 * Singular, and the key travels in query params: a transaction name contains
-	 * slashes — {@code GET /api/checkout/{id}} is a name, not a path — so it cannot be a
-	 * path segment without encoding the same string into a second shape on the wire.
+	 * The key travels in query params rather than in the path: a transaction name
+	 * contains slashes — {@code GET /api/checkout/{id}} is a name, not a path — so it
+	 * cannot be a path segment without encoding the same string into a second shape on
+	 * the wire.
 	 */
-	private static final String GROUP = "/api/internal/transaction-group";
+	private static final String GROUP = "/api/internal/transaction-groups/detail";
 
 	private static final String CHECKOUT = "GET /api/checkout/{id}";
 
@@ -532,7 +535,7 @@ class TransactionGroupIntegrationTest {
 	 */
 	@Test
 	void theNameMatchesExactlyRatherThanAsASubstring() {
-		assertThat(status("&project=" + project + "&name=" + encode("checkout") + "&op=http.server"))
+		assertThat(detailStatus("&project=" + project + "&name=" + encode("checkout") + "&op=http.server"))
 			.isEqualTo(HttpStatus.NOT_FOUND);
 	}
 
@@ -556,7 +559,7 @@ class TransactionGroupIntegrationTest {
 		String key = "&project=" + project + "&name=" + encode("GET /api/staging-only") + "&op=http.server";
 
 		assertThat(detail(key + "&environment=staging")).containsEntry("count", SAMPLE_FLOOR);
-		assertThat(status(key + "&environment=production")).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(detailStatus(key + "&environment=production")).isEqualTo(HttpStatus.NOT_FOUND);
 	}
 
 	/** As does the Release filter, which is how a duration change is attributed to a version. */
@@ -598,7 +601,7 @@ class TransactionGroupIntegrationTest {
 
 		// Every Transaction it holds is outside the clamped window, so there is no group
 		// left to describe.
-		assertThat(status(key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS))).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(detailStatus(key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS))).isEqualTo(HttpStatus.NOT_FOUND);
 		// And the clamp is what excluded it, not a fixture that was never there: a window
 		// inside the cap, over the same rows, finds it.
 		assertThat(detail(key + "&from=" + old.minus(1, ChronoUnit.DAYS) + "&to=" + old.plus(1, ChronoUnit.DAYS)))
@@ -634,7 +637,7 @@ class TransactionGroupIntegrationTest {
 	 */
 	@Test
 	void theProjectIsPartOfTheKeyRatherThanAFilterOverIt() {
-		assertThat(status("&project=" + otherProject + "&name=" + encode(CHECKOUT) + "&op=http.server"))
+		assertThat(detailStatus("&project=" + otherProject + "&name=" + encode(CHECKOUT) + "&op=http.server"))
 			.isEqualTo(HttpStatus.NOT_FOUND);
 	}
 
@@ -785,7 +788,7 @@ class TransactionGroupIntegrationTest {
 		return cast(response.getBody());
 	}
 
-	private org.springframework.http.HttpStatusCode status(String key) {
+	private HttpStatusCode detailStatus(String key) {
 		return get(GROUP + "?" + key.replaceFirst("^&", ""), adminCookie).getStatusCode();
 	}
 
@@ -829,7 +832,7 @@ class TransactionGroupIntegrationTest {
 	private ResponseEntity<Map> get(String path, String cookie) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.set(HttpHeaders.COOKIE, cookie);
-		return rest.exchange(java.net.URI.create(url(path)), HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+		return rest.exchange(URI.create(url(path)), HttpMethod.GET, new HttpEntity<>(headers), Map.class);
 	}
 
 	private String login(String email, String password) {

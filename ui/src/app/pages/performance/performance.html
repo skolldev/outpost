@@ -65,13 +65,7 @@
 </div>
 
 @if (rangeClamped()) {
-  <p
-    role="status"
-    class="mb-4 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
-  >
-    Showing the last 30 days. Performance statistics are capped at 30 days, so a wider range —
-    including “All time” — is narrowed to it.
-  </p>
+  <app-range-clamp-notice />
 }
 
 <!--

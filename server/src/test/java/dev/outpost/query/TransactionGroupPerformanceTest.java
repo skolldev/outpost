@@ -362,6 +362,13 @@ class TransactionGroupPerformanceTest {
 	 * form moves {@code op} out of {@code Index Cond} into {@code Filter} and reports
 	 * rows removed by it. What is free on 8 004 Transactions is a scan three times wider
 	 * on a real one, so the plan is asserted rather than the cost.
+	 *
+	 * <p>It holds because these shapes carry no Release filter. {@code release} is an
+	 * INCLUDE column, so filtering on it is a {@code Filter} evaluated inside the
+	 * index-only scan — legitimately, and by {@code V16}'s design — and adding one to a
+	 * shape here would fail this assertion for a reason that is not a regression. That
+	 * cost is guarded where it belongs, by the ceiling on the leaderboard's own release
+	 * shape.
 	 */
 	@Test
 	void everyPredicateOnTheDetailViewIsAnIndexCondition() {

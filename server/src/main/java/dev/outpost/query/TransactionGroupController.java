@@ -225,10 +225,11 @@ public class TransactionGroupController {
 	 * One Transaction Group's statistics over the resolved window, for the detail view
 	 * a leaderboard row opens into.
 	 *
-	 * <p>The identity travels in query params rather than a path segment because
+	 * <p>The identity travels in query params rather than in the path because
 	 * transaction names contain slashes — {@code GET /api/checkout/{id}} is a name, not
 	 * a path — and percent-encoding a name into a segment would put the same string in
-	 * two shapes on the wire for no gain.
+	 * two shapes on the wire for no gain. The path is the collection's, with
+	 * {@code /detail} under it, as the API contract in #158 states it.
 	 *
 	 * <p><b>An absent {@code op} means {@code op} is null, not "any op".</b> (Project,
 	 * name, op) is the whole key, so "any op" identifies a set of Transaction Groups
@@ -244,7 +245,7 @@ public class TransactionGroupController {
 	 * @return 404 when no Transaction in the window matches the key, which is what a
 	 * shared link to a group that has since gone quiet looks like
 	 */
-	@GetMapping("/transaction-group")
+	@GetMapping("/transaction-groups/detail")
 	public ResponseEntity<?> detail(@RequestParam long project, @RequestParam String name,
 			@RequestParam(required = false) String op, @RequestParam(required = false) List<String> environment,
 			@RequestParam(required = false) String release, @RequestParam(required = false) Instant from,
