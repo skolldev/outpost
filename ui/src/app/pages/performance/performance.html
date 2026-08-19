@@ -25,21 +25,21 @@
     same word twice, and a `<label for>` is what actually names the inner `<select>`
     — an aria-label here would land on the wrapper element instead.
 
-    The Release filter is offered only when one Project's Releases are the right list
-    to show (see `releaseProject`), and is disabled rather than hidden so the reason
-    sits on screen instead of the control simply going missing.
+    The Release filter can only list versions when one Project's Releases are the right
+    list to show (see `releaseProject`). With nothing to choose and nothing to clear it
+    is disabled and says why, rather than going missing.
   -->
   <label class="sr-only" for="performance-release">Filter by Release</label>
   <hlm-native-select
     size="sm"
     selectId="performance-release"
     [value]="release()"
-    [disabled]="releaseProject() === undefined"
+    [disabled]="releaseFilterUnavailable()"
     (change)="onReleaseChange($event)"
   >
     <option hlmNativeSelectOption value="">All releases</option>
-    @for (option of releases(); track option.version) {
-      <option hlmNativeSelectOption [value]="option.version">{{ option.version }}</option>
+    @for (version of releases(); track version) {
+      <option hlmNativeSelectOption [value]="version">{{ version }}</option>
     }
   </hlm-native-select>
   @if (releaseProject() === undefined) {

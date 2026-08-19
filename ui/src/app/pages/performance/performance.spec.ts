@@ -104,18 +104,28 @@ function fakeFilters(from?: string, project: number[] = []): GlobalFilters {
 async function renderPerformance(
   filters: GlobalFilters = fakeFilters(),
   projects: Project[] = PROJECTS,
+  // Sort and Release are read from the URL, so a shared link is set up by arriving at one.
+  queryParams: Record<string, string> = {},
 ) {
   // The constructor also loads projects for the legend, and the Releases of the one
   // Project the Release filter resolves to; without handlers those fetches reject and
   // fail assertions that have nothing to do with them.
   server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(projects)));
   server.use(http.get(`${BASE}/releases`, () => HttpResponse.json(RELEASES)));
+  // Joined by hand rather than through URLSearchParams: a version like `shop@2.0.0` is
+  // legal unencoded in a query string, and percent-encoding it here arrives as a
+  // literal `%40` in the param the page reads back.
+  const query = Object.entries(queryParams)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('&');
   return render(PerformancePage, {
     providers: [
       provideHttpClient(),
       provideRouter([]),
       { provide: GlobalFilters, useValue: filters },
     ],
+    routes: [{ path: '', children: [] }],
+    initialRoute: query ? `/?${query}` : '/',
   });
 }
 
@@ -341,13 +351,37 @@ describe('PerformancePage', () => {
    * several. The control stays on screen and says why, rather than disappearing and
    * leaving the user to wonder where the Release filter went.
    */
-  it('cannot filter by Release while the view spans more than one Project', async () => {
+  it('cannot list Releases while the view spans more than one Project', async () => {
     server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
     await renderPerformance(fakeFilters(undefined, [1, 2]), [...PROJECTS, SECOND_PROJECT]);
 
     await screen.findByText('GET /api/checkout/{id}');
     expect(screen.getByLabelText('Filter by Release')).toBeDisabled();
     expect(screen.getByText(/Select a single Project to filter by Release/)).toBeInTheDocument();
+  });
+
+  /**
+   * A link shared from another Project's view carries a Release this Project may not
+   * have. It filters the request either way — the server is what applies it — so the
+   * control has to show it, or it is a filter narrowing the list that the user can
+   * neither see nor switch off.
+   */
+  it('shows a Release it cannot list, so a shared link can still be cleared', async () => {
+    const seen = recordParam('release', page([CHECKOUT]));
+    await renderPerformance(fakeFilters(undefined, [1, 2]), [...PROJECTS, SECOND_PROJECT], {
+      release: 'shop@9.9.9',
+    });
+    const user = userEvent.setup();
+    await screen.findByText('GET /api/checkout/{id}');
+
+    expect(seen).toContain('shop@9.9.9');
+    const select = screen.getByLabelText('Filter by Release');
+    expect(select).toHaveValue('shop@9.9.9');
+    expect(select).toBeEnabled();
+
+    await user.selectOptions(select, '');
+
+    await waitFor(() => expect(seen).toContain(null));
   });
 
   it('carries the global time-range filter into the request', async () => {

@@ -6,7 +6,6 @@ import {
   effect,
   inject,
   signal,
-  untracked,
 } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
@@ -143,7 +142,7 @@ export class PerformancePage {
 
   readonly release = computed<string>(() => this.queryParams()['release'] ?? '');
 
-  readonly search = signal(this.route.snapshot.queryParams['query'] ?? '');
+  readonly search = signal<string>(this.route.snapshot.queryParams['query'] ?? '');
   readonly debouncedQuery = debounced(this.search, 300);
 
   /**
@@ -170,7 +169,26 @@ export class PerformancePage {
     { defaultValue: [] },
   );
 
-  readonly releases = this.releaseList.value;
+  /**
+   * The versions to choose from, plus whichever one is already filtering if it is not
+   * among them — which happens on a link shared from another Project's view, and while
+   * the list is still in flight.
+   *
+   * A filter the control cannot show is a filter the user cannot clear, and dropping it
+   * from the URL instead would mean deciding "this Release does not exist here" from an
+   * empty list that also means "not fetched yet". Carrying it as an option needs no such
+   * guess: it stays visible, and selecting "All releases" removes it.
+   */
+  readonly releases = computed<string[]>(() => {
+    const versions = this.releaseList.value().map((release) => release.version);
+    const chosen = this.release();
+    return chosen && !versions.includes(chosen) ? [chosen, ...versions] : versions;
+  });
+
+  /** Nothing to choose and nothing to clear — see `releaseProject` for when that happens. */
+  readonly releaseFilterUnavailable = computed(
+    () => this.releases().length === 0 && this.releaseProject() === undefined,
+  );
 
   private readonly page = httpResource<TransactionGroupPage>(() => ({
     url: `${BASE}/transaction-groups`,
@@ -223,18 +241,6 @@ export class PerformancePage {
       if (query === lastSynced) return;
       lastSynced = query;
       this.syncUrl({ query: query || null });
-    });
-    // Drop a Release the current Project cannot offer — after switching Project, or
-    // from a shared link. Left alone it would be a filter the user can neither see in
-    // the control nor clear from it, narrowing the list for no visible reason. Not
-    // silent: the select is right there, showing "All releases".
-    effect(() => {
-      const options = this.releases();
-      const chosen = this.release();
-      if (!chosen || this.releaseList.isLoading()) return;
-      if (!options.some((release) => release.version === chosen)) {
-        untracked(() => this.syncUrl({ release: null }));
-      }
     });
   }
 
