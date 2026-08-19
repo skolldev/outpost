@@ -14,13 +14,18 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
 }
 
-/**
- * Deterministic oklch color for a project. The hue comes from the project id via
- * the golden angle so adjacent ids stay visually distinct; lightness and chroma
- * are fixed so the palette reads as one system in both themes (like the
- * `--level-*` tokens).
- */
+const PROJECT_COLORS = [
+  'var(--project-1)',
+  'var(--project-2)',
+  'var(--project-3)',
+  'var(--project-4)',
+  'var(--project-5)',
+  'var(--project-6)',
+  'var(--project-7)',
+  'var(--project-8)',
+] as const;
+
+/** Deterministic semantic project color, resolved separately for each theme. */
 export function projectColor(projectId: number): string {
-  const hue = (projectId * 137.508) % 360;
-  return `oklch(0.62 0.17 ${hue.toFixed(1)})`;
+  return PROJECT_COLORS[Math.abs(projectId) % PROJECT_COLORS.length];
 }

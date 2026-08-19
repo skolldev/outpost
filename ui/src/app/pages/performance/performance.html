@@ -22,7 +22,12 @@
   </p>
 }
 
-@if (groups().length === 0 && !loading()) {
+@if (error()) {
+  <div hlmAlert variant="destructive" role="alert" class="mx-auto w-full max-w-xl">
+    <p hlmAlertTitle>Performance unavailable</p>
+    <p hlmAlertDescription>{{ error() }} Try loading the page again.</p>
+  </div>
+} @else if (groups().length === 0 && !loading()) {
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
       <h3 hlmEmptyTitle>No Transactions match the current filters.</h3>
@@ -64,7 +69,12 @@
                   [style.background-color]="projectColor(group.project_id)"
                   [title]="projects.name(group.project_id)"
                 ></span>
-                <span class="truncate font-medium text-foreground">{{ group.name }}</span>
+                <div class="min-w-0">
+                  <div class="truncate font-medium text-foreground">{{ group.name }}</div>
+                  <div class="truncate text-xs text-muted-foreground">
+                    {{ projects.name(group.project_id) }}
+                  </div>
+                </div>
               </div>
             </td>
             <td hlmTd>

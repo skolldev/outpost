@@ -202,24 +202,16 @@ class TransactionGroupIntegrationTest {
 		assertThat(names(body)).doesNotContain("GET /api/ancient");
 	}
 
-	/**
-	 * The request the range picker's "Last 30 days" actually produces is answered
-	 * as asked, not narrowed by a hair and flagged.
-	 *
-	 * <p>The client subtracts 30 days from <em>its own</em> clock and the server
-	 * resolves {@code to} from <em>its</em>, so this window is always a little wider
-	 * than the cap by the time it arrives. Without a grace on the cap every 30-day
-	 * view would carry the clamp notice — and dropping the notice instead would be
-	 * the silent narrowing ADR-0015 rejects.
-	 */
+	/** Even a small overshoot is clamped: the effective window never exceeds the documented cap. */
 	@Test
-	void aThirtyDayRequestIsAnsweredAsAskedDespiteClockSkew() {
-		Instant from = Instant.now().minus(30, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
+	void aWindowSlightlyWiderThanThirtyDaysIsClamped() {
+		Instant to = ANCHOR.plus(1, ChronoUnit.DAYS);
+		Instant from = to.minus(30, ChronoUnit.DAYS).minusSeconds(1);
 
-		Map<String, Object> body = leaderboard("&project=" + project + "&from=" + from);
+		Map<String, Object> body = leaderboard("&project=" + project + "&from=" + from + "&to=" + to);
 
-		assertThat(body.get("range_clamped")).isEqualTo(false);
-		assertThat(body.get("from")).isEqualTo(from.toString());
+		assertThat(body.get("range_clamped")).isEqualTo(true);
+		assertThat(window(body)).isEqualTo(30 * 24 * 60);
 	}
 
 	/** A window inside the cap is answered as asked, with no notice raised. */
@@ -233,6 +225,15 @@ class TransactionGroupIntegrationTest {
 		assertThat(body.get("range_clamped")).isEqualTo(false);
 		assertThat(body.get("from")).isEqualTo(from.toString());
 		assertThat(body.get("to")).isEqualTo(to.toString());
+	}
+
+	@Test
+	void anInvalidWindowIsRejected() {
+		ResponseEntity<Map> response = get(
+				GROUPS + "?project=" + project + "&from=" + ANCHOR + "&to=" + ANCHOR, adminCookie);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+		assertThat(response.getBody()).containsEntry("detail", "from must be before to");
 	}
 
 	/**

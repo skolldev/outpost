@@ -85,6 +85,7 @@ describe('PerformancePage', () => {
     await screen.findByText('GET /api/checkout/{id}');
     // Scoped to the table: short cells like "42ms" collide with prose elsewhere.
     const table = within(screen.getByRole('table'));
+    expect(table.getByText('shop-backend')).toBeInTheDocument();
     expect(table.getByText('http.server')).toBeInTheDocument();
     expect(table.getByText('12,401')).toBeInTheDocument();
     // p50 42ms, p95 310ms, p99 1.20s, avg 42.1ms, max 4.10s.
@@ -108,6 +109,31 @@ describe('PerformancePage', () => {
     expect(
       await screen.findByText(/No Transactions match the current filters/),
     ).toBeInTheDocument();
+  });
+
+  it('shows a load error instead of claiming that no Transactions match', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json({ detail: 'failed' }, { status: 500 }),
+      ),
+    );
+    await renderPerformance();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Performance unavailable');
+    expect(screen.queryByText(/No Transactions match the current filters/)).not.toBeInTheDocument();
+  });
+
+  it('renders distinct groups whose tuple keys would collide when joined with spaces', async () => {
+    const first = { ...CHECKOUT, name: 'alpha beta', op: 'gamma' };
+    const second = { ...CHECKOUT, name: 'alpha', op: 'beta gamma' };
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([first, second]))),
+    );
+    await renderPerformance();
+
+    const table = within(screen.getByRole('table'));
+    expect(await table.findByText('alpha beta')).toBeInTheDocument();
+    expect(table.getByText('alpha')).toBeInTheDocument();
   });
 
   it('says so when the server clamped the range to 30 days', async () => {

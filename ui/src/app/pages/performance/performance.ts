@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { HlmBadge } from '@spartan-ng/helm/badge';
+import { HlmAlert, HlmAlertDescription, HlmAlertTitle } from '@spartan-ng/helm/alert';
 import { HlmTableImports } from '@spartan-ng/helm/table';
 import {
   HlmEmpty,
@@ -35,6 +36,9 @@ const BASE = API_BASE;
   selector: 'app-performance',
   imports: [
     HlmBadge,
+    HlmAlert,
+    HlmAlertTitle,
+    HlmAlertDescription,
     HlmTableImports,
     HlmEmpty,
     HlmEmptyHeader,
@@ -64,15 +68,20 @@ export class PerformancePage {
   }));
 
   readonly loading = this.page.isLoading;
-  readonly groups = computed<TransactionGroup[]>(() => this.page.value()?.groups ?? []);
-  readonly rangeClamped = computed(() => this.page.value()?.range_clamped ?? false);
+  readonly error = computed(() => (this.page.error() ? 'Could not load Performance data.' : null));
+  readonly groups = computed<TransactionGroup[]>(() =>
+    this.page.hasValue() ? this.page.value().groups : [],
+  );
+  readonly rangeClamped = computed(() =>
+    this.page.hasValue() ? this.page.value().range_clamped : false,
+  );
 
   /** Distinct project ids in the loaded groups, for the color legend. */
   readonly projectIds = computed(() => [...new Set(this.groups().map((g) => g.project_id))]);
 
   /** The Transaction Group key — (Project, name, op) — which is what identifies a row. */
   readonly groupKey = (group: TransactionGroup): string =>
-    `${group.project_id} ${group.name} ${group.op ?? ''}`;
+    JSON.stringify([group.project_id, group.name, group.op]);
 
   /** Whole counts read better than "12.4k" when they are the denominator of a percentile. */
   readonly formatCount = (count: number): string => count.toLocaleString();

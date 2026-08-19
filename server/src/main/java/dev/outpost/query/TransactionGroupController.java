@@ -5,7 +5,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -51,24 +53,6 @@ public class TransactionGroupController {
 	 */
 	private static final Duration MAX_WINDOW = Duration.ofDays(30);
 
-	/**
-	 * How much a request may overshoot {@link #MAX_WINDOW} and still be answered as
-	 * asked.
-	 *
-	 * <p>The client computes {@code from} as <em>its own</em> now minus 30 days and
-	 * the server resolves {@code to} as <em>its own</em> now, so a 30-day request
-	 * always arrives describing a window a network hop wider than 30 days. Without a
-	 * grace the endpoint would narrow every such request by a few hundred
-	 * milliseconds and, if it said so, show the clamp notice permanently.
-	 *
-	 * <p>The grace widens the <b>cap</b>, not the disclosure: a request inside it is
-	 * answered over exactly the window it asked for and reports no clamp, and a
-	 * request outside it is narrowed and reports one. Nothing is ever narrowed
-	 * quietly, which is the failure mode ADR-0015 rejects. The cost is that the
-	 * widest window this will actually aggregate is 30 days plus a minute.
-	 */
-	private static final Duration CLAMP_GRACE = Duration.ofMinutes(1);
-
 	/** One Transaction Group's duration statistics over the resolved window. */
 	public record TransactionGroup(long projectId, String name, String op, long count, double totalMs, double avgMs,
 			double maxMs, double p50Ms, double p95Ms, double p99Ms) {
@@ -92,9 +76,12 @@ public class TransactionGroupController {
 	}
 
 	@GetMapping("/transaction-groups")
-	public Leaderboard leaderboard(@RequestParam(required = false) List<Long> project,
+	public ResponseEntity<?> leaderboard(@RequestParam(required = false) List<Long> project,
 			@RequestParam(required = false) List<String> environment, @RequestParam(required = false) Instant from,
 			@RequestParam(required = false) Instant to) {
+		if (from != null && to != null && !from.isBefore(to)) {
+			return ResponseEntity.badRequest().body(Map.of("detail", "from must be before to"));
+		}
 
 		Window window = Window.resolve(from, to);
 		SearchQuery search = buildLeaderboardQuery(project, environment, window.from(), window.to());
@@ -109,7 +96,7 @@ public class TransactionGroupController {
 					p[0], p[1], p[2]);
 		}).list();
 
-		return new Leaderboard(window.from(), window.to(), window.clamped(), groups);
+		return ResponseEntity.ok(new Leaderboard(window.from(), window.to(), window.clamped(), groups));
 	}
 
 	/**
@@ -122,7 +109,7 @@ public class TransactionGroupController {
 		static Window resolve(Instant from, Instant to) {
 			Instant upper = to != null ? to : Instant.now();
 			Instant earliest = upper.minus(MAX_WINDOW);
-			if (from != null && !from.isBefore(earliest.minus(CLAMP_GRACE))) {
+			if (from != null && !from.isBefore(earliest)) {
 				return new Window(from, upper, false);
 			}
 			return new Window(earliest, upper, true);
