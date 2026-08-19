@@ -61,6 +61,9 @@ export function transactionGroupParams(filters: TransactionGroupFilters): QueryP
   const params: QueryParams = {};
   if (filters.project?.length) params['project'] = filters.project;
   if (filters.environment?.length) params['environment'] = filters.environment;
+  if (filters.release) params['release'] = filters.release;
+  if (filters.query) params['query'] = filters.query;
+  if (filters.sort) params['sort'] = filters.sort;
   if (filters.from) params['from'] = filters.from;
   return params;
 }

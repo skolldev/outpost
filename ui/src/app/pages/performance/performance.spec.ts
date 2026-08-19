@@ -2,11 +2,12 @@ import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { render, screen, waitFor, within } from '@testing-library/angular';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../mocks/node';
 import { GlobalFilters } from '../../core/filters';
-import { Project, TransactionGroup, TransactionGroupPage } from '../../core/models';
+import { Project, Release, TransactionGroup, TransactionGroupPage } from '../../core/models';
 import { PerformancePage } from './performance';
 
 const BASE = '*/api/internal';
@@ -18,6 +19,33 @@ const PROJECTS: Project[] = [
     name: 'shop-backend',
     platform: 'java',
     created_at: '2026-06-01T00:00:00Z',
+  },
+];
+
+const SECOND_PROJECT: Project = {
+  id: 2,
+  slug: 'shop-frontend',
+  name: 'shop-frontend',
+  platform: 'javascript',
+  created_at: '2026-06-01T00:00:00Z',
+};
+
+const RELEASES: Release[] = [
+  {
+    id: 1,
+    version: 'shop@2.0.0',
+    created_at: '2026-08-01T00:00:00Z',
+    bundle_count: 0,
+    artifact_count: 0,
+    issue_count: 0,
+  },
+  {
+    id: 2,
+    version: 'shop@1.0.0',
+    created_at: '2026-07-01T00:00:00Z',
+    bundle_count: 0,
+    artifact_count: 0,
+    issue_count: 0,
   },
 ];
 
@@ -65,18 +93,23 @@ function page(
   };
 }
 
-function fakeFilters(from?: string): GlobalFilters {
+function fakeFilters(from?: string, project: number[] = []): GlobalFilters {
   return {
-    project: signal<number[]>([]),
+    project: signal<number[]>(project),
     environments: signal<string[]>([]),
     from: signal<string | undefined>(from),
   } as unknown as GlobalFilters;
 }
 
-async function renderPerformance(filters: GlobalFilters = fakeFilters()) {
-  // The constructor also loads projects for the legend; without a handler that
-  // fetch rejects and fails assertions that have nothing to do with it.
-  server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)));
+async function renderPerformance(
+  filters: GlobalFilters = fakeFilters(),
+  projects: Project[] = PROJECTS,
+) {
+  // The constructor also loads projects for the legend, and the Releases of the one
+  // Project the Release filter resolves to; without handlers those fetches reject and
+  // fail assertions that have nothing to do with them.
+  server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(projects)));
+  server.use(http.get(`${BASE}/releases`, () => HttpResponse.json(RELEASES)));
   return render(PerformancePage, {
     providers: [
       provideHttpClient(),
@@ -84,6 +117,18 @@ async function renderPerformance(filters: GlobalFilters = fakeFilters()) {
       { provide: GlobalFilters, useValue: filters },
     ],
   });
+}
+
+/** Records the value of one query param on every leaderboard request the page issues. */
+function recordParam(param: string, body: TransactionGroupPage): (string | null)[] {
+  const seen: (string | null)[] = [];
+  server.use(
+    http.get(`${BASE}/transaction-groups`, ({ request }) => {
+      seen.push(new URL(request.url).searchParams.get(param));
+      return HttpResponse.json(body);
+    }),
+  );
+  return seen;
 }
 
 describe('PerformancePage', () => {
@@ -231,6 +276,78 @@ describe('PerformancePage', () => {
 
     await screen.findByText('GET /api/checkout/{id}');
     expect(screen.queryByText(/Showing the top/)).not.toBeInTheDocument();
+  });
+
+  it('ranks by total time until asked for another ranking', async () => {
+    const seen = recordParam('sort', page([CHECKOUT]));
+    await renderPerformance();
+    const user = userEvent.setup();
+    await screen.findByText('GET /api/checkout/{id}');
+    expect(seen).toEqual(['total_ms']);
+
+    await user.selectOptions(screen.getByLabelText('Sort Transaction Groups'), 'p95');
+
+    await waitFor(() => expect(seen).toContain('p95'));
+  });
+
+  /**
+   * Every ranking the control offers is one the server accepts. The values are its
+   * whitelist — it rejects anything else outright rather than falling back to the
+   * default — so an option added to the page without its counterpart on the server
+   * would produce a 400 rather than a differently sorted list.
+   */
+  it('asks for every ranking it offers', async () => {
+    const seen = recordParam('sort', page([CHECKOUT]));
+    await renderPerformance();
+    const user = userEvent.setup();
+    await screen.findByText('GET /api/checkout/{id}');
+    const sort = screen.getByLabelText('Sort Transaction Groups');
+
+    for (const value of ['p95', 'p50', 'count', 'total_ms']) {
+      await user.selectOptions(sort, value);
+      await waitFor(() => expect(seen).toContain(value));
+    }
+  });
+
+  it('debounces the search box into the request', async () => {
+    const seen = recordParam('query', page([CHECKOUT]));
+    await renderPerformance();
+    const user = userEvent.setup();
+    await screen.findByText('GET /api/checkout/{id}');
+
+    await user.type(screen.getByPlaceholderText(/search by transaction name/i), 'cart');
+
+    await waitFor(() => expect(seen).toContain('cart'));
+    // Debounced: the intermediate keystrokes must not each fire a request.
+    expect(seen.filter((q) => q && q !== 'cart' && 'cart'.startsWith(q))).toHaveLength(0);
+  });
+
+  it('narrows to a Release when one is chosen', async () => {
+    const seen = recordParam('release', page([CHECKOUT]));
+    await renderPerformance();
+    const user = userEvent.setup();
+    await screen.findByText('GET /api/checkout/{id}');
+    expect(seen).toEqual([null]);
+
+    // The options come from the Project's own Releases, a second request behind the list.
+    await screen.findByRole('option', { name: 'shop@2.0.0' });
+    await user.selectOptions(screen.getByLabelText('Filter by Release'), 'shop@2.0.0');
+
+    await waitFor(() => expect(seen).toContain('shop@2.0.0'));
+  });
+
+  /**
+   * A version belongs to one Project, so there is no honest list to offer across
+   * several. The control stays on screen and says why, rather than disappearing and
+   * leaving the user to wonder where the Release filter went.
+   */
+  it('cannot filter by Release while the view spans more than one Project', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
+    await renderPerformance(fakeFilters(undefined, [1, 2]), [...PROJECTS, SECOND_PROJECT]);
+
+    await screen.findByText('GET /api/checkout/{id}');
+    expect(screen.getByLabelText('Filter by Release')).toBeDisabled();
+    expect(screen.getByText(/Select a single Project to filter by Release/)).toBeInTheDocument();
   });
 
   it('carries the global time-range filter into the request', async () => {

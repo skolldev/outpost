@@ -4,6 +4,8 @@ import java.sql.Array;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -16,7 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * The Performance leaderboard: {@code txn} aggregated into Transaction Groups —
  * the recurring activity that Transactions sharing a (Project, name, op) are
- * instances of — ranked by the total time each one accounts for.
+ * instances of — ranked by the total time each one accounts for, or by whichever
+ * of {@link #SORTS} the request asks for.
  *
  * <p>Session-authenticated with no Admin restriction: Members inspect telemetry.
  *
@@ -65,6 +68,42 @@ public class TransactionGroupController {
 	 */
 	private static final Duration MAX_WINDOW = Duration.ofDays(30);
 
+	/**
+	 * The sorts this endpoint answers, each mapped to the expression it orders by.
+	 *
+	 * <p><b>This map is the whitelist, and it is the reason no user input reaches the
+	 * SQL.</b> The request carries a key, never an expression: an unrecognised key is
+	 * rejected by {@link #leaderboard} before a statement is built, and
+	 * {@link #buildLeaderboardQuery} throws rather than interpolating one it does not
+	 * know — so a future caller that forgets the check cannot turn this into an
+	 * injection point either. Every value here is a literal written in this file.
+	 *
+	 * <p>All four sort descending, because every one of them is a "worst first"
+	 * question: which group costs the most in aggregate, which has the worst tail,
+	 * which is uniformly slowest, which is called most. An ascending order would rank
+	 * by "least interesting", which nothing asks for.
+	 *
+	 * <p>The percentile sorts subscript the array the ordered-set aggregate already
+	 * produced ({@code [1]} is p50, {@code [2]} p95) rather than computing a second
+	 * one. That is also why the statement wraps the aggregate in a subquery: an
+	 * {@code ORDER BY} in the same query level cannot see an output alias inside a
+	 * larger expression, so {@code percentiles[2]} there would be read as an input
+	 * column and fail.
+	 */
+	private static final Map<String, String> SORTS = sorts();
+
+	/** What {@code sort} means when a request does not say — ADR-0015's "where fixing something pays off most". */
+	private static final String DEFAULT_SORT = "total_ms";
+
+	private static Map<String, String> sorts() {
+		Map<String, String> sorts = new LinkedHashMap<>();
+		sorts.put("total_ms", "total_ms");
+		sorts.put("p95", "percentiles[2]");
+		sorts.put("p50", "percentiles[1]");
+		sorts.put("count", "txn_count");
+		return Collections.unmodifiableMap(sorts);
+	}
+
 	/** One Transaction Group's duration statistics over the resolved window. */
 	public record TransactionGroup(long projectId, String name, String op, long count, double totalMs, double avgMs,
 			double maxMs, double p50Ms, double p95Ms, double p99Ms) {
@@ -104,14 +143,23 @@ public class TransactionGroupController {
 
 	@GetMapping("/transaction-groups")
 	public ResponseEntity<?> leaderboard(@RequestParam(required = false) List<Long> project,
-			@RequestParam(required = false) List<String> environment, @RequestParam(required = false) Instant from,
-			@RequestParam(required = false) Instant to) {
+			@RequestParam(required = false) List<String> environment, @RequestParam(required = false) String release,
+			@RequestParam(required = false) String query, @RequestParam(defaultValue = DEFAULT_SORT) String sort,
+			@RequestParam(required = false) Instant from, @RequestParam(required = false) Instant to) {
 		if (from != null && to != null && !from.isBefore(to)) {
 			return ResponseEntity.badRequest().body(Map.of("detail", "from must be before to"));
 		}
+		// Rejected, never coerced to the default: a client asking for a ranking this
+		// endpoint cannot produce would otherwise be handed a different one silently, and
+		// read it as the one it asked for.
+		if (!SORTS.containsKey(sort)) {
+			return ResponseEntity.badRequest()
+				.body(Map.of("detail", "sort must be one of " + String.join(", ", SORTS.keySet())));
+		}
 
 		Window window = Window.resolve(from, to);
-		SearchQuery search = buildLeaderboardQuery(project, environment, window.from(), window.to());
+		SearchQuery search = buildLeaderboardQuery(project, environment, release, query, sort, window.from(),
+				window.to());
 
 		List<TransactionGroup> groups = jdbc.sql(search.sql()).params(search.params()).query((rs, i) -> {
 			// percentile_cont(ARRAY[…]) returns one array per group, in the order the
@@ -130,7 +178,8 @@ public class TransactionGroupController {
 			groups = groups.subList(0, MAX_GROUPS);
 		}
 
-		SearchQuery cardinality = buildDistinctGroupQuery(project, environment, window.from(), window.to());
+		SearchQuery cardinality = buildDistinctGroupQuery(project, environment, release, query, window.from(),
+				window.to());
 		long distinctGroups = jdbc.sql(cardinality.sql()).params(cardinality.params()).query(Long.class).single();
 
 		return ResponseEntity
@@ -180,10 +229,29 @@ public class TransactionGroupController {
 	 * whose <em>membership</em> changes on refresh, and the default view spans every
 	 * Project, so leaving {@code project_id} out would let two Projects' identically
 	 * named groups trade the last row.
+	 *
+	 * <p><b>The aggregate is wrapped in a subquery so the ranking can name a
+	 * percentile.</b> {@code ORDER BY} at the same query level resolves an output
+	 * alias only when it stands alone, so {@code percentiles[2]} beside the aggregate
+	 * would be read as an input column and fail — and repeating the ordered-set
+	 * aggregate in the {@code ORDER BY} instead would sort every group's durations a
+	 * second time for a number the first sort already produced. The wrapper costs a
+	 * subquery-scan node and nothing else: the grouping below it is unchanged, and the
+	 * ordering above it is a top-N over at most {@link #MAX_GROUPS} + 1 rows.
+	 *
+	 * @param sort a key of {@link #SORTS}; anything else throws rather than reaching
+	 * the statement, so the ordering can never be interpolated from a request
 	 */
-	static SearchQuery buildLeaderboardQuery(List<Long> project, List<String> environment, Instant from, Instant to) {
+	static SearchQuery buildLeaderboardQuery(List<Long> project, List<String> environment, String release, String query,
+			String sort, Instant from, Instant to) {
+
+		String order = SORTS.get(sort);
+		if (order == null) {
+			throw new IllegalArgumentException("unknown sort: " + sort);
+		}
 
 		StringBuilder sql = new StringBuilder("""
+				SELECT * FROM (
 				SELECT project_id, name, op,
 				       count(*) AS txn_count,
 				       sum(duration_ms) AS total_ms,
@@ -194,7 +262,7 @@ public class TransactionGroupController {
 				FROM txn WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
-		appendFilters(sql, project, environment, from, to, params);
+		appendFilters(sql, project, environment, release, query, from, to, params);
 
 		// One more than MAX_GROUPS: the extra row is never returned, it only says whether
 		// there was anything past the limit. The LIMIT with no cursor beside it is
@@ -204,9 +272,10 @@ public class TransactionGroupController {
 
 				GROUP BY project_id, name, op
 				HAVING count(*) >= %d
-				ORDER BY total_ms DESC, project_id, name, op
+				) g
+				ORDER BY %s DESC, project_id, name, op
 				LIMIT %d
-				""".formatted(MIN_SAMPLES, MAX_GROUPS + 1));
+				""".formatted(MIN_SAMPLES, order, MAX_GROUPS + 1));
 		return new SearchQuery(sql.toString(), params);
 	}
 
@@ -226,13 +295,14 @@ public class TransactionGroupController {
 	 * this one is the cheaper of them, because it reads no {@code duration_ms} and
 	 * builds no per-group sort.
 	 */
-	static SearchQuery buildDistinctGroupQuery(List<Long> project, List<String> environment, Instant from, Instant to) {
+	static SearchQuery buildDistinctGroupQuery(List<Long> project, List<String> environment, String release,
+			String query, Instant from, Instant to) {
 
 		StringBuilder inner = new StringBuilder("""
 				SELECT project_id, name, op FROM txn WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
-		appendFilters(inner, project, environment, from, to, params);
+		appendFilters(inner, project, environment, release, query, from, to, params);
 		inner.append("\nGROUP BY project_id, name, op");
 
 		return new SearchQuery("SELECT count(*) FROM (%s) g".formatted(inner), params);
@@ -246,11 +316,26 @@ public class TransactionGroupController {
 	 * <p>The window is closed on the left and open on the right, matching the
 	 * convention {@code LogController} settled on: a Transaction landing exactly on a
 	 * boundary must belong to one side of it, not both.
+	 *
+	 * <p>{@code release} matches exactly and {@code query} matches a case-insensitive
+	 * substring of the name, as they do on the Traces page — the same two filters over
+	 * the same table should not mean two different things depending on which page
+	 * asked. Both narrow the Transactions that are aggregated; neither joins the
+	 * grouping key, so a Transaction Group spanning three Releases stays one group and
+	 * a Release filter reports what that group cost on that version.
 	 */
-	private static void appendFilters(StringBuilder sql, List<Long> project, List<String> environment, Instant from,
-			Instant to, List<Object> params) {
+	private static void appendFilters(StringBuilder sql, List<Long> project, List<String> environment, String release,
+			String query, Instant from, Instant to, List<Object> params) {
 		QuerySupport.appendInClause(sql, "project_id", project, params);
 		QuerySupport.appendInClause(sql, "environment", environment, params);
+		if (release != null && !release.isBlank()) {
+			sql.append(" AND release = ?");
+			params.add(release);
+		}
+		if (query != null && !query.isBlank()) {
+			sql.append(" AND name ILIKE ?");
+			params.add("%" + query + "%");
+		}
 		sql.append(" AND start_ts >= ?");
 		params.add(java.sql.Timestamp.from(from));
 		sql.append(" AND start_ts < ?");
@@ -260,6 +345,15 @@ public class TransactionGroupController {
 	/** The window the endpoint would answer this request over, for the guards. */
 	static Window window(Instant from, Instant to) {
 		return Window.resolve(from, to);
+	}
+
+	/**
+	 * Every sort the endpoint accepts, for the guards — read from the whitelist rather
+	 * than restated, so a sort added here is a sort the plan guards cover on the same
+	 * commit rather than one nobody explained.
+	 */
+	static List<String> sortKeys() {
+		return List.copyOf(SORTS.keySet());
 	}
 
 }
