@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the Performance leaderboard (#159). Baselines measured
+ * Performance guards for the Performance leaderboard (#159, #160). Baselines measured
  * 2026-08-19 against {@link TelemetrySeeder.Scale#GUARD}: 8 004 transactions in 433
  * Transaction Groups over nine weekly partitions, where a full scan of {@code txn}
  * costs 2 715 blocks.
@@ -32,20 +32,34 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * {@code work_mem} that sort goes to disk. {@code V15} exists to make the sort
  * unnecessary, and the numbers that decided its column order are in the migration.
  *
+ * <p>One request runs <b>two</b> statements over the same window: the ranked list, and
+ * the distinct-Transaction-Group count the cardinality warning reads (#160). They are
+ * separate because the count has to be taken before the minimum-sample floor — the
+ * Project it warns about is the one whose groups the floor removes — and folding that
+ * into one statement means a twice-referenced CTE spooling every group into a
+ * tuplestore, which spills for the same reason the sort {@code V15} removed did. The
+ * page's cost is therefore the sum of the two columns below, and guarding only the
+ * first would understate it by nearly half.
+ *
  * <pre>
- *   shape                     blocks
- *   30d (the cap)                673    index-only, no sequential scan
- *   14d (the product default)    448
- *   30d, one project             313
- *   30d, one environment         613
- *   30d, project + environment   313
- *   1h                           147
+ *   shape                       list   count
+ *   30d (the cap)                613     491    index-only, no sequential scan
+ *   14d (the product default)    458     367
+ *   30d, one project             333     267
+ *   30d, one environment         613     491
+ *   30d, project + environment   333     267
+ *   1h                           147     111
  * </pre>
+ *
+ * <p>The count is cheaper than the list on every shape without being cheap: it reads no
+ * {@code duration_ms} and builds no per-group tuplesort, but it still walks the same
+ * span of {@code idx_txn_performance}, and nothing about a leaderboard's cost is
+ * bounded by how few groups come back.
  *
  * <p><b>What each assertion here can and cannot catch.</b> Dropping {@code V15} is
  * caught twice over: the planner falls straight back to sequentially scanning every
  * in-window partition, which {@link #noShapeSequentiallyScansTheTransactionTable}
- * rejects, and the 30-day shape goes 673 -> 4 626 blocks, which is over the ceiling.
+ * rejects, and the 30-day shape goes 613 -> 4 626 blocks, which is over the ceiling.
  *
  * <p><b>The spill assertion is the weak one, and deliberately kept anyway.</b> At
  * 8 004 rows the input sort fits in {@code work_mem} whether or not {@code V15} is
@@ -65,11 +79,17 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class TransactionGroupPerformanceTest {
 
 	/**
-	 * The 30-day cap is the widest window the endpoint answers, and it measured 673
-	 * blocks. 2 000 is 3x that rather than the standard 10x, because 10x would be
-	 * 6 730 — above the 2 715 a full scan of {@code txn} costs, therefore unable to
-	 * fail. It still sits well under the 4 626 the same request costs with
-	 * {@code V15} dropped, which is the regression it is here to catch.
+	 * The 30-day cap is the widest window the endpoint answers, and it measured 613
+	 * blocks for the list and 491 for the count. 2 000 is ~3x that rather than the
+	 * standard 10x, because 10x would be above the 2 715 a full scan of {@code txn}
+	 * costs and therefore unable to fail. It still sits well under the 4 626 the same
+	 * request costs with {@code V15} dropped, which is the regression it is here to
+	 * catch.
+	 *
+	 * <p>One ceiling covers both statements rather than a tighter one each: they read
+	 * the same span of the same index for the same reasons, so a regression that lifts
+	 * one lifts the other, and a second constant would only be a second thing to
+	 * re-calibrate.
 	 */
 	private static final long MAX_LEADERBOARD_BLOCKS = 2_000;
 
@@ -180,9 +200,52 @@ class TransactionGroupPerformanceTest {
 		}
 	}
 
+	/**
+	 * The floor does not gut the fixture, and the fixture does exercise truncation.
+	 *
+	 * <p>Both halves matter to every other assertion in this class. A guard whose
+	 * groups had fallen below {@link TransactionGroupController} 's minimum sample
+	 * count would be explaining a query that returns nothing — and "reads no blocks"
+	 * passes a ceiling for the wrong reason. A guard that never filled the limit would
+	 * be explaining a plan no busy Installation gets.
+	 */
+	@Test
+	void theFixtureStillFillsTheLimitOnceTheSampleFloorApplies() {
+		Shape widest = uiShapes().get(0);
+
+		int ranked = leaderboard(widest).rows(jdbc).size();
+		long distinct = (long) cardinality(widest).rows(jdbc).get(0).get("count");
+
+		// The statement stops at MAX_GROUPS + 1, so "more than 100" is the only way it can
+		// say "there was more past the limit" — this asserts the list came back full.
+		assertThat(ranked).as("ranked groups at the 30-day cap — the floor left too few to certify a plan")
+			.isGreaterThan(100);
+		assertThat(distinct).as("distinct Transaction Groups in the window").isGreaterThan(100);
+	}
+
+	/** The cardinality count reads the same window, and pays the same guards for it. */
+	@Test
+	void theCardinalityCountIsGuardedLikeTheListItAnnotates() {
+		for (Shape shape : uiShapes()) {
+			PlanFacts facts = cardinality(shape).explain(jdbc);
+			String what = "cardinality — " + shape.name();
+
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+			QueryGuard.assertUnderCeiling(facts, MAX_LEADERBOARD_BLOCKS, what);
+			QueryGuard.assertNoTempFiles(facts, what);
+			assertThat(facts.correlatedSubplans()).as("subplans re-run per output row by %s%n%s", what, facts.plan())
+				.isEmpty();
+		}
+	}
+
 	private QueryPlans.Built leaderboard(Shape shape) {
 		TransactionGroupController.Window window = window(shape);
 		return QueryPlans.transactionGroups(shape.project(), shape.environment(), window.from(), window.to());
+	}
+
+	private QueryPlans.Built cardinality(Shape shape) {
+		TransactionGroupController.Window window = window(shape);
+		return QueryPlans.transactionGroupCardinality(shape.project(), shape.environment(), window.from(), window.to());
 	}
 
 	/** Resolved by the controller, so the guard explains the window the endpoint would run. */

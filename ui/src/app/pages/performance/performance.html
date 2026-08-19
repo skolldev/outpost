@@ -22,6 +22,52 @@
   </p>
 }
 
+<!--
+  Outside the error/empty/table branch below on purpose: the Project this warns about
+  is the one whose Transaction Groups are all too small to rank, so the case where the
+  list comes back empty is exactly the case where the explanation is needed most.
+-->
+@if (highCardinality()) {
+  <div
+    hlmAlert
+    variant="destructive"
+    class="mb-4"
+    [style.background-color]="'var(--level-warn-bg)'"
+    [style.border-color]="'color-mix(in oklch, var(--level-warn) 40%, transparent)'"
+    [style.color]="'var(--level-warn)'"
+  >
+    <p hlmAlertTitle>
+      {{ formatCount(distinctGroups()) }} distinct Transaction Groups in this range.
+    </p>
+    <p hlmAlertDescription>
+      That is far more recurring activities than an application normally has, and the usual cause is
+      unparameterized URLs: an SDK routing integration that reports
+      <code class="rounded bg-muted px-1">GET /api/orders/12345</code> rather than
+      <!-- Escaped: a bare "{" opens an Angular control-flow block. -->
+      <code class="rounded bg-muted px-1">GET /api/orders/&#123;id&#125;</code> produces one
+      Transaction Group per request. Outpost stores transaction names exactly as your SDK sends them
+      and never rewrites them, so the fix belongs in the SDK's routing integration.
+    </p>
+  </div>
+}
+
+<!--
+  The count is the rows actually rendered, and there is no "of N" beside it. The server
+  caps the list, so hardcoding its cap here would be a number that drifts the moment the
+  cap moves; and `distinct_groups` is not the denominator either — it is taken before the
+  minimum-sample floor, so "top 100 of 412,903" would name a total this list was never cut
+  from. That count belongs to the cardinality warning, where it is the whole point.
+-->
+@if (truncated()) {
+  <p
+    role="status"
+    class="mb-4 rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
+  >
+    Showing the top {{ formatCount(groups().length) }} Transaction Groups by total time. There is no
+    next page — narrow by Project, environment or range to reach the rest.
+  </p>
+}
+
 @if (error()) {
   <div hlmAlert variant="destructive" role="alert" class="mx-auto w-full max-w-xl">
     <p hlmAlertTitle>Performance unavailable</p>
@@ -36,7 +82,8 @@
           class="rounded bg-muted px-1"
           >tracesSampleRate: 1.0</code
         >) and check the Project, environment and time range above — snippets under Settings →
-        Projects.
+        Projects. Transaction Groups with too few Transactions to have a percentile are not ranked,
+        so a Project that has only just started reporting may show nothing yet.
       </p>
     </div>
   </div>

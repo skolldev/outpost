@@ -47,12 +47,21 @@ const NO_OP: TransactionGroup = {
   p99_ms: 59,
 };
 
-function page(groups: TransactionGroup[], rangeClamped = false): TransactionGroupPage {
+/** The cardinality threshold the page warns above, restated so a change to it fails here. */
+const HIGH_CARDINALITY_GROUPS = 5_000;
+
+function page(
+  groups: TransactionGroup[],
+  overrides: Partial<TransactionGroupPage> = {},
+): TransactionGroupPage {
   return {
     from: '2026-07-20T00:00:00Z',
     to: '2026-08-19T00:00:00Z',
-    range_clamped: rangeClamped,
+    range_clamped: false,
+    distinct_groups: groups.length,
+    truncated: false,
     groups,
+    ...overrides,
   };
 }
 
@@ -138,7 +147,9 @@ describe('PerformancePage', () => {
 
   it('says so when the server clamped the range to 30 days', async () => {
     server.use(
-      http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT], true))),
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json(page([CHECKOUT], { range_clamped: true })),
+      ),
     );
     await renderPerformance();
 
@@ -147,13 +158,79 @@ describe('PerformancePage', () => {
   });
 
   it('raises no clamp notice when the window was answered as asked', async () => {
-    server.use(
-      http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT], false))),
-    );
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
     await renderPerformance();
 
     await screen.findByText('GET /api/checkout/{id}');
     expect(screen.queryByText(/Showing the last 30 days/i)).not.toBeInTheDocument();
+  });
+
+  it('warns about name cardinality above the threshold, naming unparameterized URLs', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json(page([CHECKOUT], { distinct_groups: HIGH_CARDINALITY_GROUPS + 1 })),
+      ),
+    );
+    await renderPerformance();
+
+    expect(await screen.findByText(/5,001 distinct Transaction Groups/)).toBeInTheDocument();
+    // The count alone is not actionable; the cause and where to fix it are the point.
+    expect(screen.getByText(/unparameterized URLs/)).toBeInTheDocument();
+    expect(screen.getByText(/routing integration/)).toBeInTheDocument();
+  });
+
+  it('raises no cardinality warning for a normally instrumented Project', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json(page([CHECKOUT], { distinct_groups: HIGH_CARDINALITY_GROUPS })),
+      ),
+    );
+    await renderPerformance();
+
+    await screen.findByText('GET /api/checkout/{id}');
+    expect(screen.queryByText(/distinct Transaction Groups/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The warning outlives the table. A Project emitting a Transaction Group per URL has
+   * groups of one or two Transactions, which the sample floor excludes — so the list
+   * comes back empty in exactly the case the explanation is needed.
+   */
+  it('still warns about cardinality when every group fell below the sample floor', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json(page([], { distinct_groups: 412_903 })),
+      ),
+    );
+    await renderPerformance();
+
+    expect(await screen.findByText(/412,903 distinct Transaction Groups/)).toBeInTheDocument();
+    expect(screen.getByText(/No Transactions match the current filters/)).toBeInTheDocument();
+  });
+
+  /**
+   * The notice counts the rows it is standing next to rather than naming the server's
+   * cap, which is not on the wire and would drift silently the day the cap moved. Two
+   * groups here, so it says two — no real response pairs `truncated` with a short list.
+   */
+  it('says the list was cut, and how much of it is on screen', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups`, () =>
+        HttpResponse.json(page([CHECKOUT, NO_OP], { truncated: true })),
+      ),
+    );
+    await renderPerformance();
+
+    expect(await screen.findByText(/Showing the top 2 Transaction Groups/)).toBeInTheDocument();
+    expect(screen.getByText(/no next page/)).toBeInTheDocument();
+  });
+
+  it('raises no truncation notice when the whole list fits', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
+    await renderPerformance();
+
+    await screen.findByText('GET /api/checkout/{id}');
+    expect(screen.queryByText(/Showing the top/)).not.toBeInTheDocument();
   });
 
   it('carries the global time-range filter into the request', async () => {

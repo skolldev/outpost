@@ -28,10 +28,12 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * {@code GET /transaction-groups} end to end (#159): the Performance leaderboard's
- * wire shape, its statistics against a hand-computed fixture, and the two rules
- * the client cannot enforce for itself — that (Project, name, op) is the whole
- * grouping key, and that the window is capped at 30 days and says so when it bites.
+ * {@code GET /transaction-groups} end to end (#159, #160): the Performance
+ * leaderboard's wire shape, its statistics against a hand-computed fixture, and the
+ * rules the client cannot enforce for itself — that (Project, name, op) is the whole
+ * grouping key, that the window is capped at 30 days and says so when it bites, and
+ * that a group too small to have a percentile is excluded from the ranking while
+ * still being counted in the cardinality the page warns on.
  *
  * <p>The durations are chosen so every percentile is exact rather than
  * approximately right. {@code percentile_cont} interpolates: over ten values
@@ -48,6 +50,13 @@ class TransactionGroupIntegrationTest {
 	private static final String GROUPS = "/api/internal/transaction-groups";
 
 	private static final String CHECKOUT = "GET /api/checkout/{id}";
+
+	/**
+	 * The controller's minimum-sample floor, restated rather than imported: it is part
+	 * of the contract this test speaks for, and a test that read the constant would
+	 * still pass if someone changed it to 1.
+	 */
+	private static final int SAMPLE_FLOOR = 5;
 
 	/** Percentiles are interpolated in {@code double}, so an exact equality would flake on the last bit. */
 	private static final org.assertj.core.data.Offset<Double> TOLERANCE = within(1e-6);
@@ -91,22 +100,32 @@ class TransactionGroupIntegrationTest {
 			.single();
 		partitions.ensurePartition(PartitionManager.TXN, ANCHOR);
 
+		// Every group meant to be ranked carries at least SAMPLE_FLOOR Transactions;
+		// anything smaller is excluded, and a fixture that ignored that would be testing
+		// the floor rather than what it was written to test.
+
 		// Group A — ten Transactions, 100…1000 ms. Every statistic below is read off
 		// this list by hand: total 5500, avg 550, max 1000, p50 550, p95 955, p99 991.
 		for (int i = 1; i <= 10; i++) {
 			seed(project, CHECKOUT, "http.server", "production", i * 100.0);
 		}
 		// Group B — the same name under a different op. Separate group, by the key.
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
 			seed(project, CHECKOUT, "navigation", "production", 50.0);
 		}
 		// Group C — no op at all, which is a legitimate group rather than an absence.
-		seed(project, "GET /api/cart", null, "production", 10.0);
-		seed(project, "GET /api/cart", null, "production", 20.0);
-		seed(project, "GET /api/cart", null, "production", 30.0);
+		for (int i = 1; i <= SAMPLE_FLOOR; i++) {
+			seed(project, "GET /api/cart", null, "production", i * 10.0);
+		}
+		// Group D — one Transaction, half a minute long. Its total, max and every
+		// percentile would top all three of the above, and none of them is a statistic:
+		// they are one duration wearing different labels.
+		seed(project, "GET /api/orders/98217", "http.server", "production", 30_000.0);
 		// Elsewhere: another Project, and another Environment Name in this one.
-		seed(otherProject, "GET /admin/users", "http.server", "production", 4000.0);
-		seed(project, "GET /api/staging-only", "http.server", "staging", 3000.0);
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seed(otherProject, "GET /admin/users", "http.server", "production", 4000.0);
+			seed(project, "GET /api/staging-only", "http.server", "staging", 3000.0);
+		}
 
 		adminCookie = login("admin@test.local", "test-password");
 	}
@@ -149,7 +168,47 @@ class TransactionGroupIntegrationTest {
 	void groupsWithNoOpAreReturned() {
 		Map<String, Object> cart = groups("&project=" + project + "&environment=production").get(2);
 
-		assertThat(cart).containsEntry("op", null).containsEntry("count", 3).containsEntry("total_ms", 60.0);
+		assertThat(cart).containsEntry("op", null).containsEntry("count", 5).containsEntry("total_ms", 150.0);
+	}
+
+	/**
+	 * The sample floor, at the point where it matters most: Group D's single 30-second
+	 * Transaction beats every other group in the fixture on total time, on max, and on
+	 * all three percentiles, so if it can be ranked at all it is ranked first.
+	 */
+	@Test
+	void aGroupBelowTheSampleFloorCannotOutrankRealOnesHoweverExtremeItIs() {
+		List<String> ranked = names(leaderboard("&project=" + project + "&environment=production"));
+
+		assertThat(ranked).doesNotContain("GET /api/orders/98217").startsWith(CHECKOUT);
+	}
+
+	/** And a group that reaches the floor exactly is ranked — the boundary is inclusive. */
+	@Test
+	void aGroupThatReachesTheFloorExactlyIsRanked() {
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seed(project, "GET /api/exactly-at-the-floor", "http.server", "production", 100.0);
+		}
+
+		assertThat(groups("&project=" + project + "&environment=production")).anySatisfy(
+				group -> assertThat(group).containsEntry("name", "GET /api/exactly-at-the-floor")
+					.containsEntry("count", SAMPLE_FLOOR));
+	}
+
+	/**
+	 * The cardinality count is taken <em>before</em> the floor, and that is the whole
+	 * reason it is useful. The Project this warning exists for emits a Transaction
+	 * Group per unparameterized URL, each holding one or two Transactions — precisely
+	 * what the floor removes — so a count taken after it would come back near zero on
+	 * the only data that needs to be reported.
+	 */
+	@Test
+	void theDistinctGroupCountIncludesGroupsTheFloorExcluded() {
+		Map<String, Object> body = leaderboard("&project=" + project + "&environment=production");
+
+		// A, B, C and the one-sample D. Three are ranked; all four are counted.
+		assertThat(body).containsEntry("distinct_groups", 4);
+		assertThat(names(body)).hasSize(3);
 	}
 
 	@Test
@@ -183,23 +242,22 @@ class TransactionGroupIntegrationTest {
 	void aWindowWiderThanTheCapIsClampedAndExcludesWhatFallsOutsideIt() {
 		Instant old = ANCHOR.minus(60, ChronoUnit.DAYS);
 		partitions.ensurePartition(PartitionManager.TXN, old);
-		jdbc.sql("""
-				INSERT INTO txn (id, project_id, environment, trace_id, span_id, name, op, start_ts, end_ts,
-				                 duration_ms, status)
-				VALUES (?, ?, 'production', 'trace', 'span', 'GET /api/ancient', 'http.server', ?, ?, 9999, 'ok')
-				""")
-			.param(UUID.randomUUID())
-			.param(project)
-			.param(java.sql.Timestamp.from(old))
-			.param(java.sql.Timestamp.from(old.plusMillis(9999)))
-			.update();
+		// Above the sample floor, so the clamp is the only thing that can exclude it.
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seedAt(old, project, "GET /api/ancient", "http.server", "production", 9999.0);
+		}
 
 		Map<String, Object> body = leaderboard("&project=" + project + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS));
 
 		assertThat(body.get("range_clamped")).isEqualTo(true);
 		assertThat(window(body)).isEqualTo(30 * 24 * 60);
-		// 9999 ms would top a total-time ranking if the clamp had not excluded it.
+		// 5 x 9999 ms would top a total-time ranking if the clamp had not excluded it.
 		assertThat(names(body)).doesNotContain("GET /api/ancient");
+		// And the cardinality count is taken over the clamped window too, or it would
+		// warn about names that are not in the list for a reason other than truncation.
+		// Five, not four: with no environment filter the staging group counts, because
+		// environment filters the input and is not part of the grouping key.
+		assertThat(body).containsEntry("distinct_groups", 5);
 	}
 
 	/** Even a small overshoot is clamped: the effective window never exceeds the documented cap. */
@@ -239,18 +297,47 @@ class TransactionGroupIntegrationTest {
 	/**
 	 * The list stops at 100 groups and offers no cursor — an aggregate has no key to
 	 * seek on (ADR-0015), so "there is no next page" is part of the contract rather
-	 * than an omission.
+	 * than an omission. What replaces the cursor is a flag saying the list was cut and
+	 * a count of everything it was cut from, so the user knows they are reading the
+	 * top of a longer list rather than all of it.
 	 */
 	@Test
-	void theListStopsAtOneHundredGroupsAndOffersNoCursor() {
-		for (int i = 0; i < 120; i++) {
-			seed(project, "GET /api/wide/" + i, "http.server", "production", 2000.0);
-		}
+	void theListStopsAtOneHundredGroupsAndSaysItWasCut() {
+		seedWideProject(120);
 
 		Map<String, Object> body = leaderboard("&project=" + project);
 
 		assertThat(names(body)).hasSize(100);
+		assertThat(body).containsEntry("truncated", true);
 		assertThat(body).doesNotContainKey("next_cursor");
+		// 120 wide groups plus the five this Project already had across both environments.
+		assertThat(body).containsEntry("distinct_groups", 125);
+	}
+
+	/** A list that fits raises no truncation notice, so the notice means something. */
+	@Test
+	void aListThatFitsIsNotMarkedTruncated() {
+		Map<String, Object> body = leaderboard("&project=" + project + "&environment=production");
+
+		assertThat(body).containsEntry("truncated", false);
+		assertThat(names(body)).hasSizeLessThan(100);
+	}
+
+	/**
+	 * The boundary the {@code LIMIT MAX_GROUPS + 1} probe decides: exactly 100 ranked
+	 * groups is a complete list, not a cut one. Off by one here means every full page
+	 * tells the user there is more to see when there is not.
+	 */
+	@Test
+	void exactlyOneHundredGroupsIsNotTruncated() {
+		jdbc.sql("DELETE FROM txn").update();
+		seedWideProject(100);
+
+		Map<String, Object> body = leaderboard("&project=" + project);
+
+		assertThat(names(body)).hasSize(100);
+		assertThat(body).containsEntry("truncated", false);
+		assertThat(body).containsEntry("distinct_groups", 100);
 	}
 
 	/** Members inspect telemetry — the Performance view is not Admin-only. */
@@ -272,8 +359,24 @@ class TransactionGroupIntegrationTest {
 
 	// ------------------------------------------------------------------ helpers
 
+	/**
+	 * {@code count} distinct Transaction Groups, each just clearing the sample floor —
+	 * the shape a Project with unparameterized URLs produces, minus the part where its
+	 * groups are too small to rank.
+	 */
+	private void seedWideProject(int count) {
+		for (int i = 0; i < count; i++) {
+			for (int sample = 0; sample < SAMPLE_FLOOR; sample++) {
+				seed(project, "GET /api/wide/" + i, "http.server", "production", 2000.0);
+			}
+		}
+	}
+
 	private void seed(long projectId, String name, String op, String environment, double durationMs) {
-		Instant start = ANCHOR;
+		seedAt(ANCHOR, projectId, name, op, environment, durationMs);
+	}
+
+	private void seedAt(Instant start, long projectId, String name, String op, String environment, double durationMs) {
 		jdbc.sql("""
 				INSERT INTO txn (id, project_id, environment, trace_id, span_id, name, op, start_ts, end_ts,
 				                 duration_ms, status)

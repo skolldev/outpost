@@ -45,6 +45,18 @@ public class TransactionGroupController {
 	private static final int MAX_GROUPS = 100;
 
 	/**
+	 * The fewest Transactions a Transaction Group must contain to be ranked at all.
+	 *
+	 * <p>A percentile over one sample is not a percentile — it is that one duration
+	 * wearing three different labels — so a group with a single 30-second Transaction
+	 * in it reports a p99 of 30 seconds and outranks every real problem on the page.
+	 * Excluded groups are not hidden: they are still counted in
+	 * {@link Leaderboard#distinctGroups()}, which is what the cardinality warning
+	 * reads.
+	 */
+	private static final int MIN_SAMPLES = 5;
+
+	/**
 	 * The widest window this endpoint will aggregate over (ADR-0015). The global
 	 * range filter offers "All time", which yields no {@code from} and therefore no
 	 * {@code start_ts} predicate — and an aggregate with no {@code start_ts}
@@ -59,14 +71,29 @@ public class TransactionGroupController {
 	}
 
 	/**
-	 * The leaderboard plus the window it was actually computed over.
+	 * The leaderboard plus the window it was actually computed over, and the two
+	 * facts the client needs to know what it is <em>not</em> looking at.
 	 *
 	 * <p>The window is echoed because the server may have narrowed it, and
 	 * {@code rangeClamped} says so out loud. Clamping silently was the alternative,
 	 * and it is the shape that produces "the numbers are wrong" reports: the figures
 	 * would quietly describe less time than the filter the user can see.
+	 *
+	 * <p>{@code truncated} says the list was cut at {@link #MAX_GROUPS}, so the user
+	 * knows they are reading the top of a longer list rather than all of it.
+	 *
+	 * @param distinctGroups every distinct (Project, name, op) in the window,
+	 * <b>counted before the sample floor and before the limit</b>. Both exclusions
+	 * are deliberately invisible to it, because this number exists to answer "why
+	 * does my Performance view look like noise" — and the Project that asks is the
+	 * one emitting a Transaction Group per unparameterized URL, whose groups hold one
+	 * or two Transactions each and are therefore exactly what the floor removes.
+	 * Counted after the floor it would come back near zero on the only data that
+	 * needs it, and the warning it feeds would never fire. Names are reported, never
+	 * rewritten (ADR-0014).
 	 */
-	public record Leaderboard(Instant from, Instant to, boolean rangeClamped, List<TransactionGroup> groups) {
+	public record Leaderboard(Instant from, Instant to, boolean rangeClamped, long distinctGroups, boolean truncated,
+			List<TransactionGroup> groups) {
 	}
 
 	private final JdbcClient jdbc;
@@ -96,7 +123,18 @@ public class TransactionGroupController {
 					p[0], p[1], p[2]);
 		}).list();
 
-		return ResponseEntity.ok(new Leaderboard(window.from(), window.to(), window.clamped(), groups));
+		// The query asks for one more group than it will return, so whether the list was
+		// cut is answered by the rows already in hand rather than by counting them again.
+		boolean truncated = groups.size() > MAX_GROUPS;
+		if (truncated) {
+			groups = groups.subList(0, MAX_GROUPS);
+		}
+
+		SearchQuery cardinality = buildDistinctGroupQuery(project, environment, window.from(), window.to());
+		long distinctGroups = jdbc.sql(cardinality.sql()).params(cardinality.params()).query(Long.class).single();
+
+		return ResponseEntity
+			.ok(new Leaderboard(window.from(), window.to(), window.clamped(), distinctGroups, truncated, groups));
 	}
 
 	/**
@@ -130,9 +168,11 @@ public class TransactionGroupController {
 	 * between min and max as the distribution — which is what the percentiles are
 	 * for.
 	 *
-	 * <p>The window is closed on the left and open on the right, matching the
-	 * convention {@code LogController} settled on: a Transaction landing exactly on
-	 * a boundary must belong to one side of it, not both.
+	 * <p><b>The {@code HAVING} runs before the {@code ORDER BY}, so the floor applies
+	 * to every ranking this list can be sorted by</b> — including the percentile
+	 * sorts, where a one-sample group is at its most misleading. Filtering after the
+	 * limit instead would let those groups take slots from real ones and hand back a
+	 * short page.
 	 *
 	 * <p>Ties break on the whole grouping key — (project_id, name, op) — so that
 	 * groups accounting for identical total time do not swap places between two
@@ -154,23 +194,67 @@ public class TransactionGroupController {
 				FROM txn WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
+		appendFilters(sql, project, environment, from, to, params);
 
+		// One more than MAX_GROUPS: the extra row is never returned, it only says whether
+		// there was anything past the limit. The LIMIT with no cursor beside it is
+		// deliberate, not an unfinished pagination — see MAX_GROUPS for why an aggregate
+		// has no key to seek on.
+		sql.append("""
+
+				GROUP BY project_id, name, op
+				HAVING count(*) >= %d
+				ORDER BY total_ms DESC, project_id, name, op
+				LIMIT %d
+				""".formatted(MIN_SAMPLES, MAX_GROUPS + 1));
+		return new SearchQuery(sql.toString(), params);
+	}
+
+	/**
+	 * How many distinct Transaction Groups the window holds, which is the honest
+	 * disclosure ADR-0014 requires in place of normalizing names: a Project emitting
+	 * {@code GET /api/orders/12345} as its own group learns that it has four hundred
+	 * thousand of them, and fixes its routing integration.
+	 *
+	 * <p><b>A second pass over {@code txn}, deliberately.</b> The leaderboard's own
+	 * statement could carry this as {@code count(*) OVER ()}, but only over the groups
+	 * that survive {@link #MIN_SAMPLES} — and the number is worthless after the floor,
+	 * for the reason {@link Leaderboard#distinctGroups()} records. Reaching it inside
+	 * one statement means a CTE referenced twice, which spools every group into a
+	 * tuplestore that spills for the same reason the sort {@code V15} removed did.
+	 * Two plain statements each stay index-only against {@code idx_txn_performance};
+	 * this one is the cheaper of them, because it reads no {@code duration_ms} and
+	 * builds no per-group sort.
+	 */
+	static SearchQuery buildDistinctGroupQuery(List<Long> project, List<String> environment, Instant from, Instant to) {
+
+		StringBuilder inner = new StringBuilder("""
+				SELECT project_id, name, op FROM txn WHERE 1=1
+				""");
+		List<Object> params = new ArrayList<>();
+		appendFilters(inner, project, environment, from, to, params);
+		inner.append("\nGROUP BY project_id, name, op");
+
+		return new SearchQuery("SELECT count(*) FROM (%s) g".formatted(inner), params);
+	}
+
+	/**
+	 * The predicates both statements share. They have to stay identical: a
+	 * {@code distinct_groups} counted over a different window than the list it
+	 * annotates is a warning about data the user is not looking at.
+	 *
+	 * <p>The window is closed on the left and open on the right, matching the
+	 * convention {@code LogController} settled on: a Transaction landing exactly on a
+	 * boundary must belong to one side of it, not both.
+	 */
+	private static void appendFilters(StringBuilder sql, List<Long> project, List<String> environment, Instant from,
+			Instant to, List<Object> params) {
 		QuerySupport.appendInClause(sql, "project_id", project, params);
 		QuerySupport.appendInClause(sql, "environment", environment, params);
 		sql.append(" AND start_ts >= ?");
 		params.add(java.sql.Timestamp.from(from));
 		sql.append(" AND start_ts < ?");
 		params.add(java.sql.Timestamp.from(to));
-
-		// The LIMIT with no cursor beside it is deliberate, not an unfinished pagination:
-		// see MAX_GROUPS for why an aggregate has no key to seek on.
-		sql.append("""
-
-				GROUP BY project_id, name, op
-				ORDER BY total_ms DESC, project_id, name, op
-				LIMIT %d
-				""".formatted(MAX_GROUPS));
-		return new SearchQuery(sql.toString(), params);
 	}
 
 	/** The window the endpoint would answer this request over, for the guards. */
