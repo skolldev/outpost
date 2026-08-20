@@ -19,9 +19,11 @@ import {
   TransactionGroup,
   TransactionGroupDetail,
   TransactionGroupDetailNotFound,
+  TransactionGroupTrend,
 } from '../../core/models';
 import { ProjectsStore } from '../../core/projects';
 import { transactionGroupDetailParams } from '../../core/query-params';
+import { DurationTrendChart } from '../../shared/duration-trend';
 import { formatDuration, formatTotalDuration, projectColor } from '../../shared/ui';
 import { RangeClampNotice } from './range-clamp-notice';
 
@@ -52,11 +54,15 @@ interface Statistic {
  * disagree. **An absent `op` means the group whose op is null** — (project, name, op)
  * is the whole key, so "any op" would name a set of groups rather than one.
  *
- * There is no chart here yet (#163). The window is the leaderboard's, capped at 30 days
- * and echoed by the server; when it was narrowed to reach that cap this page says so,
- * for the same reason the leaderboard does — a header that quietly covered a different
- * window than the row it was opened from would disagree with the number the user just
- * clicked.
+ * Between the two sits the chart (#163), which is what turns a statistic into a report:
+ * a p95 on its own is a ranking, while a p95 that stepped up on Tuesday names the day
+ * to look at. It reads the bucketed series the same response carries, so it describes
+ * exactly the Transactions the header above it does.
+ *
+ * The window is the leaderboard's, capped at 30 days and echoed by the server; when it
+ * was narrowed to reach that cap this page says so, for the same reason the leaderboard
+ * does — a header that quietly covered a different window than the row it was opened
+ * from would disagree with the number the user just clicked.
  */
 @Component({
   selector: 'app-transaction-group-detail',
@@ -73,6 +79,7 @@ interface Statistic {
     HlmEmptyDescription,
     HlmSpinner,
     RangeClampNotice,
+    DurationTrendChart,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex min-h-0 flex-1 flex-col' },
@@ -132,6 +139,20 @@ export class TransactionGroupDetailPage {
 
   readonly group = computed<TransactionGroup | null>(() =>
     this.detail.hasValue() ? this.detail.value().group : null,
+  );
+
+  readonly trend = computed<TransactionGroupTrend | undefined>(() =>
+    this.detail.hasValue() ? this.detail.value().trend : undefined,
+  );
+
+  /**
+   * The upper edge of the window the server answered over, which is what the chart's
+   * time axis spans. Read from the response rather than from `GlobalFilters`, which
+   * holds a relative range and no upper bound at all — the server resolves "now" once,
+   * and an axis drawn to a second "now" would end somewhere the data does not.
+   */
+  readonly windowTo = computed<string | undefined>(() =>
+    this.detail.hasValue() ? this.detail.value().to : undefined,
   );
 
   /**

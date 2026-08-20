@@ -66,6 +66,12 @@
   --project-6: oklch(0.53 0.18 270);
   --project-7: oklch(0.53 0.17 310);
   --project-8: oklch(0.55 0.18 350);
+
+  /* Duration trend series. Two hues far enough apart to separate where the lines
+     cross, and both readable against --card: the typical case is the calmer of
+     the two, the tail the warmer, so a rising tail reads as the alarming one. */
+  --duration-p50: oklch(0.55 0.14 225);
+  --duration-p95: oklch(0.58 0.19 35);
 }
 
 :root.dark {
@@ -120,6 +126,9 @@
   --project-6: oklch(0.74 0.16 270);
   --project-7: oklch(0.74 0.15 310);
   --project-8: oklch(0.74 0.16 350);
+
+  --duration-p50: oklch(0.75 0.13 225);
+  --duration-p95: oklch(0.76 0.16 35);
 }
 
 @layer base {

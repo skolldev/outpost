@@ -159,15 +159,68 @@ public class TransactionGroupController {
 	}
 
 	/**
-	 * One Transaction Group's statistics, plus the window they were computed over.
+	 * One bucket of the duration trend: the same two percentiles the header reports,
+	 * over the Transactions that landed in this interval, and how many there were.
+	 *
+	 * <p>p99 is deliberately absent where the header carries it. A p99 over a
+	 * six-hour bucket is computed from a fiftieth of the samples the header's is, so
+	 * it is mostly noise — it would be the jumpiest line on the chart while saying
+	 * the least, and three overlaid series is one more than the eye separates.
+	 *
+	 * <p>{@code count} is what says how much a point is worth: a bucket holding four
+	 * Transactions has a p95 that is one of them, and a spike drawn from it is not a
+	 * regression. It is reported rather than filtered on, because a quiet interval is
+	 * a fact about the endpoint and dropping it would draw a continuous line across a
+	 * gap.
+	 */
+	public record TrendPoint(Instant start, long count, double p50Ms, double p95Ms) {
+	}
+
+	/**
+	 * The bucketed series behind the detail view's chart: the grid it is binned on,
+	 * and the non-empty buckets in it.
+	 *
+	 * <p><b>{@code from} is not {@link GroupDetail#from()}, and the difference is the
+	 * point of the field.</b> {@code date_bin} bins from a fixed origin, so a bucket
+	 * starts at {@code origin + k·width} and never at the instant the request asked
+	 * for; the client places points by {@code (start - from) / width}, which only
+	 * comes out whole against the grid. So this is the requested window's start
+	 * <em>floored onto that grid</em> — earlier than the window by less than one
+	 * bucket.
+	 *
+	 * <p>The query behind it is still bound by the window the header reports, not by
+	 * this instant. That is the opposite of what {@code LogController}'s timeline does
+	 * — it widens its window to the grid so every bar is whole — and the reason is
+	 * that these two things are read together: the chart and the statistics above it
+	 * describe <b>exactly the same Transactions</b>, and a chart quietly averaging in
+	 * six hours the header excluded is the disagreement this whole endpoint is written
+	 * to avoid. The cost is that the first bucket, and the last, hold part of an
+	 * interval — visible in their {@code count}, and harmless to a percentile.
+	 *
+	 * <p>Empty buckets are absent rather than zero-filled: a bucket with no
+	 * Transactions has no p50, and reporting one as {@code 0} would draw a
+	 * catastrophic-looking dip where the truth is "nothing happened".
+	 */
+	public record Trend(Instant from, long bucketSeconds, List<TrendPoint> points) {
+	}
+
+	/**
+	 * One Transaction Group's statistics, the window they were computed over, and the
+	 * same statistics bucketed across it.
 	 *
 	 * <p>The window is echoed and {@code rangeClamped} raised for the same reason
 	 * {@link Leaderboard} does it: this view is reached from a row on that one, over the
 	 * same global range filter, and a detail header that quietly covered a different
 	 * window than the list it opened from would disagree with the number the user just
 	 * clicked.
+	 *
+	 * <p>The trend rides along in this response rather than in a second endpoint — the
+	 * opposite of the split ADR-0011 chose for the Log Timeline. That split existed
+	 * because the log list re-runs on every {@code cursor} and would have recomputed a
+	 * full-window aggregate to fetch 100 more rows; this view does not paginate, so one
+	 * request is both correct and cheaper.
 	 */
-	public record GroupDetail(Instant from, Instant to, boolean rangeClamped, TransactionGroup group) {
+	public record GroupDetail(Instant from, Instant to, boolean rangeClamped, TransactionGroup group, Trend trend) {
 	}
 
 	/** A missing group still carries the resolved window, so a clamp is never silent. */
@@ -246,6 +299,13 @@ public class TransactionGroupController {
 	 * count is on screen beside the percentiles, which is what says how much they are
 	 * worth.
 	 *
+	 * <p>Two statements, not one. The summary and the {@link Trend} read the same rows
+	 * under the same predicates, so a single {@code GROUP BY bucket} could carry both if
+	 * the bucketed rows were rolled up in Java — but percentiles do not roll up, which is
+	 * the whole reason ADR-0015 forbids pre-aggregating them: a p95 of six-hour p95s is
+	 * not the window's p95. The second pass is what buys a header that agrees with
+	 * itself.
+	 *
 	 * @return 404 when no Transaction in the window matches the key, which is what a
 	 * shared link to a group that has since gone quiet looks like
 	 */
@@ -283,12 +343,38 @@ public class TransactionGroupController {
 					rs.getDouble("avg_ms"), rs.getDouble("max_ms"), p[0], p[1], p[2]);
 		}).optional();
 
+		// The trend is only issued once the group is known to exist: a 404 has no chart to
+		// draw, and running the second aggregate to produce an empty list is a full pass
+		// over the window for a response that will not show it.
 		return group
-			.<ResponseEntity<?>>map(
-					found -> ResponseEntity.ok(new GroupDetail(window.from(), window.to(), window.clamped(), found)))
+			.<ResponseEntity<?>>map(found -> ResponseEntity.ok(new GroupDetail(window.from(), window.to(),
+					window.clamped(), found, trend(project, name, resolvedOp, environment, release, window))))
 			.orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
 				.body(new GroupDetailNotFound(window.from(), window.to(), window.clamped(),
 						"no Transactions in this Transaction Group for the current filters")));
+	}
+
+	/**
+	 * The bucketed series behind the chart, on the grid {@link Trend} describes.
+	 *
+	 * <p>The width comes from {@link TimeBuckets} rather than from a ladder of this
+	 * endpoint's own — the same rungs the Log Timeline draws at, so two charts of the
+	 * same 30-day range agree about how wide a bucket is. Over the 30-day cap ADR-0015
+	 * puts on this window that is 6 hours, ~120 points.
+	 */
+	private Trend trend(long project, String name, String op, List<String> environment, String release,
+			Window window) {
+		Duration bucket = TimeBuckets.width(window.from(), window.to());
+		SearchQuery search = buildTrendQuery(project, name, op, environment, release, window.from(), window.to());
+
+		List<TrendPoint> points = jdbc.sql(search.sql()).params(search.params()).query((rs, i) -> {
+			// percentile_cont(ARRAY[…]) returns one array per bucket, in probe order: p50,
+			// p95. No p99 — see TrendPoint for why the chart stops at two series.
+			Double[] p = (Double[]) rs.getArray("percentiles").getArray();
+			return new TrendPoint(rs.getTimestamp("bucket").toInstant(), rs.getLong("txn_count"), p[0], p[1]);
+		}).list();
+
+		return new Trend(TimeBuckets.alignDown(window.from(), bucket), bucket.toSeconds(), points);
 	}
 
 	/**
@@ -389,12 +475,8 @@ public class TransactionGroupController {
 	 * as no row at all. That distinction is what lets the endpoint tell "this group has
 	 * gone quiet" apart from an error.
 	 *
-	 * <p><b>The op predicate is built in Java rather than written as {@code IS NOT
-	 * DISTINCT FROM}.</b> That operator would express "equal, or both null" in one
-	 * expression and one parameter, and Postgres cannot use an index for it — the scan
-	 * would fall back to reading every op under this (Project, name) and filtering. Both
-	 * {@code = ?} and {@code IS NULL} are index conditions on the third column of
-	 * {@code idx_txn_performance}, whose first two this statement has already bound.
+	 * <p>The key predicates come from {@link #appendKey}, which records why the op one
+	 * is two branches rather than one expression.
 	 *
 	 * <p>The filters are the leaderboard's, through the same helper: a detail view
 	 * narrowed differently from the list it was opened from would report statistics the
@@ -411,7 +493,66 @@ public class TransactionGroupController {
 				""".formatted(STATISTICS));
 		List<Object> params = new ArrayList<>();
 		appendFilters(sql, List.of(project), environment, release, null, from, to, params);
+		appendKey(sql, name, op, params);
+		return new SearchQuery(sql.toString(), params);
+	}
 
+	/**
+	 * The same statistics bucketed across the window, for the chart that turns a p95
+	 * into "the p95 changed on Tuesday" — extracted per {@link SearchQuery} so the
+	 * guard {@code EXPLAIN}s this statement rather than a copy of it.
+	 *
+	 * <p><b>Two probes, not the header's three.</b> The array is the only reason this
+	 * is one ordered-set aggregate rather than two, and every probe added to it is a
+	 * series drawn on the chart — p99 is left out because at a fiftieth of the
+	 * header's sample count it is noise wearing a percentile's name.
+	 *
+	 * <p><b>The predicates are the detail view's, unchanged.</b> The bucketed rows and
+	 * the summary above them are read together on one screen, so they are read from
+	 * the same Transactions: the {@code date_bin} in the select list is the only
+	 * difference between the two statements, and the window is deliberately
+	 * <em>not</em> widened onto the bucket grid the way {@code LogController}'s
+	 * timeline widens its own (see {@link Trend}).
+	 *
+	 * <p>Ordered, where the timeline's equivalent is not. The timeline's client places
+	 * sparse bars by index arithmetic and reads nothing from their order; a line has to
+	 * be drawn between points in time order, and sorting at most ~150 already-grouped
+	 * rows in Postgres is cheaper than shipping the ordering rule to the browser as
+	 * something else that can drift.
+	 */
+	static SearchQuery buildTrendQuery(long project, String name, String op, List<String> environment, String release,
+			Instant from, Instant to) {
+
+		StringBuilder sql = new StringBuilder("""
+				SELECT date_bin(?::interval, start_ts, ?) AS bucket,
+				       count(*) AS txn_count,
+				       percentile_cont(ARRAY[0.5, 0.95]::double precision[])
+				           WITHIN GROUP (ORDER BY duration_ms) AS percentiles
+				FROM txn WHERE 1=1
+				""");
+		List<Object> params = new ArrayList<>();
+		params.add(TimeBuckets.width(from, to).toSeconds() + " seconds");
+		params.add(TimeBuckets.originParam());
+
+		appendFilters(sql, List.of(project), environment, release, null, from, to, params);
+		appendKey(sql, name, op, params);
+
+		sql.append("\nGROUP BY bucket ORDER BY bucket");
+		return new SearchQuery(sql.toString(), params);
+	}
+
+	/**
+	 * The two predicates that pin one Transaction Group, shared by the summary and the
+	 * trend so they can never name different groups.
+	 *
+	 * <p><b>The op predicate is built in Java rather than written as {@code IS NOT
+	 * DISTINCT FROM}.</b> That operator would express "equal, or both null" in one
+	 * expression and one parameter, and Postgres cannot use an index for it — the scan
+	 * would fall back to reading every op under this (Project, name) and filtering.
+	 * Both {@code = ?} and {@code IS NULL} are index conditions on the third column of
+	 * {@code idx_txn_performance}, whose first two these statements have already bound.
+	 */
+	private static void appendKey(StringBuilder sql, String name, String op, List<Object> params) {
 		sql.append(" AND name = ?");
 		params.add(name);
 		if (op == null) {
@@ -421,7 +562,6 @@ public class TransactionGroupController {
 			sql.append(" AND op = ?");
 			params.add(op);
 		}
-		return new SearchQuery(sql.toString(), params);
 	}
 
 	/**

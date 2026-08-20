@@ -85,6 +85,13 @@
   </dl>
 
   <!--
+    The statistics above say how slow this Transaction Group is; the chart says whether
+    that is new. Both series, because "everything got slower" and "only the tail got
+    worse" have different causes and the same p95.
+  -->
+  <app-duration-trend class="mb-4 block" [trend]="trend()" [to]="windowTo()" />
+
+  <!--
     Two ways across to the span waterfall, not one. Offering only the slowest Traces
     would send every investigation chasing a single outlier — a GC pause, a cold start
     — where the diagnosis is a diff: what does a slow request do that a typical one
