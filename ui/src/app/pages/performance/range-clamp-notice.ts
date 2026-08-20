@@ -12,15 +12,12 @@ import { ChangeDetectionStrategy, Component } from '@angular/core';
 @Component({
   selector: 'app-range-clamp-notice',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  // `status` rather than `alert`: nothing is wrong, and the range picker is still
-  // showing what the user asked for — this says what they got.
   template: `
     <p
       role="status"
       class="mb-4 block rounded-lg border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
     >
-      Showing the last 30 days. Performance statistics are capped at 30 days, so a wider range —
-      including “All time” — is narrowed to it.
+      Showing the last 30 days. Performance statistics are capped at 30 days.
     </p>
   `,
 })

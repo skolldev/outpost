@@ -1,9 +1,6 @@
 <div class="mb-3 flex flex-wrap items-center gap-3">
   <h1 class="text-lg font-semibold text-foreground">Performance</h1>
-  <p class="text-sm text-muted-foreground">
-    Figures cover Transactions Outpost received, not requests served — SDK trace sampling affects
-    them.
-  </p>
+
   @if (projectIds().length > 0) {
     <app-project-legend class="ml-auto" [projectIds]="projectIds()" />
   }
@@ -19,16 +16,7 @@
     [ngModel]="search()"
     (ngModelChange)="search.set($event)"
   />
-  <!--
-    Labels are visually hidden rather than absent: each control says what it is in its
-    own option text ("All releases", "Sort: p95"), so a visible label would be the
-    same word twice, and a `<label for>` is what actually names the inner `<select>`
-    — an aria-label here would land on the wrapper element instead.
 
-    The Release filter can only list versions when one Project's Releases are the right
-    list to show (see `releaseProject`). With nothing to choose and nothing to clear it
-    is disabled and says why, rather than going missing.
-  -->
   <label class="sr-only" for="performance-release">Filter by Release</label>
   <hlm-native-select
     size="sm"
@@ -44,7 +32,7 @@
   </hlm-native-select>
   @if (releaseProject() === undefined) {
     <span class="text-xs text-muted-foreground">
-      Select a single Project to filter by Release — a version belongs to one Project.
+      Select a single Project to filter by Release
     </span>
   }
   @if (loading()) {
@@ -68,11 +56,6 @@
   <app-range-clamp-notice />
 }
 
-<!--
-  Outside the error/empty/table branch below on purpose: the Project this warns about
-  is the one whose Transaction Groups are all too small to rank, so the case where the
-  list comes back empty is exactly the case where the explanation is needed most.
--->
 @if (highCardinality()) {
   <div
     hlmAlert
@@ -97,13 +80,6 @@
   </div>
 }
 
-<!--
-  The count is the rows actually rendered, and there is no "of N" beside it. The server
-  caps the list, so hardcoding its cap here would be a number that drifts the moment the
-  cap moves; and `distinct_groups` is not the denominator either — it is taken before the
-  minimum-sample floor, so "top 100 of 412,903" would name a total this list was never cut
-  from. That count belongs to the cardinality warning, where it is the whole point.
--->
 @if (truncated()) {
   <p
     role="status"
@@ -153,26 +129,16 @@
         </tr>
       </thead>
       <tbody hlmTBody>
-        <!--
-          The row carries the whole Transaction Group key into the URL, because that is
-          what identifies it: the name goes in a query param rather than a path segment
-          (names contain slashes), and `op` is omitted when it is null, which is how the
-          detail view is told to resolve the null-op group.
-
-          `project` is the same param the global Project filter uses. A Transaction
-          Group belongs to exactly one Project, so opening one narrows the view to that
-          Project — and the deep links out of the detail view inherit it, which is what
-          keeps them pointed at the right Project's Traces.
-        -->
         @for (group of groups(); track groupKey(group)) {
-          <tr hlmTr class="[&_td]:px-3 [&_td]:py-2">
+          <tr
+            hlmTr
+            class="cursor-pointer [&_td]:px-3 [&_td]:py-2"
+            routerLink="/performance/group"
+            [queryParams]="{ project: group.project_id, name: group.name, op: group.op }"
+            queryParamsHandling="merge"
+          >
             <td hlmTd class="whitespace-normal">
-              <a
-                class="flex items-center gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                routerLink="/performance/group"
-                [queryParams]="{ project: group.project_id, name: group.name, op: group.op }"
-                queryParamsHandling="merge"
-              >
+              <div class="flex items-center gap-2">
                 <span
                   class="inline-block size-2.5 shrink-0 rounded-full"
                   [style.background-color]="projectColor(group.project_id)"
@@ -184,7 +150,7 @@
                     {{ projects.name(group.project_id) }}
                   </div>
                 </div>
-              </a>
+              </div>
             </td>
             <td hlmTd>
               @if (group.op) {
