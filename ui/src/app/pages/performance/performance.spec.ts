@@ -397,7 +397,7 @@ describe('PerformancePage', () => {
     await waitFor(() => expect(seen).toContain(null));
   });
 
-   it('opens the detail view for the Transaction Group whose row was clicked', async () => {
+  it('opens the detail view for the Transaction Group whose row was clicked', async () => {
     server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
     await renderPerformance();
     const user = userEvent.setup();
