@@ -385,16 +385,55 @@ export interface TransactionGroupFilters {
 }
 
 /**
+ * One bucket of the duration trend. `p99_ms` is deliberately absent where the
+ * header carries it: over one bucket it is computed from a fraction of the
+ * samples, so it would be the jumpiest line on the chart while saying the least.
+ *
+ * `count` is what says how much a point is worth — a bucket holding four
+ * Transactions has a p95 that is one of them.
+ */
+export interface TransactionGroupTrendPoint {
+  start: string;
+  count: number;
+  p50_ms: number;
+  p95_ms: number;
+}
+
+/**
+ * The bucketed series behind the detail view's chart. **`from` is not the
+ * response's `from`**: `date_bin` bins against a fixed origin, so points are
+ * placed by `(start - trend.from) / bucket_seconds` and that only comes out whole
+ * against the grid — this is the window's start floored onto it, earlier by less
+ * than one bucket.
+ *
+ * The window itself is not widened to meet it, which is the opposite of what the
+ * log timeline does: the chart and the statistics above it describe exactly the
+ * same Transactions, at the cost of a partial bucket at each edge (visible in its
+ * `count`). Empty buckets are absent rather than zero — a bucket with no
+ * Transactions has no p50, and a zero would draw a dive to the axis.
+ */
+export interface TransactionGroupTrend {
+  from: string;
+  bucket_seconds: number;
+  points: TransactionGroupTrendPoint[];
+}
+
+/**
  * One Transaction Group's statistics, for the detail view a leaderboard row opens
  * into. Same figures, same window, echoed the same way — the header is read beside
  * the row it was opened from, so a `range_clamped` the detail view swallowed would
  * disagree with the number the user just clicked.
+ *
+ * The trend rides along rather than coming from a second endpoint — the opposite of
+ * the split ADR-0011 chose for the log timeline, because this view does not
+ * paginate and so never refetches the list without the chart.
  */
 export interface TransactionGroupDetail {
   from: string;
   to: string;
   range_clamped: boolean;
   group: TransactionGroup;
+  trend: TransactionGroupTrend;
 }
 
 /** A missing group still echoes the effective window so a clamp is never silent. */

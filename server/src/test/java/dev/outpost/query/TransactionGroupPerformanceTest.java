@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -19,9 +20,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the Performance leaderboard (#159, #160, #161) and the
- * Transaction Group detail view it opens into (#162). Baselines
- * measured 2026-08-19 against {@link TelemetrySeeder.Scale#GUARD}: 8 004 transactions in
+ * Performance guards for the Performance leaderboard (#159, #160, #161), the
+ * Transaction Group detail view it opens into (#162) and the duration trend on that
+ * view (#163). Baselines
+ * measured 2026-08-19 (2026-08-20 for the trend) against {@link TelemetrySeeder.Scale#GUARD}: 8 004 transactions in
  * 433 Transaction Groups over nine weekly partitions, where a full scan of {@code txn}
  * costs 2 691 blocks.
  *
@@ -58,6 +60,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  *   30d, sort=count              713     571
  *
  *   30d, one group's detail       42           the key bounds it, not the window
+ *   30d, that group's trend       60           the same rows, grouped into 120 buckets
+ *   30d, a null-op group's trend  56
  * </pre>
  *
  * <p>The count is cheaper than the list on every shape without being cheap: it reads no
@@ -124,7 +128,10 @@ class TransactionGroupPerformanceTest {
 	/**
 	 * The detail view (#162) binds the whole Transaction Group key to constants, so it
 	 * reads one group's slice of {@code idx_txn_performance} rather than the window's:
-	 * 42 blocks measured, against the 713 the list costs over the same 30 days.
+	 * 42 blocks measured, against the 713 the list costs over the same 30 days. The
+	 * trend (#163) reads that same slice under the same ceiling — 60 blocks, the extra
+	 * 18 being the sort that {@code GROUP BY date_bin(start_ts)} needs and the summary,
+	 * which does not group at all, does not.
 	 *
 	 * <p>200 rather than a tight multiple of 42, because the <b>first</b> {@code EXPLAIN}
 	 * of a session touches ~65 blocks more than every later one — catalogue and index
@@ -350,6 +357,51 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
+	 * The bucketed trend the detail view returns alongside its statistics (#163) pays
+	 * every assertion the leaderboard does, temp blocks included.
+	 *
+	 * <p>Temp blocks are the one that earns its place here. The summary aggregate has no
+	 * {@code GROUP BY} at all — one ordered-set aggregate over one group's durations —
+	 * while this statement groups by {@code date_bin(start_ts)}, an expression no index
+	 * can be read in the order of, so Postgres sorts. What bounds that sort is the key:
+	 * it is one Transaction Group's Transactions, not the window's, which is the same
+	 * thing that makes the summary cheap. A change that widened either — a trend over
+	 * the whole leaderboard, a key that stopped being (project, name, op) — spills here
+	 * first.
+	 *
+	 * <p>Both op branches, for the reason the summary covers both: {@code = ?} and
+	 * {@code IS NULL} are two index conditions and therefore two plans.
+	 */
+	@Test
+	void theTrendIsGuardedLikeTheStatisticsItAccompanies() {
+		for (Group group : detailGroups()) {
+			QueryPlans.Built built = trend(group);
+			PlanFacts facts = built.explain(jdbc);
+			String what = "trend — " + group.label();
+
+			// Explaining a grouping that produced no buckets passes everything below for
+			// the wrong reason.
+			assertThat(built.rows(jdbc)).as("buckets returned by %s", what).isNotEmpty();
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+			QueryGuard.assertUnderCeiling(facts, MAX_DETAIL_BLOCKS, what);
+			QueryGuard.assertNoTempFiles(facts, what);
+			assertThat(facts.correlatedSubplans()).as("subplans re-run per output row by %s%n%s", what, facts.plan())
+				.isEmpty();
+		}
+	}
+
+	/** And prunes to the same window the statistics above it were computed over. */
+	@Test
+	void theTrendPrunesToTheSameWindowAsTheStatistics() {
+		QueryPlans.Built built = trend(detailGroups().get(0));
+
+		PlanFacts facts = built.explain(jdbc);
+
+		assertThat(built.rows(jdbc)).as("buckets returned — pruning to nothing proves nothing").isNotEmpty();
+		QueryGuard.assertPrunesFrom(jdbc, facts, "txn", window(uiShapes().get(0)).from(), "a 30-day trend");
+	}
+
+	/**
 	 * Every predicate the detail view carries is an index <em>condition</em>, and none
 	 * of them is a filter the scan re-checks per row.
 	 *
@@ -373,12 +425,19 @@ class TransactionGroupPerformanceTest {
 	@Test
 	void everyPredicateOnTheDetailViewIsAnIndexCondition() {
 		for (Group group : detailGroups()) {
-			PlanFacts facts = detail(group).explain(jdbc);
+			// The trend carries the same predicates, so it holds to the same claim — and
+			// `date_bin` appears in its grouping, not in its WHERE, so it seeks the same way.
+			for (Map.Entry<String, QueryPlans.Built> statement : Map.of("detail", detail(group), "trend",
+					trend(group))
+				.entrySet()) {
+				PlanFacts facts = statement.getValue().explain(jdbc);
 
-			// The JSON key, quoted: "Rows Removed by Filter" contains the bare word too.
-			assertThat(facts.plan()).as("detail — %s re-checks a predicate per row rather than seeking on it%n%s",
-					group.label(), facts.plan())
-				.doesNotContain("\"Filter\"");
+				// The JSON key, quoted: "Rows Removed by Filter" contains the bare word too.
+				assertThat(facts.plan())
+					.as("%s — %s re-checks a predicate per row rather than seeking on it%n%s", statement.getKey(),
+							group.label(), facts.plan())
+					.doesNotContain("\"Filter\"");
+			}
 		}
 	}
 
@@ -422,6 +481,12 @@ class TransactionGroupPerformanceTest {
 	private QueryPlans.Built detail(Group group) {
 		TransactionGroupController.Window window = window(uiShapes().get(0));
 		return QueryPlans.transactionGroupDetail(group.project(), group.name(), group.op(), null, null, window.from(),
+				window.to());
+	}
+
+	private QueryPlans.Built trend(Group group) {
+		TransactionGroupController.Window window = window(uiShapes().get(0));
+		return QueryPlans.transactionGroupTrend(group.project(), group.name(), group.op(), null, null, window.from(),
 				window.to());
 	}
 

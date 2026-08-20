@@ -119,13 +119,13 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The bucket width the timeline would draw this window at, from the controller
-	 * that owns the ladder. Read rather than recomputed, for the reason
-	 * {@link #sparklineSince()} is: it is a bind parameter, and a guard with its own
-	 * copy would {@code EXPLAIN} a grouping the controller never runs.
+	 * The bucket width a window is binned at, from the shared ladder both the log
+	 * timeline and the Transaction Group trend bind. Read rather than recomputed, for
+	 * the reason {@link #sparklineSince()} is: it is a bind parameter, and a guard
+	 * with its own copy would {@code EXPLAIN} a grouping no endpoint runs.
 	 */
 	public static Duration timelineBucket(Instant from, Instant to) {
-		return LogController.timelineBucket(from, to);
+		return TimeBuckets.width(from, to);
 	}
 
 	public static String logCursorAtPage(JdbcClient jdbc, int pages) {
@@ -176,6 +176,17 @@ public final class QueryPlans {
 	public static Built transactionGroupDetail(long project, String name, String op, List<String> environment,
 			String release, Instant from, Instant to) {
 		return Built.of(TransactionGroupController.buildDetailQuery(project, name, op, environment, release, from, to));
+	}
+
+	/**
+	 * The bucketed series the detail view returns alongside those statistics (#163).
+	 * A second aggregate over the same rows under the same predicates, so the page's
+	 * cost is the two together — and it is the one of the pair that groups, which is
+	 * where a spill would come from.
+	 */
+	public static Built transactionGroupTrend(long project, String name, String op, List<String> environment,
+			String release, Instant from, Instant to) {
+		return Built.of(TransactionGroupController.buildTrendQuery(project, name, op, environment, release, from, to));
 	}
 
 	/**

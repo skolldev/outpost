@@ -8,7 +8,12 @@ import { http, HttpResponse } from 'msw';
 
 import { server } from '../../../mocks/node';
 import { GlobalFilters } from '../../core/filters';
-import { Project, TransactionGroup, TransactionGroupDetail } from '../../core/models';
+import {
+  Project,
+  TransactionGroup,
+  TransactionGroupDetail,
+  TransactionGroupTrend,
+} from '../../core/models';
 import { TransactionGroupDetailPage } from './transaction-group-detail';
 
 const BASE = '*/api/internal';
@@ -38,15 +43,32 @@ const CHECKOUT: TransactionGroup = {
 
 const NO_OP: TransactionGroup = { ...CHECKOUT, name: 'process outbox', op: null };
 
+/**
+ * Four 6-hour buckets on the grid the server bins to, holding a flat stretch and then
+ * a step change in both series — the shape the chart exists to make visible.
+ */
+const TREND: TransactionGroupTrend = {
+  from: '2026-07-20T00:00:00Z',
+  bucket_seconds: 21600,
+  points: [
+    { start: '2026-07-20T00:00:00Z', count: 300, p50_ms: 42, p95_ms: 120 },
+    { start: '2026-07-20T06:00:00Z', count: 280, p50_ms: 44, p95_ms: 130 },
+    // The regression: both series move, so it is not only the tail that got worse.
+    { start: '2026-07-20T12:00:00Z', count: 310, p50_ms: 210, p95_ms: 640 },
+    { start: '2026-07-20T18:00:00Z', count: 295, p50_ms: 205, p95_ms: 610 },
+  ],
+};
+
 function detail(
   group: TransactionGroup,
   overrides: Partial<TransactionGroupDetail> = {},
 ): TransactionGroupDetail {
   return {
     from: '2026-07-20T00:00:00Z',
-    to: '2026-08-19T00:00:00Z',
+    to: '2026-07-21T00:00:00Z',
     range_clamped: false,
     group,
+    trend: TREND,
     ...overrides,
   };
 }
@@ -126,6 +148,60 @@ describe('TransactionGroupDetailPage', () => {
     expect(screen.getByText('1.20s')).toBeInTheDocument();
     expect(screen.getByText('4.10s')).toBeInTheDocument();
     expect(screen.getByText('8.7min')).toBeInTheDocument();
+  });
+
+  /**
+   * The chart is what turns the statistics above it into a report: a p95 is a ranking,
+   * a p95 that stepped up on a given afternoon is a bug. Asserted through its
+   * accessible name and its axis, which is what a reader actually gets — not through
+   * the geometry, which is the component's business.
+   */
+  it('charts p50 and p95 over the window the statistics were computed for', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
+    await renderDetail();
+
+    // Both series named, the ladder's width for this range, and the worst point on it.
+    expect(
+      await screen.findByRole('img', { name: /p50 and p95 duration per 6 hours/i }),
+    ).toBeVisible();
+    expect(screen.getByRole('img', { name: /peak p95 640ms/i })).toBeVisible();
+    // The axis is scaled to a round number above that peak rather than to the peak
+    // itself, so a flat series does not fill the plot and a step change has room to show.
+    expect(screen.getByText('750ms')).toBeInTheDocument();
+    expect(screen.getByText('375ms')).toBeInTheDocument();
+  });
+
+  /** Each bucket names its own interval, both percentiles and how many samples they came from. */
+  it('names both percentiles and the sample count of a bucket', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
+    );
+    await renderDetail();
+    await screen.findByRole('heading', { name: 'GET /api/checkout/{id}' });
+
+    // The per-bucket `<title>`, which is what a pointer over that column surfaces.
+    expect(screen.getByText(/p50 210ms, p95 640ms, 310 Transactions/)).toBeInTheDocument();
+  });
+
+  /**
+   * A group can exist over the window while every bucket in it is empty of the filtered
+   * Transactions. An empty plot with axes on it would read as "all zero"; the words say
+   * what is true.
+   */
+  it('says so when there is nothing to chart', async () => {
+    server.use(
+      http.get(`${BASE}/transaction-groups/detail`, () =>
+        HttpResponse.json(
+          detail(CHECKOUT, { trend: { ...TREND, points: [] } as TransactionGroupTrend }),
+        ),
+      ),
+    );
+    await renderDetail();
+
+    expect(await screen.findByText(/no Transactions in this window to chart/i)).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /p50 and p95/i })).not.toBeInTheDocument();
   });
 
   /**

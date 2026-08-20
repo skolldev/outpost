@@ -1,0 +1,91 @@
+<figure class="rounded-lg border border-border bg-card p-4">
+  <figcaption class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-foreground">Duration over time</h2>
+    <ul class="flex items-center gap-4 text-xs text-muted-foreground">
+      <li class="flex items-center gap-1.5">
+        <span class="inline-block h-0.5 w-4 rounded" [style.background-color]="p50Color"></span>
+        p50
+      </li>
+      <li class="flex items-center gap-1.5">
+        <span class="inline-block h-0.5 w-4 rounded" [style.background-color]="p95Color"></span>
+        p95
+      </li>
+    </ul>
+  </figcaption>
+
+  @if (empty()) {
+    <p class="py-6 text-center text-sm text-muted-foreground">
+      No Transactions in this window to chart.
+    </p>
+  } @else {
+    <div class="flex gap-2">
+      <div class="relative h-40 w-14 shrink-0">
+        @for (line of gridLines(); track line.top) {
+          <span
+            class="absolute right-0 -translate-y-1/2 font-mono text-[10px] text-muted-foreground"
+            [style.top.%]="line.top"
+            >{{ line.text }}</span
+          >
+        }
+      </div>
+      <div class="min-w-0 flex-1">
+        <svg
+          [attr.viewBox]="'0 0 ' + bucketCount() + ' ' + height"
+          preserveAspectRatio="none"
+          role="img"
+          [attr.aria-label]="summary()"
+          class="block h-40 w-full overflow-visible"
+        >
+          @for (line of gridLines(); track line.top) {
+            <line
+              x1="0"
+              [attr.y1]="line.y"
+              [attr.x2]="bucketCount()"
+              [attr.y2]="line.y"
+              class="stroke-border"
+              stroke-width="1"
+              vector-effect="non-scaling-stroke"
+            />
+          }
+
+          <path
+            [attr.d]="p50Path()"
+            fill="none"
+            [attr.stroke]="p50Color"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+          <path
+            [attr.d]="p95Path()"
+            fill="none"
+            [attr.stroke]="p95Color"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+
+          @for (point of plotted(); track point.index) {
+            <rect [attr.x]="point.index" y="0" width="1" [attr.height]="height" fill="transparent">
+              <title>{{ point.label }}</title>
+            </rect>
+          }
+        </svg>
+
+        <div class="relative mt-1 h-4">
+          @for (tick of ticks(); track $index) {
+            <span
+              class="absolute text-[10px] whitespace-nowrap text-muted-foreground"
+              [class.-translate-x-1/2]="tick.align === 'middle'"
+              [class.-translate-x-full]="tick.align === 'end'"
+              [style.left.%]="tick.left"
+              >{{ tick.text }}</span
+            >
+          }
+        </div>
+      </div>
+    </div>
+  }
+</figure>

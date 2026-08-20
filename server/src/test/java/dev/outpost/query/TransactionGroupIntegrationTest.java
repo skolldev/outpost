@@ -101,6 +101,19 @@ class TransactionGroupIntegrationTest {
 	 */
 	private static final Instant ANCHOR = Instant.now().minus(2, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
 
+	/**
+	 * Where the trend fixture is seeded. Truncated to the hour, which puts it on the
+	 * grid of every sub-day rung of the ladder, so the bucket boundaries the assertions
+	 * name are the ones {@code date_bin} produces — the alignment tests are the ones
+	 * that exercise an off-grid window, and they say so.
+	 */
+	private static final Instant TREND_ANCHOR = ANCHOR.truncatedTo(ChronoUnit.HOURS);
+
+	/** Its own Environment Name, so it is invisible to every test that counts groups. */
+	private static final String TREND_FIXTURE = "trend-fixture";
+
+	private static final String TRENDING = "GET /api/quote";
+
 	@LocalServerPort
 	int port;
 
@@ -665,6 +678,110 @@ class TransactionGroupIntegrationTest {
 			.isEqualTo(HttpStatus.UNAUTHORIZED);
 	}
 
+	// -------------------------------------------------------------------- trend
+
+	/**
+	 * The width comes from the shared ladder, so the range decides it and the endpoint
+	 * does not. Pinned as a table for the reason {@code TimeBucketsTest} pins its own:
+	 * asserting only that the point count is reasonable would pass for a rule that
+	 * picked a different width for every window.
+	 *
+	 * <p>The clamped row is the one the product actually shows. ADR-0015 caps this
+	 * window at 30 days, so 6 hours is the widest bucket a user can reach here, and
+	 * {@code 1w} — the last rung of the ladder — is unreachable from this endpoint.
+	 */
+	@Test
+	void theBucketWidthIsChosenByTheLadderForTheRequestedRange() {
+		String key = "&project=" + project + "&name=" + encode(CHECKOUT) + "&op=http.server";
+
+		// No `from` is "All time", which the 30-day cap resolves to a 30-day window.
+		assertThat(trend(key).get("bucket_seconds")).isEqualTo(6 * 60 * 60);
+		assertThat(trend(key + over(TREND_ANCHOR, 24 * 60)).get("bucket_seconds")).isEqualTo(15 * 60);
+		assertThat(trend(key + over(TREND_ANCHOR, 60)).get("bucket_seconds")).isEqualTo(60);
+	}
+
+	/**
+	 * The bucketed statistics themselves, against a fixture whose three intervals are a
+	 * flat stretch, a spike in the tail alone, and a step change in both series — the
+	 * three shapes the chart exists to tell apart.
+	 *
+	 * <p>Empty intervals are absent rather than zero. A bucket holding no Transactions
+	 * has no p50, and a zero there would draw a dive to the axis where the truth is that
+	 * nothing happened.
+	 */
+	@Test
+	void theTrendCarriesBucketedPercentilesAndCounts() {
+		seedTrendFixture();
+
+		Map<String, Object> body = detailBody(trendKey() + over(TREND_ANCHOR, 60));
+		List<Map<String, Object>> points = points(body);
+
+		// Three non-empty minutes out of sixty, in time order.
+		assertThat(points).hasSize(3);
+		assertThat(points).extracting(p -> p.get("start"))
+			.containsExactly(TREND_ANCHOR.toString(), TREND_ANCHOR.plus(10, ChronoUnit.MINUTES).toString(),
+					TREND_ANCHOR.plus(20, ChronoUnit.MINUTES).toString());
+		assertThat(points).extracting(p -> p.get("count")).containsExactly(5, 5, 5);
+
+		// Flat: five identical Transactions, so both series sit on the same value.
+		assertThat(ms(points.get(0), "p50_ms")).isCloseTo(100.0, TOLERANCE);
+		assertThat(ms(points.get(0), "p95_ms")).isCloseTo(100.0, TOLERANCE);
+		// Tail only: one slow Transaction among four fast ones lifts p95 and not p50 —
+		// interpolated 80% of the way from 100 to 1000, which is 820 and nothing else.
+		assertThat(ms(points.get(1), "p50_ms")).isCloseTo(100.0, TOLERANCE);
+		assertThat(ms(points.get(1), "p95_ms")).isCloseTo(820.0, TOLERANCE);
+		// Step change: everything got slower, so both series move together.
+		assertThat(ms(points.get(2), "p50_ms")).isCloseTo(500.0, TOLERANCE);
+		assertThat(ms(points.get(2), "p95_ms")).isCloseTo(500.0, TOLERANCE);
+
+		// p99 is on the header and deliberately not on the chart: over a bucket it is
+		// computed from a fraction of the samples and is mostly noise.
+		assertThat(points.get(0)).doesNotContainKey("p99_ms");
+	}
+
+	/**
+	 * The buckets and the statistics above them describe the same Transactions. This is
+	 * the invariant the whole response shape is arranged around, and it is why the trend
+	 * query is bound by the window the header reports rather than widened onto the
+	 * bucket grid the way the Log Timeline widens its own.
+	 */
+	@Test
+	void theTrendCoversExactlyTheTransactionsTheStatisticsDo() {
+		seedTrendFixture();
+
+		Map<String, Object> body = detailBody(trendKey() + over(TREND_ANCHOR, 60));
+		List<Map<String, Object>> points = points(body);
+
+		long bucketed = points.stream().mapToLong(p -> ((Number) p.get("count")).longValue()).sum();
+		assertThat(bucketed).isEqualTo(((Number) group(body).get("count")).longValue());
+	}
+
+	/**
+	 * The grid the points are placed on is the window's start floored onto the bucket
+	 * boundaries, and it is reported separately from the window itself — the client
+	 * indexes points off it, and that arithmetic only comes out whole against the grid
+	 * {@code date_bin} actually bins to.
+	 *
+	 * <p>The window is <em>not</em> moved to meet it. A request starting ninety seconds
+	 * into the fixture's first minute excludes that minute's Transactions from both the
+	 * statistics and the chart, while the grid start still floors back to it.
+	 */
+	@Test
+	void theTrendReportsItsGridWithoutWideningTheWindow() {
+		seedTrendFixture();
+		Instant from = TREND_ANCHOR.plusSeconds(90);
+
+		Map<String, Object> body = detailBody(
+				trendKey() + "&from=" + from + "&to=" + TREND_ANCHOR.plus(1, ChronoUnit.HOURS));
+		Map<String, Object> trend = cast(body.get("trend"));
+
+		assertThat(body.get("from")).isEqualTo(from.toString());
+		assertThat(trend.get("from")).isEqualTo(TREND_ANCHOR.plusSeconds(60).toString());
+		// The first minute is before `from`, so neither the chart nor the header counts it.
+		assertThat(points(body)).hasSize(2);
+		assertThat(group(body).get("count")).isEqualTo(10);
+	}
+
 	/** Members inspect telemetry — the Performance view is not Admin-only. */
 	@Test
 	void aMemberCanReadTheLeaderboard() {
@@ -739,6 +856,58 @@ class TransactionGroupIntegrationTest {
 			seedRelease(FAST_RELEASE, PRICING, 100.0);
 			seedRelease(SLOW_RELEASE, PRICING, 500.0);
 		}
+	}
+
+	/**
+	 * One Transaction Group across three one-minute intervals, ten minutes apart, whose
+	 * shapes are the three the two-series chart exists to distinguish:
+	 *
+	 * <pre>
+	 *   interval          durations                p50   p95
+	 *   +0m   flat        5 x 100ms                100   100
+	 *   +10m  tail only   4 x 100ms + 1 x 1000ms   100   820
+	 *   +20m  step        5 x 500ms                500   500
+	 * </pre>
+	 *
+	 * "Everything got slower" and "only the tail got worse" have different causes, and
+	 * a fixture where both series always move together could not tell whether the chart
+	 * distinguishes them. The intervals are spaced so the minutes between them are empty
+	 * and can be asserted absent.
+	 */
+	private void seedTrendFixture() {
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seedAt(TREND_ANCHOR, project, TRENDING, "http.server", TREND_FIXTURE, 100.0);
+			seedAt(TREND_ANCHOR.plus(20, ChronoUnit.MINUTES), project, TRENDING, "http.server", TREND_FIXTURE, 500.0);
+		}
+		Instant tail = TREND_ANCHOR.plus(10, ChronoUnit.MINUTES);
+		for (int i = 0; i < SAMPLE_FLOOR - 1; i++) {
+			seedAt(tail, project, TRENDING, "http.server", TREND_FIXTURE, 100.0);
+		}
+		seedAt(tail, project, TRENDING, "http.server", TREND_FIXTURE, 1000.0);
+	}
+
+	/** The trend fixture's Transaction Group, as the detail endpoint is asked for it. */
+	private String trendKey() {
+		return "&project=" + project + "&name=" + encode(TRENDING) + "&op=http.server&environment=" + TREND_FIXTURE;
+	}
+
+	/** A window of {@code minutes} starting at {@code start}, as query params. */
+	private String over(Instant start, long minutes) {
+		return "&from=" + start + "&to=" + start.plus(minutes, ChronoUnit.MINUTES);
+	}
+
+	/** The bucketed series of the one Transaction Group a detail request resolves to. */
+	private Map<String, Object> trend(String key) {
+		return cast(detailBody(key).get("trend"));
+	}
+
+	private List<Map<String, Object>> points(Map<String, Object> body) {
+		Map<String, Object> trend = cast(body.get("trend"));
+		return cast(trend.get("points"));
+	}
+
+	private Map<String, Object> group(Map<String, Object> body) {
+		return cast(body.get("group"));
 	}
 
 	private void seed(long projectId, String name, String op, String environment, double durationMs) {

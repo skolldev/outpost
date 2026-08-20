@@ -214,8 +214,8 @@ public class LogController {
 		// Snapped onto the bucket grid before anything else sees it, so the window the
 		// response reports is the window its buckets actually start on. The first bar
 		// therefore covers a whole bucket, reaching slightly further back than asked.
-		Duration bucket = timelineBucket(lower, upper);
-		lower = alignDown(lower, bucket);
+		Duration bucket = TimeBuckets.width(lower, upper);
+		lower = TimeBuckets.alignDown(lower, bucket);
 
 		SearchQuery search = buildTimelineQuery(project, environment, level, traceId, release, query, attr, lower,
 				upper);
@@ -230,76 +230,6 @@ public class LogController {
 		// an argument a later change to the ladder would keep true.
 		return new Timeline(lower, upper, bucket.toSeconds(),
 				buckets.entrySet().stream().map(entry -> new TimelineBucket(entry.getKey(), entry.getValue())).toList());
-	}
-
-	/**
-	 * Bucket widths the timeline may draw at, smallest first. 7d is the last rung
-	 * deliberately: past it the honest failure is more bars, not a bucket silently
-	 * becoming a month.
-	 */
-	private static final List<Duration> TIMELINE_RUNGS = List.of(Duration.ofMinutes(1), Duration.ofMinutes(5),
-			Duration.ofMinutes(15), Duration.ofHours(1), Duration.ofHours(2), Duration.ofHours(4), Duration.ofHours(6),
-			Duration.ofDays(1), Duration.ofDays(7));
-
-	private static final int MAX_TIMELINE_BUCKETS = 150;
-
-	/**
-	 * Monday 1970-01-05 — the origin every bucket is binned from. Midnight UTC, so
-	 * every sub-day rung lands on a clock boundary; a Monday, so the weekly rung
-	 * agrees with the weeks {@code PartitionManager} cuts partitions on rather than
-	 * starting on the epoch's Thursday.
-	 */
-	private static final Instant TIMELINE_ORIGIN = Instant.parse("1970-01-05T00:00:00Z");
-
-	/**
-	 * The bucket width a window of this length is drawn at: the smallest rung
-	 * yielding at most {@value #MAX_TIMELINE_BUCKETS} bars once the window has been
-	 * aligned to that rung's grid.
-	 *
-	 * <p>A rule rather than a {@code range -> rung} map because the window is not
-	 * always one of the range picker's: "All time" is however long this installation
-	 * has retained logs, and a future zoom-to-selection would hand it arbitrary
-	 * windows. Package-visible for the same reason {@code IssueController
-	 * .sparklineSince} is — it decides a bind parameter, so a guard computing its
-	 * own would plan a query the controller never runs.
-	 *
-	 * <p>The bar count is a <em>ceiling</em>, and it counts from {@link
-	 * #alignDown(Instant, Duration) the aligned start}, because both are what the
-	 * client will draw: a window covering 150.9 rungs occupies 151 bars, and one
-	 * starting mid-bucket occupies one more than its length suggests.
-	 */
-	static Duration timelineBucket(Instant from, Instant to) {
-		for (Duration rung : TIMELINE_RUNGS) {
-			if (barCount(from, to, rung) <= MAX_TIMELINE_BUCKETS) {
-				return rung;
-			}
-		}
-		return TIMELINE_RUNGS.getLast();
-	}
-
-	/** How many whole buckets of {@code rung} the aligned window spans. */
-	private static long barCount(Instant from, Instant to, Duration rung) {
-		long width = rung.toSeconds();
-		long span = to.getEpochSecond() - alignDown(from, rung).getEpochSecond();
-		return Math.max(1, Math.ceilDiv(span, width));
-	}
-
-	/**
-	 * {@code instant} floored onto the grid {@code date_bin} bins to.
-	 *
-	 * <p>Load-bearing, and the reason is easy to miss. {@code date_bin} bins from
-	 * {@link #TIMELINE_ORIGIN}, so a bucket always starts at {@code origin + k·width}
-	 * — never at whatever instant the request happened to ask for. The client places
-	 * buckets by {@code (bucket.start - response.from) / width}, so unless the
-	 * {@code from} it is handed sits on that same grid, every bucket lands one index
-	 * low, the first one floors to {@code -1} and is dropped, and the whole chart
-	 * shifts a bar left. Aligning here — and echoing the aligned instant — is what
-	 * makes the response's own arithmetic come out whole.
-	 */
-	private static Instant alignDown(Instant instant, Duration bucket) {
-		long width = bucket.toSeconds();
-		long offset = instant.getEpochSecond() - TIMELINE_ORIGIN.getEpochSecond();
-		return TIMELINE_ORIGIN.plusSeconds(Math.floorDiv(offset, width) * width);
 	}
 
 	/**
@@ -324,8 +254,8 @@ public class LogController {
 				FROM log_record WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
-		params.add(timelineBucket(from, to).toSeconds() + " seconds");
-		params.add(java.sql.Timestamp.from(TIMELINE_ORIGIN));
+		params.add(TimeBuckets.width(from, to).toSeconds() + " seconds");
+		params.add(TimeBuckets.originParam());
 
 		appendFilters(sql, params, project, environment, level, traceId, release, query, attr, from, to);
 
