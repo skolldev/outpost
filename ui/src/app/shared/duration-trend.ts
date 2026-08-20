@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 
 import { TransactionGroupTrend, TransactionGroupTrendPoint } from '../core/models';
+import { bucketCount, bucketIndex } from './bucket-grid';
 import { formatDuration } from './ui';
 
 /** Viewbox height. The plot is drawn in these units and stretched to the real width. */
@@ -73,6 +74,14 @@ interface GridLine {
  * line breaks there rather than being drawn straight across a quiet weekend. A bucket
  * with no neighbours is drawn as a short dash, so an isolated point is not an
  * invisible one.
+ *
+ * **The edge intervals are partial, and the chart says so.** The window is not widened
+ * onto the bucket grid — that is what keeps the chart describing the same Transactions
+ * as the header (see `TransactionGroupTrend`) — so the first interval starts partway
+ * through and the last is still filling, both on fewer samples than the rest. Fewer
+ * samples is a noisier percentile, and the right edge is where a reader looks for a
+ * regression, so the count is in every bucket's hover text and the caveat is in the
+ * footnote rather than left for the reader to infer.
  */
 @Component({
   selector: 'app-duration-trend',
@@ -96,8 +105,7 @@ export class DurationTrendChart {
     const trend = this.trend();
     const to = this.to();
     if (!trend || !to) return 0;
-    const span = Date.parse(to) - Date.parse(trend.from);
-    return Math.max(1, Math.ceil(span / (trend.bucket_seconds * 1000)));
+    return bucketCount(trend.from, to, trend.bucket_seconds);
   });
 
   readonly plotted = computed<Plotted[]>(() => {
@@ -108,15 +116,12 @@ export class DurationTrendChart {
     const count = this.bucketCount();
 
     return trend.points
-      .map((point) => {
-        const start = Date.parse(point.start);
-        return {
-          index: Math.floor((start - origin) / bucketMs),
-          p50: point.p50_ms,
-          p95: point.p95_ms,
-          label: this.label(point, start, start + bucketMs),
-        };
-      })
+      .map((point) => ({
+        index: bucketIndex(point.start, origin, bucketMs),
+        p50: point.p50_ms,
+        p95: point.p95_ms,
+        label: this.label(point, Date.parse(point.start), bucketMs),
+      }))
       .filter((point) => point.index >= 0 && point.index < count);
   });
 
@@ -133,6 +138,13 @@ export class DurationTrendChart {
     return niceCeiling(peak);
   });
 
+  /**
+   * The axis measures milliseconds — `duration_ms` straight off the wire, unscaled —
+   * but it is *labelled* through `formatDuration`, which is what every other duration
+   * in the product is read in. A group whose p95 is four seconds gets a `5.00s` label
+   * rather than `5000ms`; the alternative was an axis that disagreed with the header
+   * three inches above it about how to write the same number.
+   */
   readonly gridLines = computed<GridLine[]>(() =>
     GRID.map((fraction) => ({
       top: (1 - fraction) * 100,
@@ -188,9 +200,6 @@ export class DurationTrendChart {
     );
   });
 
-  /** Buckets a point covers, for the per-bucket hover target's width in bucket space. */
-  readonly hitWidth = 1;
-
   /**
    * One `d` per series, broken into runs of adjacent buckets so a quiet interval is a
    * gap rather than a straight line drawn through it. A run of one is a short dash:
@@ -223,8 +232,8 @@ export class DurationTrendChart {
     return runs;
   });
 
-  private label(point: TransactionGroupTrendPoint, start: number, end: number): string {
-    const span = `${DAY_TIME.format(start)} – ${DAY_TIME.format(end)}`;
+  private label(point: TransactionGroupTrendPoint, start: number, bucketMs: number): string {
+    const span = `${DAY_TIME.format(start)} – ${DAY_TIME.format(start + bucketMs)}`;
     const received = `${point.count.toLocaleString()} Transaction${point.count === 1 ? '' : 's'}`;
     return `${span} — p50 ${formatDuration(point.p50_ms)}, p95 ${formatDuration(point.p95_ms)}, ${received}`;
   }

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 
 import { LogTimeline as TimelineData } from '../core/models';
+import { bucketCount, bucketIndex } from './bucket-grid';
 import { Level, resolveLevel } from './level-badge';
 
 /** A selected sub-window of the chart, as ISO instants. Half-open: `from <= t < to`. */
@@ -92,8 +93,7 @@ export class LogTimelineChart {
   readonly bucketCount = computed(() => {
     const data = this.data();
     if (!data) return 0;
-    const span = Date.parse(data.to) - Date.parse(data.from);
-    return Math.max(1, Math.ceil(span / (data.bucket_seconds * 1000)));
+    return bucketCount(data.from, data.to, data.bucket_seconds);
   });
 
   /** The selection currently being dragged, if any — it previews before it is committed. */
@@ -127,7 +127,7 @@ export class LogTimelineChart {
     const origin = Date.parse(data.from);
     const counts = new Map<number, Record<string, number>>();
     for (const bucket of data.buckets) {
-      counts.set(Math.floor((Date.parse(bucket.start) - origin) / bucketMs), bucket.counts);
+      counts.set(bucketIndex(bucket.start, origin, bucketMs), bucket.counts);
     }
 
     const totals = [...counts.values()].map((c) => Object.values(c).reduce((a, b) => a + b, 0));

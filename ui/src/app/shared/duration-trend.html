@@ -81,13 +81,7 @@
             1.75px line.
           -->
           @for (point of plotted(); track point.index) {
-            <rect
-              [attr.x]="point.index"
-              y="0"
-              [attr.width]="hitWidth"
-              [attr.height]="height"
-              fill="transparent"
-            >
+            <rect [attr.x]="point.index" y="0" width="1" [attr.height]="height" fill="transparent">
               <title>{{ point.label }}</title>
             </rect>
           }
@@ -106,5 +100,17 @@
         </div>
       </div>
     </div>
+
+    <!--
+      Said out loud rather than left in the hover text, because the two intervals it
+      is about are the leading one and — always — the one still filling at the right
+      edge, which is exactly where the eye goes to answer "is it getting worse now?".
+      Fewer samples is a noisier percentile, and a noisy percentile at the edge of a
+      chart reads as a regression.
+    -->
+    <p class="mt-3 text-xs text-muted-foreground">
+      The first and last intervals are partial, so they hold fewer Transactions than the rest —
+      point at one to see how many.
+    </p>
   }
 </figure>

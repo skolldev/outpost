@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -392,8 +393,11 @@ class TransactionGroupPerformanceTest {
 	/** And prunes to the same window the statistics above it were computed over. */
 	@Test
 	void theTrendPrunesToTheSameWindowAsTheStatistics() {
-		PlanFacts facts = trend(detailGroups().get(0)).explain(jdbc);
+		QueryPlans.Built built = trend(detailGroups().get(0));
 
+		PlanFacts facts = built.explain(jdbc);
+
+		assertThat(built.rows(jdbc)).as("buckets returned — pruning to nothing proves nothing").isNotEmpty();
 		QueryGuard.assertPrunesFrom(jdbc, facts, "txn", window(uiShapes().get(0)).from(), "a 30-day trend");
 	}
 
@@ -423,12 +427,15 @@ class TransactionGroupPerformanceTest {
 		for (Group group : detailGroups()) {
 			// The trend carries the same predicates, so it holds to the same claim — and
 			// `date_bin` appears in its grouping, not in its WHERE, so it seeks the same way.
-			for (QueryPlans.Built built : List.of(detail(group), trend(group))) {
-				PlanFacts facts = built.explain(jdbc);
+			for (Map.Entry<String, QueryPlans.Built> statement : Map.of("detail", detail(group), "trend",
+					trend(group))
+				.entrySet()) {
+				PlanFacts facts = statement.getValue().explain(jdbc);
 
 				// The JSON key, quoted: "Rows Removed by Filter" contains the bare word too.
-				assertThat(facts.plan()).as("detail — %s re-checks a predicate per row rather than seeking on it%n%s",
-						group.label(), facts.plan())
+				assertThat(facts.plan())
+					.as("%s — %s re-checks a predicate per row rather than seeking on it%n%s", statement.getKey(),
+							group.label(), facts.plan())
 					.doesNotContain("\"Filter\"");
 			}
 		}
