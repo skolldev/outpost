@@ -3,7 +3,13 @@
 // Array values become repeated params (environment=a&environment=b); empty /
 // undefined filters are omitted so the resource request stays stable.
 
-import { IssueFilters, LogFilters, TraceFilters, TransactionGroupFilters } from './models';
+import {
+  IssueFilters,
+  LogFilters,
+  TraceFilters,
+  TransactionGroupDetailFilters,
+  TransactionGroupFilters,
+} from './models';
 
 /** Value shape accepted by both HttpParams and httpResource's `params` field. */
 export type QueryParams = Record<
@@ -64,6 +70,21 @@ export function transactionGroupParams(filters: TransactionGroupFilters): QueryP
   if (filters.release) params['release'] = filters.release;
   if (filters.query) params['query'] = filters.query;
   if (filters.sort) params['sort'] = filters.sort;
+  if (filters.from) params['from'] = filters.from;
+  return params;
+}
+
+/**
+ * The detail view's key and filters. `project` and `name` are always sent — they are
+ * the identity, not a narrowing — while **`op` is omitted when the group's op is
+ * null**, which is how the server is told to resolve the null-op group rather than
+ * matching an op of `""`.
+ */
+export function transactionGroupDetailParams(filters: TransactionGroupDetailFilters): QueryParams {
+  const params: QueryParams = { project: filters.project, name: filters.name };
+  if (filters.op) params['op'] = filters.op;
+  if (filters.environment?.length) params['environment'] = filters.environment;
+  if (filters.release) params['release'] = filters.release;
   if (filters.from) params['from'] = filters.from;
   return params;
 }

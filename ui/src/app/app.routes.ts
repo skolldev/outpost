@@ -39,6 +39,16 @@ export const routes: Routes = [
           import('./pages/performance/performance').then((m) => m.PerformancePage),
       },
       {
+        // The Transaction Group is identified by query params, not by a path segment:
+        // transaction names contain slashes, and (Project, name, op) is a tuple rather
+        // than an id. An absent `op` means the group whose op is null.
+        path: 'performance/group',
+        loadComponent: () =>
+          import('./pages/performance/transaction-group-detail').then(
+            (m) => m.TransactionGroupDetailPage,
+          ),
+      },
+      {
         path: 'releases',
         loadComponent: () => import('./pages/releases/releases').then((m) => m.ReleasesPage),
       },

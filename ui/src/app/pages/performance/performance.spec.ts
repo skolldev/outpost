@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
+import { TestBed } from '@angular/core/testing';
 import { render, screen, waitFor, within } from '@testing-library/angular';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -124,9 +125,21 @@ async function renderPerformance(
       provideRouter([]),
       { provide: GlobalFilters, useValue: filters },
     ],
-    routes: [{ path: '', children: [] }],
+    // The detail route is real here because a row navigating to it is what a row is
+    // for; without it a click would fail to route and prove nothing about the link.
+    routes: [
+      { path: '', children: [] },
+      { path: 'performance/group', children: [] },
+    ],
     initialRoute: query ? `/?${query}` : '/',
   });
+}
+
+/** The query params the router landed on, once it reached `path`. */
+async function navigatedTo(path: string): Promise<Record<string, string>> {
+  const router = TestBed.inject(Router);
+  await waitFor(() => expect(router.url).toContain(path));
+  return Object.fromEntries(new URL(router.url, 'http://localhost').searchParams);
 }
 
 /** Records the value of one query param on every leaderboard request the page issues. */
@@ -382,6 +395,46 @@ describe('PerformancePage', () => {
     await user.selectOptions(select, '');
 
     await waitFor(() => expect(seen).toContain(null));
+  });
+
+  it('opens the detail view for the Transaction Group whose row was clicked', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
+    await renderPerformance();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('row', { name: /GET \/api\/checkout/ }));
+
+    const params = await navigatedTo('/performance/group');
+    expect(params).toMatchObject({
+      project: '1',
+      name: 'GET /api/checkout/{id}',
+      op: 'http.server',
+    });
+  });
+
+  /** An absent `op` is how the null-op group is named — "any op" is not a detail target. */
+  it('omits the op for a group that has none', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([NO_OP]))));
+    await renderPerformance();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('row', { name: /process outbox/ }));
+
+    const params = await navigatedTo('/performance/group');
+    expect(params['name']).toBe('process outbox');
+    expect(params['op']).toBeUndefined();
+  });
+
+  it('carries the current filters into the detail view', async () => {
+    server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
+    await renderPerformance(fakeFilters(), PROJECTS, { environment: 'production', range: '7d' });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('row', { name: /GET \/api\/checkout/ }));
+
+    const params = await navigatedTo('/performance/group');
+    expect(params['environment']).toBe('production');
+    expect(params['range']).toBe('7d');
   });
 
   it('carries the global time-range filter into the request', async () => {

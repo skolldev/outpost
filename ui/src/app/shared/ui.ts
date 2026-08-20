@@ -14,6 +14,15 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
 }
 
+/**
+ * A duration that is a *sum* rather than one measurement, where `formatDuration`
+ * would print "312.4s". Both Performance surfaces show the same total for the same
+ * Transaction Group, so they format it the same way from here.
+ */
+export function formatTotalDuration(ms: number): string {
+  return ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}min` : formatDuration(ms);
+}
+
 const PROJECT_COLORS = [
   'var(--project-1)',
   'var(--project-2)',

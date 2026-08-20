@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.within;
 
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -21,6 +22,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -48,6 +50,14 @@ import org.springframework.web.client.RestTemplate;
 class TransactionGroupIntegrationTest {
 
 	private static final String GROUPS = "/api/internal/transaction-groups";
+
+	/**
+	 * The key travels in query params rather than in the path: a transaction name
+	 * contains slashes — {@code GET /api/checkout/{id}} is a name, not a path — so it
+	 * cannot be a path segment without encoding the same string into a second shape on
+	 * the wire.
+	 */
+	private static final String GROUP = "/api/internal/transaction-groups/detail";
 
 	private static final String CHECKOUT = "GET /api/checkout/{id}";
 
@@ -472,6 +482,189 @@ class TransactionGroupIntegrationTest {
 		assertThat(body).containsEntry("distinct_groups", 100);
 	}
 
+	// ------------------------------------------------------------------- detail
+
+	/**
+	 * The detail view a leaderboard row opens into carries the same statistics for the
+	 * one group, computed the same way — this is the assertion that the two screens the
+	 * user reads in sequence cannot disagree.
+	 */
+	@Test
+	void theDetailViewCarriesTheSameStatisticsAsTheRow() {
+		Map<String, Object> row = groups("&project=" + project + "&environment=production").get(0);
+
+		Map<String, Object> group = detail("&project=" + project + "&name=" + encode(CHECKOUT)
+				+ "&op=http.server&environment=production");
+
+		assertThat(group).containsAllEntriesOf(row);
+		assertThat(group).containsEntry("count", 10).containsEntry("total_ms", 5500.0);
+		assertThat(ms(group, "p95_ms")).isCloseTo(955.0, TOLERANCE);
+	}
+
+	/**
+	 * (Project, name, op) is the whole key, so an absent {@code op} means the group
+	 * whose op is <em>null</em> — not "any op", which names a set of Transaction Groups
+	 * rather than one and would average the very things the key exists to separate.
+	 */
+	@Test
+	void anAbsentOpResolvesToTheGroupWhoseOpIsNull() {
+		Map<String, Object> group = detail(
+				"&project=" + project + "&name=" + encode("GET /api/cart") + "&environment=production");
+
+		assertThat(group).containsEntry("op", null).containsEntry("count", 5).containsEntry("total_ms", 150.0);
+	}
+
+	/**
+	 * And it is that group only. The same name under an op is a different Transaction
+	 * Group, and asking for one must not collect the other — a detail view that summed
+	 * both would report statistics no row on the leaderboard shows.
+	 */
+	@Test
+	void aNameCarriedByTwoOpsResolvesToTheOneAskedFor() {
+		String key = "&project=" + project + "&name=" + encode(CHECKOUT) + "&environment=production";
+
+		assertThat(detail(key + "&op=http.server")).containsEntry("count", 10).containsEntry("total_ms", 5500.0);
+		assertThat(detail(key + "&op=navigation")).containsEntry("count", SAMPLE_FLOOR).containsEntry("total_ms", 250.0);
+	}
+
+	/**
+	 * The name matches exactly, not as a substring. The leaderboard's {@code query} is a
+	 * substring search because it is how a long list is narrowed to find a group; once
+	 * found, the group is identified by the name it actually has, and a substring here
+	 * would silently fold every route sharing a prefix into one set of statistics.
+	 */
+	@Test
+	void theNameMatchesExactlyRatherThanAsASubstring() {
+		assertThat(detailStatus("&project=" + project + "&name=" + encode("checkout") + "&op=http.server"))
+			.isEqualTo(HttpStatus.NOT_FOUND);
+	}
+
+	/**
+	 * A Transaction Group too small to be ranked still has a detail view. The sample
+	 * floor keeps a one-sample group from taking a slot in a <em>ranking</em>; nothing
+	 * is ranked here, the request names the group, and the count travels beside the
+	 * percentiles so the user can see what they are worth.
+	 */
+	@Test
+	void aGroupBelowTheSampleFloorStillHasADetailView() {
+		Map<String, Object> group = detail(
+				"&project=" + project + "&name=" + encode("GET /api/orders/98217") + "&op=http.server");
+
+		assertThat(group).containsEntry("count", 1).containsEntry("max_ms", 30_000.0);
+	}
+
+	/** The environment filter narrows the Transactions the statistics are computed from. */
+	@Test
+	void theDetailViewHonoursTheEnvironmentFilter() {
+		String key = "&project=" + project + "&name=" + encode("GET /api/staging-only") + "&op=http.server";
+
+		assertThat(detail(key + "&environment=staging")).containsEntry("count", SAMPLE_FLOOR);
+		assertThat(detailStatus(key + "&environment=production")).isEqualTo(HttpStatus.NOT_FOUND);
+	}
+
+	/** As does the Release filter, which is how a duration change is attributed to a version. */
+	@Test
+	void theDetailViewHonoursTheReleaseFilter() {
+		seedReleaseFixture();
+		String key = "&project=" + project + "&name=" + encode(PRICING) + "&op=http.server&environment="
+				+ RELEASE_FIXTURE;
+
+		assertThat(detail(key)).containsEntry("count", 10).containsEntry("avg_ms", 300.0);
+		assertThat(detail(key + "&release=" + SLOW_RELEASE)).containsEntry("count", 5).containsEntry("avg_ms", 500.0);
+		assertThat(detail(key + "&release=" + FAST_RELEASE)).containsEntry("count", 5).containsEntry("avg_ms", 100.0);
+	}
+
+	/**
+	 * The 30-day cap applies here too, and says so. The header is read beside the row it
+	 * was opened from, over the same global range filter — a detail view that quietly
+	 * covered a different window than the list would disagree with the number the user
+	 * just clicked.
+	 */
+	@Test
+	void anAllTimeDetailRequestIsClampedToThirtyDaysAndSaysSo() {
+		Map<String, Object> body = detailBody("&project=" + project + "&name=" + encode(CHECKOUT) + "&op=http.server");
+
+		assertThat(body.get("range_clamped")).isEqualTo(true);
+		assertThat(window(body)).isEqualTo(30 * 24 * 60);
+	}
+
+	/** And the clamp excludes what falls outside it, rather than only relabelling the window. */
+	@Test
+	void aDetailWindowWiderThanTheCapExcludesWhatFallsOutsideIt() {
+		Instant old = ANCHOR.minus(60, ChronoUnit.DAYS);
+		partitions.ensurePartition(PartitionManager.TXN, old);
+		for (int i = 0; i < SAMPLE_FLOOR; i++) {
+			seedAt(old, project, "GET /api/ancient", "http.server", "production", 9999.0);
+		}
+
+		String key = "&project=" + project + "&name=" + encode("GET /api/ancient") + "&op=http.server";
+
+		// Every Transaction it holds is outside the clamped window, so there is no group
+		// left to describe.
+		ResponseEntity<Map> empty = get(
+				GROUP + "?" + (key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS)).replaceFirst("^&", ""),
+				adminCookie);
+		assertThat(empty.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(empty.getBody()).containsEntry("range_clamped", true).containsKeys("from", "to");
+		assertThat(window(empty.getBody())).isEqualTo(30 * 24 * 60);
+		// And the clamp is what excluded it, not a fixture that was never there: a window
+		// inside the cap, over the same rows, finds it.
+		assertThat(detail(key + "&from=" + old.minus(1, ChronoUnit.DAYS) + "&to=" + old.plus(1, ChronoUnit.DAYS)))
+			.containsEntry("count", SAMPLE_FLOOR);
+	}
+
+	/** A window inside the cap is answered as asked, with no notice raised. */
+	@Test
+	void aDetailWindowInsideTheCapIsNotClamped() {
+		Instant from = ANCHOR.minus(1, ChronoUnit.DAYS);
+		Instant to = ANCHOR.plus(1, ChronoUnit.DAYS);
+
+		Map<String, Object> body = detailBody("&project=" + project + "&name=" + encode(CHECKOUT)
+				+ "&op=http.server&from=" + from + "&to=" + to);
+
+		assertThat(body.get("range_clamped")).isEqualTo(false);
+		assertThat(body.get("from")).isEqualTo(from.toString());
+		assertThat(body.get("to")).isEqualTo(to.toString());
+	}
+
+	@Test
+	void anInvalidDetailWindowIsRejected() {
+		ResponseEntity<Map> response = get(GROUP + "?project=" + project + "&name=" + encode(CHECKOUT) + "&from="
+				+ ANCHOR + "&to=" + ANCHOR, adminCookie);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+		assertThat(response.getBody()).containsEntry("detail", "from must be before to");
+	}
+
+	/**
+	 * A Transaction Group in another Project is a different Transaction Group, however
+	 * identically it is named — the key leads with the Project.
+	 */
+	@Test
+	void theProjectIsPartOfTheKeyRatherThanAFilterOverIt() {
+		assertThat(detailStatus("&project=" + otherProject + "&name=" + encode(CHECKOUT) + "&op=http.server"))
+			.isEqualTo(HttpStatus.NOT_FOUND);
+	}
+
+	/** Members inspect telemetry — the detail view is not Admin-only either. */
+	@Test
+	void aMemberCanReadTheDetailView() {
+		createUser("detail-member@test.local", "member-password", "member");
+		String memberCookie = login("detail-member@test.local", "member-password");
+
+		ResponseEntity<Map> response = get(
+				GROUP + "?project=" + project + "&name=" + encode(CHECKOUT) + "&op=http.server", memberCookie);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(response.getBody()).containsKey("group");
+	}
+
+	@Test
+	void theDetailViewRequiresASession() {
+		assertThat(rest.getForEntity(url(GROUP + "?project=" + project + "&name=x"), String.class).getStatusCode())
+			.isEqualTo(HttpStatus.UNAUTHORIZED);
+	}
+
 	/** Members inspect telemetry — the Performance view is not Admin-only. */
 	@Test
 	void aMemberCanReadTheLeaderboard() {
@@ -589,6 +782,26 @@ class TransactionGroupIntegrationTest {
 		return cast(leaderboard(filter).get("groups"));
 	}
 
+	/** The one Transaction Group a detail request resolves to. */
+	private Map<String, Object> detail(String key) {
+		return cast(detailBody(key).get("group"));
+	}
+
+	private Map<String, Object> detailBody(String key) {
+		ResponseEntity<Map> response = get(GROUP + "?" + key.replaceFirst("^&", ""), adminCookie);
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		return cast(response.getBody());
+	}
+
+	private HttpStatusCode detailStatus(String key) {
+		return get(GROUP + "?" + key.replaceFirst("^&", ""), adminCookie).getStatusCode();
+	}
+
+	/** Names carry slashes and braces, so they reach the endpoint encoded. */
+	private String encode(String value) {
+		return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+	}
+
 	private Map<String, Object> leaderboard(String filter) {
 		ResponseEntity<Map> response = get(GROUPS + "?" + filter.replaceFirst("^&", ""), adminCookie);
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -615,10 +828,16 @@ class TransactionGroupIntegrationTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 	}
 
+	/**
+	 * Passed as a {@link java.net.URI} rather than a String: a String is a URI
+	 * <em>template</em> to {@code RestTemplate}, which expands {@code {id}} in a
+	 * transaction name and re-encodes the {@code %2F} of an already-encoded one. The
+	 * path arrives here encoded, and a URI is what stops it being encoded twice.
+	 */
 	private ResponseEntity<Map> get(String path, String cookie) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.set(HttpHeaders.COOKIE, cookie);
-		return rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+		return rest.exchange(URI.create(url(path)), HttpMethod.GET, new HttpEntity<>(headers), Map.class);
 	}
 
 	private String login(String email, String password) {

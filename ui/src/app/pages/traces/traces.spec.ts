@@ -50,14 +50,19 @@ function fakeFilters(): GlobalFilters {
   } as unknown as GlobalFilters;
 }
 
-async function renderTraces() {
+async function renderTraces(queryParams: Record<string, string> = {}) {
   server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)));
+  const query = Object.entries(queryParams)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('&');
   return render(TracesPage, {
     providers: [
       provideHttpClient(),
       provideRouter([]),
       { provide: GlobalFilters, useValue: fakeFilters() },
     ],
+    routes: [{ path: '', children: [] }],
+    initialRoute: query ? `/?${query}` : '/',
   });
 }
 
@@ -101,5 +106,26 @@ describe('TracesPage', () => {
     await user.click(screen.getByRole('switch', { name: /errors/i }));
 
     await waitFor(() => expect(seen).toContain('true'));
+  });
+
+  /**
+   * The duration band has no control on this page — it arrives from the Performance
+   * detail view's links to a Transaction Group's slow and typical Traces (#162), and
+   * `max_duration` is what makes "typical" mean anything: without an upper bound it
+   * would include every cache hit in the window.
+   */
+  it('filters by a duration band carried in the URL', async () => {
+    const seen: Record<string, string | null>[] = [];
+    server.use(
+      http.get(`${BASE}/traces`, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        seen.push({ min: params.get('min_duration'), max: params.get('max_duration') });
+        return HttpResponse.json(page([TRACE]));
+      }),
+    );
+
+    await renderTraces({ min_duration: '42', max_duration: '310' });
+
+    await waitFor(() => expect(seen).toContainEqual({ min: '42', max: '310' }));
   });
 });

@@ -1,0 +1,125 @@
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <a
+    hlmBtn
+    variant="outline"
+    size="sm"
+    routerLink="/performance"
+    [queryParams]="backToListParams"
+    queryParamsHandling="merge"
+  >
+    ← Performance
+  </a>
+  @if (loading()) {
+    <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
+  }
+</div>
+
+@if (rangeClamped()) {
+  <app-range-clamp-notice />
+}
+
+@if (incompleteLink()) {
+  <div hlmEmpty class="rounded-lg border border-border">
+    <div hlmEmptyHeader>
+      <h3 hlmEmptyTitle>This link does not name a Transaction Group.</h3>
+      <p hlmEmptyDescription>
+        A Transaction Group is identified by its Project, name and op. Open one from the Performance
+        list to get a link that carries all three.
+      </p>
+    </div>
+  </div>
+} @else if (error()) {
+  <div hlmAlert variant="destructive" role="alert" class="mx-auto w-full max-w-xl">
+    <p hlmAlertTitle>Transaction Group unavailable</p>
+    <p hlmAlertDescription>{{ error() }} Try loading the page again.</p>
+  </div>
+} @else if (notFound()) {
+  <!--
+    Not an error: the key is well-formed and simply matches nothing in this window,
+    which is what a shared link to an endpoint that has since gone quiet looks like.
+  -->
+  <div hlmEmpty class="rounded-lg border border-border">
+    <div hlmEmptyHeader>
+      <h3 hlmEmptyTitle>No Transactions in this Transaction Group.</h3>
+      <p hlmEmptyDescription>
+        <span class="font-medium text-foreground">{{ name() }}</span> received no Transactions in
+        the selected Project, environment and time range.
+        @if (rangeClamped()) {
+          The requested range was capped at the last 30 days; clear the other filters above.
+        } @else {
+          Widen the range or clear the filters above.
+        }
+      </p>
+    </div>
+  </div>
+} @else if (group(); as group) {
+  <div class="mb-4 flex flex-wrap items-start gap-3">
+    <span
+      class="mt-1.5 inline-block size-2.5 shrink-0 rounded-full"
+      [style.background-color]="projectColor(group.project_id)"
+      [title]="projects.name(group.project_id)"
+    ></span>
+    <div class="min-w-0">
+      <h1 class="text-lg font-semibold break-all text-foreground">{{ group.name }}</h1>
+      <p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+        {{ projects.name(group.project_id) }}
+        @if (group.op) {
+          <span hlmBadge variant="outline" class="font-mono text-xs">{{ group.op }}</span>
+        } @else {
+          <span class="text-xs">no op</span>
+        }
+      </p>
+    </div>
+  </div>
+
+  <dl class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+    @for (statistic of statistics(); track statistic.label) {
+      <div class="rounded-lg border border-border bg-card px-3 py-2">
+        <dt class="text-xs text-muted-foreground">{{ statistic.label }}</dt>
+        <dd class="font-mono text-sm font-medium text-foreground">{{ statistic.value }}</dd>
+        @if (statistic.hint) {
+          <dd class="text-xs text-muted-foreground">{{ statistic.hint }}</dd>
+        }
+      </div>
+    }
+  </dl>
+
+  <!--
+    Two ways across to the span waterfall, not one. Offering only the slowest Traces
+    would send every investigation chasing a single outlier — a GC pause, a cold start
+    — where the diagnosis is a diff: what does a slow request do that a typical one
+    does not?
+  -->
+  <div class="rounded-lg border border-border bg-card p-4">
+    <h2 class="text-sm font-semibold text-foreground">Open a real request</h2>
+    <p class="mt-1 mb-3 text-sm text-muted-foreground">
+      These statistics say this Transaction Group is slow; a span waterfall says why. Diff a slow
+      Trace against a typical one to find what differs.
+    </p>
+    <div class="flex flex-wrap items-center gap-3">
+      <a
+        hlmBtn
+        size="sm"
+        routerLink="/traces"
+        [queryParams]="slowTracesParams()"
+        queryParamsHandling="merge"
+      >
+        Slow Traces (≥ {{ formatDuration(group.p95_ms) }})
+      </a>
+      <a
+        hlmBtn
+        variant="outline"
+        size="sm"
+        routerLink="/traces"
+        [queryParams]="typicalTracesParams()"
+        queryParamsHandling="merge"
+      >
+        Typical Traces ({{ formatDuration(group.p50_ms) }}–{{ formatDuration(group.p95_ms) }})
+      </a>
+    </div>
+    <p class="mt-3 text-xs text-muted-foreground">
+      The Traces page matches transaction names by substring and cannot filter by op, so a Trace of
+      a similarly named Transaction Group may appear alongside these.
+    </p>
+  </div>
+}

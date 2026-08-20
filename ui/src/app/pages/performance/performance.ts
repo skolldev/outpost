@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { HlmBadge } from '@spartan-ng/helm/badge';
 import { HlmAlert, HlmAlertDescription, HlmAlertTitle } from '@spartan-ng/helm/alert';
@@ -35,7 +35,8 @@ import {
 import { ProjectsStore } from '../../core/projects';
 import { transactionGroupParams } from '../../core/query-params';
 import { ProjectLegend } from '../../shared/project-legend';
-import { formatDuration, projectColor } from '../../shared/ui';
+import { RangeClampNotice } from './range-clamp-notice';
+import { formatDuration, formatTotalDuration, projectColor } from '../../shared/ui';
 
 const BASE = API_BASE;
 
@@ -98,6 +99,7 @@ const DEFAULT_SORT: TransactionGroupSort = 'total_ms';
   selector: 'app-performance',
   imports: [
     FormsModule,
+    RouterLink,
     HlmBadge,
     HlmAlert,
     HlmAlertTitle,
@@ -112,6 +114,7 @@ const DEFAULT_SORT: TransactionGroupSort = 'total_ms';
     HlmEmptyDescription,
     HlmSpinner,
     ProjectLegend,
+    RangeClampNotice,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex min-h-0 flex-1 flex-col' },
@@ -229,9 +232,7 @@ export class PerformancePage {
   /** Whole counts read better than "12.4k" when they are the denominator of a percentile. */
   readonly formatCount = (count: number): string => count.toLocaleString();
 
-  /** Total time runs to minutes on a busy group, where `formatDuration` would print "312.4s". */
-  readonly formatTotal = (ms: number): string =>
-    ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}min` : formatDuration(ms);
+  readonly formatTotal = formatTotalDuration;
 
   constructor() {
     // Keep the search shareable in the URL, in step with the debounce.
