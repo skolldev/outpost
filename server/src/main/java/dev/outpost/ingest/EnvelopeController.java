@@ -3,6 +3,7 @@ package dev.outpost.ingest;
 import dev.outpost.config.OutpostProperties;
 import tools.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,6 +34,15 @@ public class EnvelopeController {
 	private static final Logger log = LoggerFactory.getLogger(EnvelopeController.class);
 	private static final int RETRY_AFTER_SECONDS = 30;
 
+	// Spring Security's default value plus no-transform. SDKs send these acks with
+	// fetch(keepalive), never reading the body, so a fronting proxy that gzips the
+	// tiny JSON (it is a few dozen bytes) and then buffers the compressed stream
+	// leaves the browser's request pending until the connection is torn down —
+	// seconds later. no-transform tells the proxy to pass the ack through
+	// untransformed so the stream closes immediately. Same hazard the log-tail SSE
+	// avoids by staying out of the compression mime-types (application.yaml).
+	private static final String INGEST_CACHE_CONTROL = "no-cache, no-store, max-age=0, must-revalidate, no-transform";
+
 	private final EnvelopeParser parser;
 	private final EnvelopeSpool spool;
 	private final IngestAuthenticator authenticator;
@@ -55,7 +65,12 @@ public class EnvelopeController {
 
 	@PostMapping(path = "/envelope/", consumes = { "application/x-sentry-envelope", "text/plain", "*/*" })
 	public ResponseEntity<Map<String, String>> envelope(@PathVariable long projectId,
-			@RequestParam(name = "sentry_key", required = false) String sentryKeyParam, HttpServletRequest request) {
+			@RequestParam(name = "sentry_key", required = false) String sentryKeyParam, HttpServletRequest request,
+			HttpServletResponse response) {
+		// Set before any early return or thrown exception so every ack — accepted,
+		// rate-limited, forbidden, malformed — carries it. Spring Security's
+		// CacheControlHeadersWriter leaves Cache-Control alone once it is present.
+		response.setHeader("Cache-Control", INGEST_CACHE_CONTROL);
 		Instant receivedAt = Instant.now();
 		SpoolFile spoolFile;
 		try {

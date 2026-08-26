@@ -204,6 +204,18 @@ class EnvelopeIngestIntegrationTest {
 	}
 
 	@Test
+	void ingestAcksAreMarkedNoTransformSoAFrontingProxyDoesNotGzipAndBufferThem() {
+		ResponseEntity<String> ack = postEnvelope(jsEventEnvelope("prod", "t.handleClick"), null,
+				"?sentry_key=" + publicKey, false);
+
+		assertThat(ack.getStatusCode()).isEqualTo(HttpStatus.OK);
+		// SDKs fire these acks with fetch(keepalive) and never read the body, so a
+		// proxy that gzips then buffers the tiny JSON leaves the browser's request
+		// pending for seconds. no-transform keeps the ack uncompressed and prompt.
+		assertThat(ack.getHeaders().getCacheControl()).contains("no-transform");
+	}
+
+	@Test
 	void authViaDsnInEnvelopeHeader() {
 		String envelope = "{\"dsn\":\"http://" + publicKey + "@localhost:" + port + "/" + projectId + "\"}\n"
 				+ "{\"type\":\"event\"}\n"

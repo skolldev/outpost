@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import dev.outpost.config.OutpostProperties;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -26,6 +27,7 @@ class EnvelopeControllerTest {
 	private final ClientReportCounters clientReports = mock(ClientReportCounters.class);
 	private final EnvelopeController controller =
 			new EnvelopeController(parser, spool, authenticator, queue, clientReports, metrics, properties);
+	private final HttpServletResponse response = mock(HttpServletResponse.class);
 
 	@Test
 	void spoolReadFailureIsReportedAsAnInternalError() throws IOException {
@@ -34,7 +36,7 @@ class EnvelopeControllerTest {
 		when(spool.write(request)).thenReturn(file);
 		when(spool.open(file)).thenThrow(new IOException("disk read failed"));
 
-		assertThatThrownBy(() -> controller.envelope(42, null, request))
+		assertThatThrownBy(() -> controller.envelope(42, null, request, response))
 			.isInstanceOf(EnvelopeSpool.SpoolReadException.class)
 			.hasCauseInstanceOf(IOException.class);
 		assertThat(controller.spoolReadFailure().getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
@@ -48,7 +50,7 @@ class EnvelopeControllerTest {
 		when(spool.write(request)).thenReturn(file);
 		when(spool.open(file)).thenThrow(new ZipException("invalid gzip"));
 
-		assertThatThrownBy(() -> controller.envelope(42, null, request))
+		assertThatThrownBy(() -> controller.envelope(42, null, request, response))
 			.isInstanceOf(EnvelopeParser.MalformedEnvelopeException.class)
 			.hasMessage("invalid gzip body");
 		verify(spool).delete(file);
@@ -61,7 +63,7 @@ class EnvelopeControllerTest {
 		when(spool.write(request)).thenReturn(file);
 		when(spool.open(file)).thenThrow(new EOFException("disk read failed"));
 
-		assertThatThrownBy(() -> controller.envelope(42, null, request))
+		assertThatThrownBy(() -> controller.envelope(42, null, request, response))
 			.isInstanceOf(EnvelopeSpool.SpoolReadException.class)
 			.hasCauseInstanceOf(EOFException.class);
 		verify(spool).delete(file);
