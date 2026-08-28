@@ -45,8 +45,20 @@ Outpost's ability to receive telemetry from Sentry SDKs and artifact uploads fro
 _Avoid_: Sentry clone, drop-in Sentry replacement
 
 **API Token**:
-A named secret credential used by automation to perform explicitly scoped Outpost API actions, such as uploading Artifacts.
+A named secret credential used by automation or developer tooling to perform explicitly scoped Outpost API actions. Every API Token is either a Personal Token or an Installation Token.
 _Avoid_: Project key, DSN
+
+**Personal Token**:
+An API Token belonging to one Outpost User, which stops working the moment that account is deleted. A Member may create one for their own use.
+_Avoid_: User token, developer token
+
+**Installation Token**:
+An API Token belonging to the Installation rather than to any Outpost User, so it outlives whoever created it. Only an Admin may create one.
+_Avoid_: Admin token, service account
+
+**Scope**:
+A named permission carried by an API Token that determines which Outpost API actions it may perform.
+_Avoid_: Role, permission level
 
 **Outpost User**:
 A person with an account that can sign in to Outpost.
@@ -57,16 +69,26 @@ An end user of an instrumented Project who is identified in an Event.
 _Avoid_: User, Outpost user
 
 **Admin**:
-An Outpost User who can manage installation-wide resources and settings, including Projects, Project Keys, Uptime Monitors, API Tokens, Outpost Users, and data retention.
+An Outpost User who can manage installation-wide resources and settings, including Projects, Project Keys, Uptime Monitors, Installation Tokens, Outpost Users, and data retention.
 _Avoid_: Administrator
 
 **Member**:
-An Outpost User who can inspect telemetry and change Issue status but cannot manage installation-wide resources or settings.
+An Outpost User who can inspect telemetry, change Issue status, and create Personal Tokens for their own use, but cannot manage installation-wide resources or settings.
 _Avoid_: Read-only user
 
 **Session**:
 A period of authenticated access granted to an Outpost User at sign-in. It expires on its own schedule and outlives changes to the account it was granted to.
 _Avoid_: Login, cookie, token
+
+### Agent Access
+
+**MCP Surface**:
+The endpoint through which Outpost offers its telemetry to AI agents as a set of Tools, reached with an API Token carrying the read Scope.
+_Avoid_: MCP server (which implies a separate deployable), AI integration
+
+**Tool**:
+One operation an agent may invoke over the MCP Surface, such as retrieving an Issue together with its Event, stack, surrounding Log Records and Trace. A Tool reports received telemetry; the calling agent draws the conclusions.
+_Avoid_: Endpoint, function, command
 
 ### Operations
 
