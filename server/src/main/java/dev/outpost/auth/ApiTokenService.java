@@ -14,12 +14,21 @@ import org.springframework.stereotype.Service;
 /**
  * Opaque bearer tokens for sentry-cli / CI: shown once at creation,
  * SHA-256-hashed at rest (the tokens are 192-bit random, so a fast hash is
- * fine — unlike passwords), scoped (v1: {@code artifacts:write}).
+ * fine — unlike passwords), scoped ({@code artifacts:write} for uploads,
+ * {@code telemetry:read} for the MCP Surface).
  */
 @Service
 public class ApiTokenService {
 
 	public static final String SCOPE_ARTIFACTS_WRITE = "artifacts:write";
+
+	/**
+	 * Read access to telemetry, carried today by the tokens the MCP Surface accepts.
+	 * Named for the capability rather than for the surface — {@code mcp:read} would
+	 * have to be minted a second time the day a documented public read API lands,
+	 * and two scopes granting the same permission is a decision nobody could undo.
+	 */
+	public static final String SCOPE_TELEMETRY_READ = "telemetry:read";
 
 	public record ApiToken(long id, String name, List<String> scopes, Instant createdAt) {
 	}

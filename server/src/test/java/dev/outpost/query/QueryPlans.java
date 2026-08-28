@@ -200,6 +200,50 @@ public final class QueryPlans {
 		return TransactionGroupController.window(from, to);
 	}
 
+	// --------------------------------------------------------------- mcp tools
+
+	/**
+	 * The Issue + Project + latest-Event join behind {@code get_issue_context}. The
+	 * MCP Surface's Tools reuse the controllers' factories wherever the question is
+	 * one the UI already asks (ADR-0016), which leaves exactly the statements below
+	 * needing guards of their own — the reuse rule is not an exemption from guarding.
+	 */
+	public static Built issueContext(long issueId) {
+		return Built.of(IssueContextTool.buildIssueContextQuery(issueId));
+	}
+
+	/**
+	 * The Trace summary the same Tool returns. Separate from {@link #traceDetail}
+	 * rather than derived from it: the detail endpoint reads every row of four
+	 * tables, and reducing a Trace to a root and three counts is a different
+	 * question with a different plan.
+	 */
+	public static Built traceSummary(String traceId) {
+		return Built.of(IssueContextTool.buildTraceSummaryQuery(traceId));
+	}
+
+	/**
+	 * The surrounding Log Records, as the Tool binds them — the log list's own
+	 * factory with a Project and a window and no cursor. Guarded here as well as in
+	 * {@code LogQueryPerformanceTest} because the Tool's window is minutes wide
+	 * rather than the UI's fourteen days, and that is a different shape arriving at
+	 * the same index.
+	 */
+	public static Built surroundingLogs(long projectId, Instant from, Instant to) {
+		return Built.of(IssueContextTool.buildSurroundingLogQuery(projectId, from, to));
+	}
+
+	/**
+	 * The two widths the Tool can read Log Records over, from the Tool that owns
+	 * them: the default it applies when an agent names none, and the maximum it
+	 * clamps to. Read rather than recomputed, for the reason {@link #sparklineSince()}
+	 * is — they are the bind parameters that decide which partitions are pruned.
+	 */
+	public static List<Duration> surroundingLogWindows() {
+		return List.of(Duration.ofMinutes(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES),
+				Duration.ofMinutes(IssueContextTool.MAX_LOG_WINDOW_MINUTES));
+	}
+
 	// ---------------------------------------------------------- traces/releases
 
 	public static Built traceSearch(List<Long> project, List<String> environment, String release, String query,
