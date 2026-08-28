@@ -1,5 +1,6 @@
 package dev.outpost.query;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.symbolication.Symbolicator;
@@ -13,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,13 +54,12 @@ import org.springframework.stereotype.Component;
  * knows what it is not being shown.
  * </ul>
  *
- * <p>The payload is built as nested {@code LinkedHashMap}s with literal
- * {@code snake_case} keys, as the query controllers next door build theirs, and
- * here there is a second reason on top of that consistency: the MCP transport
- * serializes a Tool result through its <em>own</em> {@code JsonMapper}, not the
- * application's, so the global {@code SNAKE_CASE} strategy that makes a record
- * DTO come out right on {@code /api/internal/**} does not apply. A record would
- * serialize camelCase here unless every component carried an annotation.
+ * <p>The payload is a tree of records whose component names are literal
+ * {@code snake_case}. Besides keeping the existing wire contract, the concrete
+ * types let Spring AI advertise an MCP {@code outputSchema} and return the value
+ * as {@code structuredContent}. The MCP transport serializes Tool results through
+ * its <em>own</em> {@code JsonMapper}, so the application's global
+ * {@code SNAKE_CASE} strategy does not apply here.
  *
  * <p>{@link #caveats} entries are sentences rather than codes, deliberately. The
  * consumer is a language model with no access to a lookup table, and the ADR-0014
@@ -67,6 +68,55 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class IssueContextTool {
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record IssueContextResult(IssuePayload issue, @Nullable EventPayload latest_event,
+			@Nullable ExceptionPayload exception, List<BreadcrumbPayload> breadcrumbs,
+			@Nullable LogWindowPayload log_window, List<LogRecordPayload> log_records,
+			@Nullable TracePayload trace, List<String> caveats) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record IssuePayload(long id, long project_id, String project_slug, String project_name,
+			@Nullable String project_platform, String fingerprint, String title, @Nullable String culprit,
+			String level, String status, String first_seen, String last_seen, long events_received) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record EventPayload(String id, String timestamp, String environment, @Nullable String release,
+			@Nullable String level, @Nullable String message, @Nullable String exception_type,
+			@Nullable String user_ident, @Nullable String trace_id, @Nullable String symbolication_status) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record ExceptionPayload(@Nullable String type, @Nullable String value, @Nullable String module,
+			int chained_exceptions, int frames_in_stack, List<FramePayload> frames) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record FramePayload(@Nullable String function, @Nullable String module, @Nullable String filename,
+			@Nullable String abs_path, @Nullable Integer lineno, @Nullable Integer colno,
+			@Nullable Boolean in_app, @Nullable String context_line) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record BreadcrumbPayload(@Nullable String timestamp, @Nullable String type, @Nullable String category,
+			@Nullable String level, @Nullable String message) {
+	}
+
+	public record LogWindowPayload(String start, String end, int minutes_before_event) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record LogRecordPayload(String id, String timestamp, String environment, String level, String body,
+			@Nullable String trace_id, @Nullable String span_id) {
+	}
+
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	public record TracePayload(String trace_id, long root_project_id, String root_name, @Nullable String root_op,
+			@Nullable String root_status, String start_ts, String end_ts, double root_duration_ms,
+			long transactions_received, long spans_received, long error_events_received) {
+	}
 
 	/**
 	 * Minutes <em>before</em> the Event that Log Records are read over when the
@@ -127,7 +177,7 @@ public class IssueContextTool {
 	 * property names straight from them — so they are {@code snake_case} like every
 	 * other JSON field this server produces, rather than Java's usual camelCase.
 	 */
-	@McpTool(name = "get_issue_context", title = "Get Issue context",
+	@McpTool(name = "get_issue_context", title = "Get Issue context", generateOutputSchema = true,
 			// Read-only and non-destructive, which is the whole v1 posture: a client that
 			// gates writes behind a confirmation must not gate this. The defaults are the
 			// opposite of every one of these, so stating them is not decoration.
@@ -139,7 +189,7 @@ public class IssueContextTool {
 					Log Records recorded around it, and a summary of its Trace. Reports received telemetry only — \
 					no root cause, no suggested fix. Read the `caveats` array: it names what was truncated, \
 					defaulted, or omitted, including which parts of the raw event payload are not returned here.""")
-	public Map<String, Object> getIssueContext(
+	public IssueContextResult getIssueContext(
 			@McpToolParam(description = "Outpost Issue id, as shown in the issue URL.") long issue_id,
 			@McpToolParam(required = false,
 					description = "Minutes before the Event to read Log Records over. Defaults to "
@@ -153,40 +203,24 @@ public class IssueContextTool {
 			.orElseThrow(() -> new IllegalArgumentException("no Issue with id " + issue_id));
 
 		List<String> caveats = new ArrayList<>();
-		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("issue", context.issue());
-
 		if (context.eventId() == null) {
 			// An Issue outlives its Events: the counters on `issue` are cumulative while
 			// `event` is bounded by retention. Saying so beats returning empty arrays.
 			caveats.add("This Issue has no Event left in retention, so no Event, stack, breadcrumbs, "
 					+ "Log Records or Trace are returned. The Issue's own counters are cumulative and still stand.");
-			body.put("latest_event", null);
-			body.put("exception", null);
-			body.put("breadcrumbs", List.of());
-			body.put("log_window", null);
-			body.put("log_records", List.of());
-			body.put("trace", null);
-			body.put("caveats", caveats);
-			return body;
+			return new IssueContextResult(context.issue(), null, null, List.of(), null, List.of(), null, caveats);
 		}
 
-		body.put("latest_event", context.event());
-		body.put("exception", exception(context, caveats));
-		body.put("breadcrumbs", breadcrumbs(context.data(), caveats));
-
+		ExceptionPayload exception = exception(context, caveats);
+		List<BreadcrumbPayload> breadcrumbs = breadcrumbs(context.data(), caveats);
 		Window window = window(context.eventTimestamp(), log_window_minutes, caveats);
-		Map<String, Object> logWindow = new LinkedHashMap<>();
-		logWindow.put("start", window.start().toString());
-		logWindow.put("end", window.end().toString());
-		logWindow.put("minutes_before_event", window.minutes());
-		body.put("log_window", logWindow);
-		body.put("log_records", logRecords(context, window, caveats));
-		body.put("trace", trace(context.traceId(), caveats));
-
+		LogWindowPayload logWindow = new LogWindowPayload(window.start().toString(), window.end().toString(),
+				window.minutes());
+		List<LogRecordPayload> logRecords = logRecords(context, window, caveats);
+		TracePayload trace = trace(context.traceId(), caveats);
 		caveats.addAll(omittedEventDataKeys(context.data()));
-		body.put("caveats", caveats);
-		return body;
+		return new IssueContextResult(context.issue(), context.event(), exception, breadcrumbs, logWindow, logRecords,
+				trace, caveats);
 	}
 
 	// ------------------------------------------------------------------ query
@@ -265,7 +299,7 @@ public class IssueContextTool {
 	// ------------------------------------------------------------- projections
 
 	/** The primary exception's identity and the frames nearest the throw site. */
-	private static Map<String, Object> exception(Context context, List<String> caveats) {
+	private static ExceptionPayload exception(Context context, List<String> caveats) {
 		// Only these two statuses warrant a caveat. `none` means there was nothing to
 		// symbolicate — a JVM stack, say — and is not a gap; and there is no pending
 		// state to disclose, because Symbolicator runs synchronously in the ingest
@@ -275,7 +309,7 @@ public class IssueContextTool {
 			caveats.add("The stack is not symbolicated (symbolication_status=" + status
 					+ "). Frames may name generated files, minified function names and generated line numbers "
 					+ "rather than source, so do not treat them as source locations. This is recoverable: "
-					+ "uploading source maps for release " + context.event().get("release")
+					+ "uploading source maps for release " + context.event().release()
 					+ " re-symbolicates the stored Events of that release.");
 		}
 
@@ -288,14 +322,8 @@ public class IssueContextTool {
 		JsonNode primary = values.get(values.size() - 1);
 		JsonNode frames = primary.path("stacktrace").path("frames");
 
-		Map<String, Object> exception = new LinkedHashMap<>();
-		exception.put("type", text(primary, "type"));
-		exception.put("value", text(primary, "value"));
-		exception.put("module", text(primary, "module"));
-		exception.put("chained_exceptions", values.size());
-		exception.put("frames_in_stack", frames.isArray() ? frames.size() : 0);
-		exception.put("frames", frames(frames, caveats));
-		return exception;
+		return new ExceptionPayload(text(primary, "type"), text(primary, "value"), text(primary, "module"),
+				values.size(), frames.isArray() ? frames.size() : 0, frames(frames, caveats));
 	}
 
 	/**
@@ -303,23 +331,17 @@ public class IssueContextTool {
 	 * end a reader starts from. Truncation therefore drops the outermost frames,
 	 * which are the ones least likely to name the defect.
 	 */
-	private static List<Map<String, Object>> frames(JsonNode frames, List<String> caveats) {
+	private static List<FramePayload> frames(JsonNode frames, List<String> caveats) {
 		if (!frames.isArray() || frames.isEmpty()) {
 			return List.of();
 		}
-		List<Map<String, Object>> kept = new ArrayList<>();
+		List<FramePayload> kept = new ArrayList<>();
 		for (int i = frames.size() - 1; i >= 0 && kept.size() < MAX_STACK_FRAMES; i--) {
 			JsonNode frame = frames.get(i);
-			Map<String, Object> row = new LinkedHashMap<>();
-			row.put("function", text(frame, "function"));
-			row.put("module", text(frame, "module"));
-			row.put("filename", text(frame, "filename"));
-			row.put("abs_path", text(frame, "abs_path"));
-			row.put("lineno", number(frame, "lineno"));
-			row.put("colno", number(frame, "colno"));
-			row.put("in_app", frame.hasNonNull("in_app") ? frame.get("in_app").asBoolean() : null);
-			row.put("context_line", text(frame, "context_line"));
-			kept.add(row);
+			kept.add(new FramePayload(text(frame, "function"), text(frame, "module"), text(frame, "filename"),
+					text(frame, "abs_path"), number(frame, "lineno"), number(frame, "colno"),
+					frame.hasNonNull("in_app") ? frame.get("in_app").asBoolean() : null,
+					text(frame, "context_line")));
 		}
 		if (frames.size() > kept.size()) {
 			caveats.add("Only the " + kept.size() + " frames nearest the throw site are returned, of "
@@ -329,7 +351,7 @@ public class IssueContextTool {
 	}
 
 	/** Breadcrumbs in the order they were recorded, truncated from the far end. */
-	private static List<Map<String, Object>> breadcrumbs(JsonNode data, List<String> caveats) {
+	private static List<BreadcrumbPayload> breadcrumbs(JsonNode data, List<String> caveats) {
 		JsonNode raw = data.path("breadcrumbs");
 		// SDKs send either {"values": [...]} or a bare array; the UI accepts both.
 		JsonNode values = raw.isArray() ? raw : raw.path("values");
@@ -337,18 +359,13 @@ public class IssueContextTool {
 			return List.of();
 		}
 		int from = Math.max(0, values.size() - MAX_BREADCRUMBS);
-		List<Map<String, Object>> kept = new ArrayList<>();
+		List<BreadcrumbPayload> kept = new ArrayList<>();
 		for (int i = from; i < values.size(); i++) {
 			JsonNode crumb = values.get(i);
-			Map<String, Object> row = new LinkedHashMap<>();
 			// Passed through as received: SDKs send either epoch seconds or ISO-8601 here,
 			// and normalizing one into the other would be this Tool inventing a fact.
-			row.put("timestamp", text(crumb, "timestamp"));
-			row.put("type", text(crumb, "type"));
-			row.put("category", text(crumb, "category"));
-			row.put("level", text(crumb, "level"));
-			row.put("message", text(crumb, "message"));
-			kept.add(row);
+			kept.add(new BreadcrumbPayload(text(crumb, "timestamp"), text(crumb, "type"), text(crumb, "category"),
+					text(crumb, "level"), text(crumb, "message")));
 		}
 		if (from > 0) {
 			caveats.add("Only the " + kept.size() + " breadcrumbs immediately before the Event are returned, of "
@@ -364,7 +381,7 @@ public class IssueContextTool {
 	 * from the Event. See {@link Window} for why the window ends at the Event rather
 	 * than straddling it, which is what makes that the right end to lose.
 	 */
-	private List<Map<String, Object>> logRecords(Context context, Window window, List<String> caveats) {
+	private List<LogRecordPayload> logRecords(Context context, Window window, List<String> caveats) {
 		SearchQuery search = buildSurroundingLogQuery(context.projectId(), window.start(), window.end());
 		List<Map<String, Object>> rows = jdbc.query(search.sql(), (rs, i) -> {
 			Map<String, Object> row = new LinkedHashMap<>();
@@ -386,31 +403,25 @@ public class IssueContextTool {
 		}
 		List<Map<String, Object>> chronological = new ArrayList<>(page.rows());
 		Collections.reverse(chronological);
-		return chronological;
+		return chronological.stream()
+			.map(row -> new LogRecordPayload((String) row.get("id"), (String) row.get("timestamp"),
+					(String) row.get("environment"), (String) row.get("level"), (String) row.get("body"),
+					(String) row.get("trace_id"), (String) row.get("span_id")))
+			.toList();
 	}
 
 	/** The Trace summary, or null with a caveat saying which of the two reasons applies. */
-	private Map<String, Object> trace(String traceId, List<String> caveats) {
+	private TracePayload trace(String traceId, List<String> caveats) {
 		if (traceId == null || traceId.isBlank()) {
 			caveats.add("The Event carries no trace_id, so it cannot be placed in a Trace.");
 			return null;
 		}
 		SearchQuery search = buildTraceSummaryQuery(traceId);
-		List<Map<String, Object>> rows = jdbc.query(search.sql(), (rs, i) -> {
-			Map<String, Object> row = new LinkedHashMap<>();
-			row.put("trace_id", rs.getString("trace_id"));
-			row.put("root_project_id", rs.getLong("project_id"));
-			row.put("root_name", rs.getString("root_name"));
-			row.put("root_op", rs.getString("root_op"));
-			row.put("root_status", rs.getString("status"));
-			row.put("start_ts", rs.getTimestamp("start_ts").toInstant().toString());
-			row.put("end_ts", rs.getTimestamp("end_ts").toInstant().toString());
-			row.put("root_duration_ms", rs.getDouble("duration_ms"));
-			row.put("transactions_received", rs.getLong("transactions_received"));
-			row.put("spans_received", rs.getLong("spans_received"));
-			row.put("error_events_received", rs.getLong("error_events_received"));
-			return row;
-		}, search.params().toArray());
+		List<TracePayload> rows = jdbc.query(search.sql(), (rs, i) -> new TracePayload(rs.getString("trace_id"),
+				rs.getLong("project_id"), rs.getString("root_name"), rs.getString("root_op"), rs.getString("status"),
+				rs.getTimestamp("start_ts").toInstant().toString(), rs.getTimestamp("end_ts").toInstant().toString(),
+				rs.getDouble("duration_ms"), rs.getLong("transactions_received"), rs.getLong("spans_received"),
+				rs.getLong("error_events_received")), search.params().toArray());
 		if (rows.isEmpty()) {
 			// Same rule the trace detail endpoint applies: a Trace is only known once a
 			// Transaction has arrived for it. Errors and logs may reference one that has not.
@@ -490,27 +501,18 @@ public class IssueContextTool {
 	 * One row of {@link #buildIssueContextQuery}, split into the two payload objects
 	 * it carries plus the fields the rest of the call needs as inputs.
 	 */
-	private record Context(Map<String, Object> issue, Map<String, Object> event, long projectId, UUID eventId,
+	private record Context(IssuePayload issue, EventPayload event, long projectId, UUID eventId,
 			Instant eventTimestamp, String traceId, String symbolicationStatus, JsonNode data) {
 	}
 
 	private Context mapContext(ResultSet rs, int rowNum) throws SQLException {
-		Map<String, Object> issue = new LinkedHashMap<>();
-		issue.put("id", rs.getLong("id"));
-		issue.put("project_id", rs.getLong("project_id"));
-		issue.put("project_slug", rs.getString("project_slug"));
-		issue.put("project_name", rs.getString("project_name"));
-		issue.put("project_platform", rs.getString("platform"));
-		issue.put("fingerprint", rs.getString("fingerprint"));
-		issue.put("title", rs.getString("title"));
-		issue.put("culprit", rs.getString("culprit"));
-		issue.put("level", rs.getString("level"));
-		issue.put("status", rs.getString("status"));
-		issue.put("first_seen", rs.getTimestamp("first_seen").toInstant().toString());
-		issue.put("last_seen", rs.getTimestamp("last_seen").toInstant().toString());
 		// Not `event_count`: the number counts Events received since the Issue was
 		// opened, and retention may since have deleted some of them.
-		issue.put("events_received", rs.getLong("event_count"));
+		IssuePayload issue = new IssuePayload(rs.getLong("id"), rs.getLong("project_id"),
+				rs.getString("project_slug"), rs.getString("project_name"), rs.getString("platform"),
+				rs.getString("fingerprint"), rs.getString("title"), rs.getString("culprit"), rs.getString("level"),
+				rs.getString("status"), rs.getTimestamp("first_seen").toInstant().toString(),
+				rs.getTimestamp("last_seen").toInstant().toString(), rs.getLong("event_count"));
 
 		UUID eventId = rs.getObject("event_id", UUID.class);
 		if (eventId == null) {
@@ -518,17 +520,10 @@ public class IssueContextTool {
 					mapper.createObjectNode());
 		}
 		Instant timestamp = rs.getTimestamp("event_timestamp").toInstant();
-		Map<String, Object> event = new LinkedHashMap<>();
-		event.put("id", eventId.toString());
-		event.put("timestamp", timestamp.toString());
-		event.put("environment", rs.getString("environment"));
-		event.put("release", rs.getString("release"));
-		event.put("level", rs.getString("event_level"));
-		event.put("message", rs.getString("message"));
-		event.put("exception_type", rs.getString("exception_type"));
-		event.put("user_ident", rs.getString("user_ident"));
-		event.put("trace_id", rs.getString("trace_id"));
-		event.put("symbolication_status", rs.getString("symbolication_status"));
+		EventPayload event = new EventPayload(eventId.toString(), timestamp.toString(), rs.getString("environment"),
+				rs.getString("release"), rs.getString("event_level"), rs.getString("message"),
+				rs.getString("exception_type"), rs.getString("user_ident"), rs.getString("trace_id"),
+				rs.getString("symbolication_status"));
 		return new Context(issue, event, rs.getLong("project_id"), eventId, timestamp, rs.getString("trace_id"),
 				rs.getString("symbolication_status"), QuerySupport.parseJson(mapper, rs.getString("data")));
 	}

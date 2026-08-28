@@ -163,11 +163,21 @@ class McpSurfaceIntegrationTest {
 		JsonNode tools = rpc("tools/list", Map.of()).path("tools");
 
 		assertThat(tools.size()).isEqualTo(1);
-		assertThat(tools.get(0).path("name").asString()).isEqualTo("get_issue_context");
-		JsonNode properties = tools.get(0).path("inputSchema").path("properties");
+		JsonNode tool = tools.get(0);
+		assertThat(tool.path("name").asString()).isEqualTo("get_issue_context");
+		JsonNode properties = tool.path("inputSchema").path("properties");
 		assertThat(properties.propertyNames()).containsExactlyInAnyOrder("issue_id", "log_window_minutes");
-		assertThat(tools.get(0).path("inputSchema").path("required")).singleElement()
+		assertThat(tool.path("inputSchema").path("required")).singleElement()
 			.satisfies(required -> assertThat(required.asString()).isEqualTo("issue_id"));
+
+		JsonNode outputSchema = tool.path("outputSchema");
+		assertThat(outputSchema.path("type").asString()).isEqualTo("object");
+		assertThat(outputSchema.path("properties").propertyNames()).containsExactlyInAnyOrder("issue", "latest_event",
+				"exception", "breadcrumbs", "log_window", "log_records", "trace", "caveats");
+		assertThat(outputSchema.path("required").valueStream().map(JsonNode::asString).toList())
+			.containsExactlyInAnyOrder("issue", "breadcrumbs", "log_records", "caveats");
+		assertThat(outputSchema.toString()).contains("events_received", "symbolication_status", "frames_in_stack",
+				"minutes_before_event", "transactions_received", "error_events_received");
 	}
 
 	@Test
@@ -305,11 +315,12 @@ class McpSurfaceIntegrationTest {
 		return body.path("result");
 	}
 
-	/** {@code tools/call} for {@code get_issue_context}, parsed back out of its text content. */
+	/** {@code tools/call} for {@code get_issue_context}, read from its typed MCP result. */
 	private JsonNode callTool(Map<String, Object> arguments) {
 		JsonNode result = rpc("tools/call", Map.of("name", "get_issue_context", "arguments", arguments));
 		assertThat(result.path("isError").asBoolean(false)).as("tool error: %s", result).isFalse();
-		return mapper.readTree(textContent(result));
+		assertThat(result.path("structuredContent").isObject()).as("structured tool result: %s", result).isTrue();
+		return result.path("structuredContent");
 	}
 
 	private String textContent(JsonNode result) {
