@@ -10,6 +10,31 @@ spring:
     url: ${OUTPOST_DB_URL:jdbc:postgresql://localhost:5432/outpost}
     username: ${OUTPOST_DB_USER:outpost}
     password: ${OUTPOST_DB_PASSWORD:outpost}
+  ai:
+    mcp:
+      server:
+        # The MCP Surface (ADR-0016), served in-process at /mcp on this port.
+        # SecurityConfig gates it on an API Token carrying `telemetry:read`.
+        name: outpost
+        # Pinned rather than defaulted: the starter's own default has been SSE as
+        # well as streamable across versions, and the two mount different paths
+        # (/sse + /mcp/message vs /mcp) — which SecurityConfig has to match exactly.
+        protocol: streamable
+        # Structurally the server's own version: the Tools ship in the jar that
+        # serves the API they read, so there is no skew to manage. Falls back to a
+        # dev marker when run from the classpath rather than the jar.
+        version: ${spring.application.version:0.0.0-dev}
+        # ADR-0014, restated where the model will actually read it.
+        instructions: >-
+          Outpost is a self-hosted error tracking and observability installation.
+          These Tools report the telemetry it received; they never summarize, infer a
+          root cause or suggest a fix. Read the `caveats` array on every response — it
+          names what was truncated, defaulted or omitted.
+        capabilities:
+          # Tools only in v1: no resources, no prompts, no completion.
+          resource: false
+          prompt: false
+          completion: false
   servlet:
     multipart:
       # sentry-cli chunk upload (§4.4): 8 MiB chunks, 64/request, 32 MiB request cap.
@@ -43,6 +68,11 @@ outpost:
   admin:
     email: ${OUTPOST_ADMIN_EMAIL:}
     password: ${OUTPOST_ADMIN_PASSWORD:}
+  mcp:
+    # A backstop on the MCP query path, not the plan for the expected case: these
+    # queries share the single Postgres the ingest pipeline writes to (ADR-0001,
+    # ADR-0003), so one runaway agent query is a growing ingest queue.
+    query-timeout-seconds: ${OUTPOST_MCP_QUERY_TIMEOUT_SECONDS:15}
 
 management:
   server:

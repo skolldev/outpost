@@ -25,8 +25,14 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * Conventional Spring Security chain: the ingest surface is open (it does
  * its own DSN-key auth), the internal query API requires the signed session
- * cookie, admin-only endpoints are guarded by {@code @PreAuthorize}. CSRF is
- * covered by {@code SameSite=Lax} on the session cookie plus a JSON-only API.
+ * cookie, the two bearer-token surfaces ({@code /api/0/**} for sentry-cli,
+ * {@code /mcp} for the MCP Surface) are gated on the Scope each needs, and
+ * admin-only endpoints are guarded by {@code @PreAuthorize}. CSRF is covered by
+ * {@code SameSite=Lax} on the session cookie plus a JSON-only API.
+ *
+ * <p>{@code /mcp} is always mapped and always requires {@code telemetry:read};
+ * there is no feature flag, because no token already means no access, which is
+ * the posture {@code /api/0/**} has had since it shipped.
  */
 @Configuration
 @EnableWebSecurity
@@ -46,12 +52,38 @@ public class SecurityConfig {
 				.requestMatchers("/api/internal/auth/login").permitAll()
 				.requestMatchers("/api/internal/**").authenticated()
 				.requestMatchers("/api/0/**").hasAuthority("SCOPE_" + ApiTokenService.SCOPE_ARTIFACTS_WRITE)
+				.requestMatchers("/mcp", "/mcp/**").hasAuthority("SCOPE_" + ApiTokenService.SCOPE_TELEMETRY_READ)
 				.anyRequest().permitAll())
 			.exceptionHandling(handling -> handling
-				.authenticationEntryPoint((request, response, e) -> response.sendError(HttpStatus.UNAUTHORIZED.value())))
+				.authenticationEntryPoint((request, response, e) -> response.sendError(HttpStatus.UNAUTHORIZED.value()))
+				.accessDeniedHandler(SecurityConfig::denyAccess))
 			.addFilterBefore(new SessionCookieFilter(sessions), UsernamePasswordAuthenticationFilter.class)
 			.addFilterBefore(new ApiTokenFilter(apiTokens), UsernamePasswordAuthenticationFilter.class)
 			.build();
+	}
+
+	/**
+	 * A recognised credential that does not carry the Scope a surface needs is a 403
+	 * everywhere except {@code /mcp}, which answers 401.
+	 *
+	 * <p>The difference is not a taste one. An MCP client treats 401 as "present a
+	 * credential" and 403 as "you are done here", so a token minted before
+	 * {@code telemetry:read} existed would leave a client reporting a permanent
+	 * failure rather than prompting for the token that would work. RFC 6750's
+	 * {@code insufficient_scope} challenge names which Scope is missing, so the 401
+	 * still says what a 403 would have. {@code /api/0/**} keeps its 403: sentry-cli
+	 * has never re-authenticated on one, and changing it would only move the
+	 * confusion.
+	 */
+	private static void denyAccess(HttpServletRequest request, HttpServletResponse response,
+			org.springframework.security.access.AccessDeniedException e) throws IOException {
+		if (ApiTokenFilter.mcpSurface(request.getRequestURI())) {
+			response.setHeader("WWW-Authenticate",
+					"Bearer error=\"insufficient_scope\", scope=\"" + ApiTokenService.SCOPE_TELEMETRY_READ + "\"");
+			response.sendError(HttpStatus.UNAUTHORIZED.value());
+			return;
+		}
+		response.sendError(HttpStatus.FORBIDDEN.value());
 	}
 
 	/** CORS for the ingest surface: browser SDKs post envelopes cross-origin. */
@@ -68,8 +100,22 @@ public class SecurityConfig {
 		return source;
 	}
 
-	/** Populates the security context from a sentry-cli bearer token on the /api/0/** surface. */
+	/**
+	 * Populates the security context from a bearer token on the two surfaces that
+	 * take one: {@code /api/0/**} for sentry-cli, and {@code /mcp} for the MCP
+	 * Surface. Everything else is either session-authenticated or open, and a filter
+	 * that ran everywhere would let a token reach {@code /api/internal/**} too.
+	 */
 	static final class ApiTokenFilter extends OncePerRequestFilter {
+
+		private static final String MCP = "/mcp";
+
+		/**
+		 * Matched as "this path or a path below it", never as a bare prefix:
+		 * {@code startsWith("/mcp")} would also authenticate {@code /mcp-anything},
+		 * which the SPA fallback happily serves.
+		 */
+		private static final List<String> BEARER_SURFACES = List.of("/api/0", MCP);
 
 		private final ApiTokenService apiTokens;
 
@@ -81,7 +127,7 @@ public class SecurityConfig {
 		protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
 				throws ServletException, IOException {
 			String header = request.getHeader("Authorization");
-			if (request.getRequestURI().startsWith("/api/0/") && header != null && header.startsWith("Bearer ")
+			if (bearerSurface(request.getRequestURI()) && header != null && header.startsWith("Bearer ")
 					&& SecurityContextHolder.getContext().getAuthentication() == null) {
 				apiTokens.authenticate(header.substring("Bearer ".length()).strip()).ifPresent(token -> {
 					var authorities = token.scopes().stream()
@@ -97,6 +143,39 @@ public class SecurityConfig {
 			finally {
 				SecurityContextHolder.clearContext();
 			}
+		}
+
+		/**
+		 * Re-authenticate on the ASYNC dispatch too, which {@code OncePerRequestFilter}
+		 * skips by default.
+		 *
+		 * <p>{@code /mcp}'s streamable transport answers a POST by committing SSE headers
+		 * and going async; the container then re-dispatches, Spring Security re-runs its
+		 * authorization on that dispatch, and an empty context there is not a clean 401 —
+		 * the response is already committed, so {@code sendError} fails and the client
+		 * sees a torn chunked stream instead. The bearer header is on the same request,
+		 * so reading it again is all this needs.
+		 */
+		@Override
+		protected boolean shouldNotFilterAsyncDispatch() {
+			return false;
+		}
+
+		private static boolean bearerSurface(String uri) {
+			for (String surface : BEARER_SURFACES) {
+				if (below(uri, surface)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		static boolean mcpSurface(String uri) {
+			return below(uri, MCP);
+		}
+
+		private static boolean below(String uri, String surface) {
+			return uri.equals(surface) || uri.startsWith(surface + "/");
 		}
 	}
 
