@@ -233,9 +233,15 @@ public final class QueryPlans {
 		return Built.of(IssueContextTool.buildSurroundingLogQuery(projectId, from, to));
 	}
 
-	/** The window the Tool reads Log Records over by default, from the Tool that owns it. */
-	public static Duration surroundingLogWindow() {
-		return Duration.ofMinutes(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES);
+	/**
+	 * The two widths the Tool can read Log Records over, from the Tool that owns
+	 * them: the default it applies when an agent names none, and the maximum it
+	 * clamps to. Read rather than recomputed, for the reason {@link #sparklineSince()}
+	 * is — they are the bind parameters that decide which partitions are pruned.
+	 */
+	public static List<Duration> surroundingLogWindows() {
+		return List.of(Duration.ofMinutes(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES),
+				Duration.ofMinutes(IssueContextTool.MAX_LOG_WINDOW_MINUTES));
 	}
 
 	// ---------------------------------------------------------- traces/releases

@@ -4,6 +4,7 @@ import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.db.PartitionManager;
 import dev.outpost.support.PlanFacts;
 import dev.outpost.support.TelemetrySeeder;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
@@ -70,12 +71,25 @@ class IssueContextPerformanceTest {
 	private static final long MAX_TRACE_SUMMARY_BLOCKS = 2_000;
 
 	/**
-	 * Healthy is ~59 blocks — a ten-minute window is one partition and a handful of
-	 * rows. 10x, comfortably under {@code log_record}'s ~5 046. The regression it
-	 * catches is the window bound going missing, which turns this into the whole
-	 * log stream.
+	 * Healthy is 4–8 blocks across runs — five minutes is a few dozen rows inside one
+	 * partition. 10x of the high end, far below {@code log_record}'s ~5 046. The
+	 * regression it catches is the window bound going missing, which turns this into
+	 * the whole log stream.
+	 *
+	 * <p>At these magnitudes the ceiling is only a backstop and
+	 * {@link #everySurroundingLogWindowPrunesToItsOwnPartitions}'s pruning assertion
+	 * is the guard proper — the range is what it is because the seeder scatters
+	 * timestamps, so how many records land in a five-minute window varies run to run.
 	 */
-	private static final long MAX_SURROUNDING_LOG_BLOCKS = 590;
+	private static final long MAX_SURROUNDING_LOG_BLOCKS = 80;
+
+	/**
+	 * The widest window the Tool accepts is an hour, measured at 32–50 blocks, so it
+	 * is guarded alongside the default: a shape the Tool will answer and no guard
+	 * binds is a shape nobody has measured, and the clamp exists precisely because an
+	 * agent will ask for more than an hour.
+	 */
+	private static final long MAX_WIDEST_SURROUNDING_LOG_BLOCKS = 500;
 
 	@Autowired
 	JdbcClient jdbc;
@@ -148,14 +162,21 @@ class IssueContextPerformanceTest {
 	// --------------------------------------------------------------------- logs
 
 	@Test
-	void theSurroundingLogWindowPrunesToItsOwnPartitions() {
-		Instant from = seeded.eventTimestamp().minus(QueryPlans.surroundingLogWindow());
-		PlanFacts facts = surroundingLogs();
+	void everySurroundingLogWindowPrunesToItsOwnPartitions() {
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_WIDEST_SURROUNDING_LOG_BLOCKS, PartitionManager.LOG_RECORD);
+		long[] ceilings = { MAX_SURROUNDING_LOG_BLOCKS, MAX_WIDEST_SURROUNDING_LOG_BLOCKS };
+		List<Duration> windows = QueryPlans.surroundingLogWindows();
 
-		QueryGuard.assertCeilingCanFail(jdbc, MAX_SURROUNDING_LOG_BLOCKS, PartitionManager.LOG_RECORD);
-		QueryGuard.assertUnderCeiling(facts, MAX_SURROUNDING_LOG_BLOCKS, "the get_issue_context Log Records");
-		QueryGuard.assertPrunesFrom(jdbc, facts, PartitionManager.LOG_RECORD, from,
-				"the get_issue_context Log Records");
+		for (int i = 0; i < windows.size(); i++) {
+			Duration width = windows.get(i);
+			String what = "the get_issue_context Log Records over " + width;
+			PlanFacts facts = surroundingLogs(width);
+
+			QueryGuard.assertUnderCeiling(facts, ceilings[i], what);
+			QueryGuard.assertNoTempFiles(facts, what);
+			QueryGuard.assertPrunesFrom(jdbc, facts, PartitionManager.LOG_RECORD,
+					seeded.eventTimestamp().minus(width), what);
+		}
 	}
 
 	// ---------------------------------------------------------------- whole call
@@ -170,7 +191,8 @@ class IssueContextPerformanceTest {
 	 */
 	@Test
 	void theWholeToolCallSortsInMemoryAndScansNoTelemetrySequentially() {
-		PlanFacts call = issueContext().merge(traceSummary()).merge(surroundingLogs());
+		PlanFacts call = issueContext().merge(traceSummary())
+			.merge(surroundingLogs(QueryPlans.surroundingLogWindows().get(0)));
 
 		QueryGuard.assertNoTempFiles(call, "one get_issue_context call");
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, call, "one get_issue_context call");
@@ -186,12 +208,9 @@ class IssueContextPerformanceTest {
 		return QueryPlans.traceSummary(seeded.traceId()).explain(jdbc);
 	}
 
-	/** The window the Tool applies when an agent names none — the shape it actually sends. */
-	private PlanFacts surroundingLogs() {
+	/** The window as the Tool binds it: {@code width} back from the Event, ending at it. */
+	private PlanFacts surroundingLogs(Duration width) {
 		Instant at = seeded.eventTimestamp();
-		return QueryPlans
-			.surroundingLogs(seeded.projectId(), at.minus(QueryPlans.surroundingLogWindow()),
-					at.plus(QueryPlans.surroundingLogWindow()))
-			.explain(jdbc);
+		return QueryPlans.surroundingLogs(seeded.projectId(), at.minus(width), at.plusSeconds(1)).explain(jdbc);
 	}
 }

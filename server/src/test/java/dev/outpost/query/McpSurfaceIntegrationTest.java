@@ -5,8 +5,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.auth.ApiTokenService;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -75,6 +78,14 @@ class McpSurfaceIntegrationTest {
 	 */
 	final RestTemplate rest = new RestTemplate(new JdkClientHttpRequestFactory());
 
+	/**
+	 * One base instant for the whole fixture, so the Log Record can be placed
+	 * <em>before</em> the Event deliberately rather than by winning a race with the
+	 * next HTTP round trip. The window the Tool reads ends at the Event, so "before"
+	 * is the behaviour under test, not an incidental detail.
+	 */
+	Instant base;
+
 	long projectId;
 	String projectKey;
 	String readToken;
@@ -103,6 +114,7 @@ class McpSurfaceIntegrationTest {
 		readToken = insertToken("agent", ApiTokenService.SCOPE_TELEMETRY_READ);
 		writeOnlyToken = insertToken("ci", ApiTokenService.SCOPE_ARTIFACTS_WRITE);
 		sessionId = null;
+		base = Instant.now();
 	}
 
 	// --------------------------------------------------------------------- auth
@@ -182,9 +194,11 @@ class McpSurfaceIntegrationTest {
 		assertThat(context.path("breadcrumbs")).singleElement()
 			.satisfies(crumb -> assertThat(crumb.path("message").asString()).isEqualTo("POST /api/checkout"));
 
+		// The Log Record was written before the Event, which is the half of the window
+		// the Tool keeps — see IssueContextTool.Window.
 		assertThat(context.path("log_records")).isNotEmpty();
 		assertThat(context.path("log_records").get(0).path("body").asString()).isEqualTo("handling checkout");
-		assertThat(context.path("log_window").path("minutes_either_side").asInt())
+		assertThat(context.path("log_window").path("minutes_before_event").asInt())
 			.isEqualTo(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES);
 
 		assertThat(context.path("trace").path("trace_id").asString()).isEqualTo(TRACE_ID);
@@ -202,10 +216,10 @@ class McpSurfaceIntegrationTest {
 	@Test
 	void theRawEventPayloadIsNotReturnedAndTheOmissionIsNamed() {
 		postEnvelope(errorEnvelope());
-		awaitIssue();
+		long issueId = awaitIssue();
 		connect();
 
-		JsonNode context = callTool(Map.of("issue_id", awaitIssue()));
+		JsonNode context = callTool(Map.of("issue_id", issueId));
 
 		assertThat(context.has("data")).isFalse();
 		assertThat(caveats(context)).anySatisfy(caveat -> assertThat(caveat)
@@ -258,7 +272,7 @@ class McpSurfaceIntegrationTest {
 
 		JsonNode context = callTool(Map.of("issue_id", issueId, "log_window_minutes", 10_000));
 
-		assertThat(context.path("log_window").path("minutes_either_side").asInt())
+		assertThat(context.path("log_window").path("minutes_before_event").asInt())
 			.isEqualTo(IssueContextTool.MAX_LOG_WINDOW_MINUTES);
 		assertThat(caveats(context))
 			.anySatisfy(caveat -> assertThat(caveat).contains("clamped from 10000"));
@@ -354,13 +368,17 @@ class McpSurfaceIntegrationTest {
 		return secret;
 	}
 
+	/**
+	 * The same SHA-256 {@code ApiTokenService} hashes with. Duplicated rather than
+	 * called because the point of the fixture is a row inserted by hand, exactly as
+	 * an operator does until the token UI lands in the next slice.
+	 */
 	private static String sha256(String value) {
 		try {
-			return java.util.HexFormat.of()
-				.formatHex(java.security.MessageDigest.getInstance("SHA-256")
-					.digest(value.getBytes(StandardCharsets.UTF_8)));
+			return HexFormat.of()
+				.formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
 		}
-		catch (java.security.NoSuchAlgorithmException e) {
+		catch (NoSuchAlgorithmException e) {
 			throw new IllegalStateException(e);
 		}
 	}
@@ -368,21 +386,21 @@ class McpSurfaceIntegrationTest {
 	private String errorEnvelope() {
 		String event = """
 				{"event_id":"%s","timestamp":"%s","platform":"java","level":"error","environment":"prod",\
-				"release":"shop@1.0.0","tags":{"handled":"no"},"contexts":{"runtime":{"name":"OpenJDK"}},\
-				"contexts":{"trace":{"trace_id":"%s","span_id":"%s"}},\
+				"release":"shop@1.0.0","tags":{"handled":"no"},\
+				"contexts":{"runtime":{"name":"OpenJDK"},"trace":{"trace_id":"%s","span_id":"%s"}},\
 				"breadcrumbs":{"values":[{"timestamp":"%s","type":"http","category":"request",\
 				"level":"info","message":"POST /api/checkout"}]},\
 				"exception":{"values":[{"type":"IllegalStateException","value":"order 4711 has no customer",\
 				"module":"java.lang","stacktrace":{"frames":[\
 				{"module":"dev.demo.CheckoutController","function":"checkout","in_app":true,"lineno":41},\
 				{"module":"dev.demo.OrderService","function":"loadCustomer","in_app":true,"lineno":88}]}}]}}"""
-			.formatted(hexId(), Instant.now(), TRACE_ID, BACKEND_SPAN, Instant.now());
+			.formatted(hexId(), base, TRACE_ID, BACKEND_SPAN, base.minusSeconds(3));
 		return envelope("event", event);
 	}
 
 	private String transactionEnvelope() {
-		Instant start = Instant.now().minusMillis(200);
-		Instant end = Instant.now();
+		Instant start = base.minusMillis(200);
+		Instant end = base;
 		String txn = """
 				{"type":"transaction","transaction":"POST /api/checkout","platform":"java","environment":"prod",\
 				"release":"shop@1.0.0","start_timestamp":%s,"timestamp":%s,\
@@ -395,11 +413,12 @@ class McpSurfaceIntegrationTest {
 		return envelope("transaction", txn);
 	}
 
+	/** Two seconds before the Event: a Log Record leading up to the failure. */
 	private String logEnvelope() {
 		String payload = """
 				{"items":[{"timestamp":%s,"trace_id":"%s","span_id":"%s","level":"info","severity_number":9,\
 				"body":"handling checkout","attributes":{"sentry.environment":{"value":"prod","type":"string"}}}]}"""
-			.formatted(System.currentTimeMillis() / 1000.0, TRACE_ID, BACKEND_SPAN);
+			.formatted(base.minusSeconds(2).toEpochMilli() / 1000.0, TRACE_ID, BACKEND_SPAN);
 		return "{\"sent_at\":\"" + Instant.now() + "\"}\n"
 				+ "{\"type\":\"log\",\"item_count\":1,\"content_type\":\"application/vnd.sentry.items.log+json\",\"length\":"
 				+ payload.getBytes(StandardCharsets.UTF_8).length + "}\n" + payload + "\n";

@@ -8,6 +8,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,7 @@ import java.util.UUID;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.beans.factory.annotation.Value;
+import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -50,6 +52,14 @@ import org.springframework.stereotype.Component;
  * knows what it is not being shown.
  * </ul>
  *
+ * <p>The payload is built as nested {@code LinkedHashMap}s with literal
+ * {@code snake_case} keys, as the query controllers next door build theirs, and
+ * here there is a second reason on top of that consistency: the MCP transport
+ * serializes a Tool result through its <em>own</em> {@code JsonMapper}, not the
+ * application's, so the global {@code SNAKE_CASE} strategy that makes a record
+ * DTO come out right on {@code /api/internal/**} does not apply. A record would
+ * serialize camelCase here unless every component carried an annotation.
+ *
  * <p>{@link #caveats} entries are sentences rather than codes, deliberately. The
  * consumer is a language model with no access to a lookup table, and the ADR-0014
  * argument for field names applies equally here: a sentence carries its own
@@ -59,10 +69,10 @@ import org.springframework.stereotype.Component;
 public class IssueContextTool {
 
 	/**
-	 * Minutes either side of the Event that Log Records are read over when the
+	 * Minutes <em>before</em> the Event that Log Records are read over when the
 	 * caller names no window. Small on purpose: these Log Records are context for
 	 * one Event, and a wide window returns the busy minutes of an unrelated request
-	 * instead of the ones around the failure.
+	 * instead of the ones leading to the failure.
 	 */
 	static final int DEFAULT_LOG_WINDOW_MINUTES = 5;
 
@@ -101,9 +111,11 @@ public class IssueContextTool {
 	 * ADR-0001 and ADR-0003 put these queries on the same single Postgres the ingest
 	 * pipeline is writing to, so a runaway agent query is a runaway ingest queue.
 	 */
-	public IssueContextTool(JdbcTemplate jdbc, ObjectMapper mapper,
+	public IssueContextTool(DataSource dataSource, ObjectMapper mapper,
 			@Value("${outpost.mcp.query-timeout-seconds:15}") int queryTimeoutSeconds) {
-		this.jdbc = new JdbcTemplate(jdbc.getDataSource());
+		// Its own JdbcTemplate rather than the shared one, because the timeout is the
+		// point: setting it on the injected bean would put it on every controller too.
+		this.jdbc = new JdbcTemplate(dataSource);
 		this.jdbc.setQueryTimeout(queryTimeoutSeconds);
 		this.mapper = mapper;
 	}
@@ -130,11 +142,12 @@ public class IssueContextTool {
 	public Map<String, Object> getIssueContext(
 			@McpToolParam(description = "Outpost Issue id, as shown in the issue URL.") long issue_id,
 			@McpToolParam(required = false,
-					description = "Minutes either side of the Event to read Log Records over. Defaults to "
+					description = "Minutes before the Event to read Log Records over. Defaults to "
 							+ DEFAULT_LOG_WINDOW_MINUTES + ", clamped to " + MAX_LOG_WINDOW_MINUTES
 							+ ".") Integer log_window_minutes) {
 
-		Context context = jdbc.query(buildIssueContextQuery(issue_id).sql(), this::mapContext, issue_id)
+		SearchQuery search = buildIssueContextQuery(issue_id);
+		Context context = jdbc.query(search.sql(), this::mapContext, search.params().toArray())
 			.stream()
 			.findFirst()
 			.orElseThrow(() -> new IllegalArgumentException("no Issue with id " + issue_id));
@@ -166,7 +179,7 @@ public class IssueContextTool {
 		Map<String, Object> logWindow = new LinkedHashMap<>();
 		logWindow.put("start", window.start().toString());
 		logWindow.put("end", window.end().toString());
-		logWindow.put("minutes_either_side", window.minutes());
+		logWindow.put("minutes_before_event", window.minutes());
 		body.put("log_window", logWindow);
 		body.put("log_records", logRecords(context, window, caveats));
 		body.put("trace", trace(context.traceId(), caveats));
@@ -252,12 +265,18 @@ public class IssueContextTool {
 	// ------------------------------------------------------------- projections
 
 	/** The primary exception's identity and the frames nearest the throw site. */
-	private Map<String, Object> exception(Context context, List<String> caveats) {
+	private static Map<String, Object> exception(Context context, List<String> caveats) {
+		// Only these two statuses warrant a caveat. `none` means there was nothing to
+		// symbolicate — a JVM stack, say — and is not a gap; and there is no pending
+		// state to disclose, because Symbolicator runs synchronously in the ingest
+		// worker, so a stored Event has already been through it.
 		String status = context.symbolicationStatus();
 		if (Symbolicator.STATUS_PARTIAL.equals(status) || Symbolicator.STATUS_MISSING_SOURCEMAP.equals(status)) {
 			caveats.add("The stack is not symbolicated (symbolication_status=" + status
 					+ "). Frames may name generated files, minified function names and generated line numbers "
-					+ "rather than source, so do not treat them as source locations.");
+					+ "rather than source, so do not treat them as source locations. This is recoverable: "
+					+ "uploading source maps for release " + context.event().get("release")
+					+ " re-symbolicates the stored Events of that release.");
 		}
 
 		JsonNode values = context.data().path("exception").path("values");
@@ -284,7 +303,7 @@ public class IssueContextTool {
 	 * end a reader starts from. Truncation therefore drops the outermost frames,
 	 * which are the ones least likely to name the defect.
 	 */
-	private List<Map<String, Object>> frames(JsonNode frames, List<String> caveats) {
+	private static List<Map<String, Object>> frames(JsonNode frames, List<String> caveats) {
 		if (!frames.isArray() || frames.isEmpty()) {
 			return List.of();
 		}
@@ -310,7 +329,7 @@ public class IssueContextTool {
 	}
 
 	/** Breadcrumbs in the order they were recorded, truncated from the far end. */
-	private List<Map<String, Object>> breadcrumbs(JsonNode data, List<String> caveats) {
+	private static List<Map<String, Object>> breadcrumbs(JsonNode data, List<String> caveats) {
 		JsonNode raw = data.path("breadcrumbs");
 		// SDKs send either {"values": [...]} or a bare array; the UI accepts both.
 		JsonNode values = raw.isArray() ? raw : raw.path("values");
@@ -322,7 +341,9 @@ public class IssueContextTool {
 		for (int i = from; i < values.size(); i++) {
 			JsonNode crumb = values.get(i);
 			Map<String, Object> row = new LinkedHashMap<>();
-			row.put("timestamp", crumb.hasNonNull("timestamp") ? crumb.get("timestamp").asString() : null);
+			// Passed through as received: SDKs send either epoch seconds or ISO-8601 here,
+			// and normalizing one into the other would be this Tool inventing a fact.
+			row.put("timestamp", text(crumb, "timestamp"));
 			row.put("type", text(crumb, "type"));
 			row.put("category", text(crumb, "category"));
 			row.put("level", text(crumb, "level"));
@@ -339,8 +360,9 @@ public class IssueContextTool {
 	/**
 	 * Log Records from the Event's Project over the window, oldest first. The
 	 * underlying log page reads newest-first and caps at its own page size, so a
-	 * window busier than that page loses its oldest records — which is what the
-	 * caveat says, and why the default window is narrow.
+	 * window busier than that page loses its earliest records — the ones furthest
+	 * from the Event. See {@link Window} for why the window ends at the Event rather
+	 * than straddling it, which is what makes that the right end to lose.
 	 */
 	private List<Map<String, Object>> logRecords(Context context, Window window, List<String> caveats) {
 		SearchQuery search = buildSurroundingLogQuery(context.projectId(), window.start(), window.end());
@@ -358,11 +380,12 @@ public class IssueContextTool {
 
 		KeysetPage.Page page = LogController.logPage().paginate(rows);
 		if (page.nextCursor() != null) {
-			caveats.add("Only the " + page.rows().size() + " most recent Log Records in the window are returned; "
-					+ "more matched it. Narrow log_window_minutes to see the ones nearest the Event.");
+			caveats.add("Only the " + page.rows().size() + " Log Records closest to the Event are returned; "
+					+ "more matched the window, and the earliest of them were dropped. Narrow "
+					+ "log_window_minutes to be sure of reaching further back without truncation.");
 		}
 		List<Map<String, Object>> chronological = new ArrayList<>(page.rows());
-		java.util.Collections.reverse(chronological);
+		Collections.reverse(chronological);
 		return chronological;
 	}
 
@@ -399,7 +422,7 @@ public class IssueContextTool {
 	}
 
 	/** Top-level keys of {@code event.data} this payload dropped, named one by one. */
-	private List<String> omittedEventDataKeys(JsonNode data) {
+	private static List<String> omittedEventDataKeys(JsonNode data) {
 		List<String> omitted = new ArrayList<>();
 		data.propertyNames().forEach(key -> {
 			if (!PROJECTED_EVENT_DATA_KEYS.contains(key) && !MIRRORED_EVENT_DATA_KEYS.contains(key)) {
@@ -409,14 +432,30 @@ public class IssueContextTool {
 		if (omitted.isEmpty()) {
 			return List.of();
 		}
-		java.util.Collections.sort(omitted);
+		Collections.sort(omitted);
 		return List.of("The raw event payload is not returned whole. Only its exception and breadcrumbs were "
 				+ "projected; these keys were present and are not included: " + String.join(", ", omitted) + ".");
 	}
 
 	// ------------------------------------------------------------------ window
 
-	/** The Log Record window, plus the width actually used after defaulting and clamping. */
+	/**
+	 * The Log Record window, plus the width actually used after defaulting and
+	 * clamping.
+	 *
+	 * <p><b>It ends at the Event and does not straddle it,</b> which is the one
+	 * decision here worth arguing. The window is answered by the log list's own
+	 * keyset — newest first, capped at its page size — so whatever the window is,
+	 * overflow discards its <em>earliest</em> records. A window ending at the Event
+	 * therefore drops the records furthest from the failure, which is the same rule
+	 * {@link #frames} applies to a long stack. A straddling window would keep the
+	 * records after the Event and drop the ones leading to it, and no caveat can
+	 * repair a selection that threw away the useful half.
+	 *
+	 * <p>The aftermath is not lost, it is reached differently: everything on the
+	 * Event's Trace is one {@code trace_id} away, and {@code trace.trace_id} is in
+	 * this same payload.
+	 */
 	private record Window(Instant start, Instant end, int minutes) {
 	}
 
@@ -424,11 +463,11 @@ public class IssueContextTool {
 		int minutes = DEFAULT_LOG_WINDOW_MINUTES;
 		if (requested == null) {
 			caveats.add("log_window_minutes was not supplied, so the default of " + DEFAULT_LOG_WINDOW_MINUTES
-					+ " minutes either side of the Event was applied.");
+					+ " minutes before the Event was applied.");
 		}
 		else if (requested < 1) {
 			caveats.add("log_window_minutes was " + requested + ", which is below the 1-minute minimum; "
-					+ "1 minute either side of the Event was used.");
+					+ "1 minute before the Event was used.");
 			minutes = 1;
 		}
 		else if (requested > MAX_LOG_WINDOW_MINUTES) {
@@ -439,8 +478,10 @@ public class IssueContextTool {
 		else {
 			minutes = requested;
 		}
-		Duration half = Duration.ofMinutes(minutes);
-		return new Window(eventTimestamp.minus(half), eventTimestamp.plus(half), minutes);
+		// The upper bound is half-open in the log query, so a Log Record written in the
+		// same instant as the Event would fall outside it; a second of slack keeps the
+		// line that reports the failure in the window that is meant to explain it.
+		return new Window(eventTimestamp.minus(Duration.ofMinutes(minutes)), eventTimestamp.plusSeconds(1), minutes);
 	}
 
 	// ------------------------------------------------------------------ shared
