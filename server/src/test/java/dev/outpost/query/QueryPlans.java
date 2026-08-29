@@ -1,6 +1,7 @@
 package dev.outpost.query;
 
 import dev.outpost.support.PlanFacts;
+import dev.outpost.uptime.UptimeStatusService;
 import java.sql.ResultSetMetaData;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
@@ -209,7 +211,17 @@ public final class QueryPlans {
 	 * needing guards of their own — the reuse rule is not an exemption from guarding.
 	 */
 	public static Built issueContext(long issueId) {
-		return Built.of(IssueContextTool.buildIssueContextQuery(issueId));
+		return Built.of(IssueContextTool.buildIssueContextQuery(issueId, null));
+	}
+
+	/**
+	 * The same join with the {@code LATERAL} narrowed to one Environment — the
+	 * other shape the Tool can bind, guarded because the walk down
+	 * {@code idx_event_issue_ts} no longer stops at the first row but at the first
+	 * row <em>matching</em>, and how far that is depends on the data.
+	 */
+	public static Built issueContext(long issueId, String environment) {
+		return Built.of(IssueContextTool.buildIssueContextQuery(issueId, environment));
 	}
 
 	/**
@@ -242,6 +254,147 @@ public final class QueryPlans {
 	public static List<Duration> surroundingLogWindows() {
 		return List.of(Duration.ofMinutes(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES),
 				Duration.ofMinutes(IssueContextTool.MAX_LOG_WINDOW_MINUTES));
+	}
+
+	/**
+	 * The window every list Tool applies when the caller supplies no {@code from},
+	 * from the class that owns it. Read rather than restated, for the reason
+	 * {@link #sparklineSince()} is read: it is the bind parameter that decides which
+	 * partitions are pruned, and it is the whole subject of ADR-0016's warning that
+	 * an agent omits what a user never picks. A guard with its own copy would
+	 * {@code EXPLAIN} a window no Tool binds and would keep passing after the default
+	 * widened.
+	 */
+	public static Duration toolWindow() {
+		return Duration.ofDays(ToolSupport.DEFAULT_WINDOW_DAYS);
+	}
+
+	/** The Issue list as {@code find_issues} binds it, through the Tool's own factory. */
+	public static Built findIssues(List<Long> project, List<String> environment, String status, String release,
+			Instant from, Instant to, String query, String sort, String cursor) {
+		return Built.of(IssueSearchTool.buildIssueSearchQuery(project, environment, status, release, from, to, query,
+				sort, cursor));
+	}
+
+	/**
+	 * Every ranking {@code find_issues} accepts, paired with the controller key it
+	 * resolves to — read from the Tool's own whitelist, so a ranking added there is
+	 * one the guards cover on the same commit. The Tool renames them:
+	 * {@code events_received} rather than the controller's {@code count}, because
+	 * ADR-0014 will not have a caller learn a second name for a number it can read
+	 * off a row.
+	 */
+	public static List<String> findIssuesSorts() {
+		return IssueSearchTool.sortKeys().stream().map(IssueSearchTool::controllerSort).toList();
+	}
+
+	/** The status {@code find_issues} applies when the caller names none. */
+	public static String toolIssueStatus() {
+		return IssueSearchTool.DEFAULT_STATUS;
+	}
+
+	/** Both statuses the Tool answers, so a guard covers the tab #126 originally missed. */
+	public static List<String> toolIssueStatuses() {
+		return IssueSearchTool.STATUSES;
+	}
+
+	/** The log stream as {@code search_logs} binds it, through the Tool's own factory. */
+	public static Built searchLogs(List<Long> project, List<String> environment, List<String> level, String traceId,
+			String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
+		return Built.of(LogSearchTool.buildLogSearchQuery(project, environment, level, traceId, release, query, attr,
+				from, to, cursor));
+	}
+
+	/**
+	 * The one statement {@code get_event_raw} issues. It is the event detail page's
+	 * own row lookup <em>without</em> the two neighbour probes that page also runs —
+	 * a different shape from {@link #eventDetail}, and the only one this Tool pays
+	 * for.
+	 */
+	public static Built eventRaw(UUID id) {
+		return new Built(IssueController.EVENT_BY_ID, List.of(id));
+	}
+
+	/** The leaderboard as {@code performance_overview} binds it, through the Tool's own factory. */
+	public static Built performanceOverview(List<Long> project, List<String> environment, String release, String query,
+			String sort, Instant from, Instant to) {
+		return Built.of(PerformanceOverviewTool.buildPerformanceOverviewQuery(project, environment, release, query,
+				sort, from, to));
+	}
+
+	/** The cardinality count it issues alongside, likewise through the Tool's own factory. */
+	public static Built performanceCardinality(List<Long> project, List<String> environment, String release,
+			String query, Instant from, Instant to) {
+		return Built.of(PerformanceOverviewTool.buildPerformanceCardinalityQuery(project, environment, release, query,
+				from, to));
+	}
+
+	/**
+	 * Every ranking {@code performance_overview} accepts, paired with the controller
+	 * key it resolves to — read from the Tool's own whitelist so a ranking added
+	 * there is one the guards cover on the same commit.
+	 */
+	public static List<String> performanceSorts() {
+		return PerformanceOverviewTool.sortKeys().stream().map(PerformanceOverviewTool::controllerSort).toList();
+	}
+
+	/** The window the leaderboard is bound by once the Tool's default has been through the 30-day cap. */
+	public static TransactionGroupController.Window performanceWindow(Instant from, Instant to) {
+		return TransactionGroupController.window(from, to);
+	}
+
+	/**
+	 * The one statement {@code find_transactions} issues: a Transaction Group's
+	 * members over a window. The Tool's own SQL — the UI's drill-down aggregates
+	 * the group and never lists its rows, so there was no factory to reuse — which
+	 * is exactly why it is guarded here (ADR-0016: the reuse rule is not an
+	 * exemption from guarding, and new SQL gets a guard of its own).
+	 */
+	public static Built findTransactions(long project, String name, String op, List<String> environment,
+			String release, String sort, Instant from, Instant to, int limit) {
+		return Built.of(TransactionSearchTool.buildTransactionSearchQuery(project, name, op, environment, release,
+				sort, from, to, limit));
+	}
+
+	/** Every ranking {@code find_transactions} accepts, from the Tool's own whitelist. */
+	public static List<String> findTransactionsSorts() {
+		return TransactionSearchTool.sortKeys();
+	}
+
+	/** The rows {@code find_transactions} asks for when the caller names no limit: the default plus its look-ahead row. */
+	public static int findTransactionsDefaultFetch() {
+		return TransactionSearchTool.DEFAULT_LIMIT + 1;
+	}
+
+	/**
+	 * The four statements {@code uptime_status} issues, as the Tool binds them —
+	 * scoped to the Projects asked for and to the days of history asked for, which
+	 * on this path are predicates rather than post-filters. Returned as a list
+	 * because one Tool call is their sum.
+	 *
+	 * <p>{@code uptime_check} is a plain table rather than one of the partitioned
+	 * telemetry tables, so {@link QueryGuard#assertCeilingCanFail} has no full-scan
+	 * cost to validate a ceiling against — see the guard for what is asserted
+	 * instead.
+	 */
+	public static List<Built> uptimeStatus(List<Long> project, int days) {
+		return Stream
+			.of(UptimeStatusService.buildMonitorQuery(project, null),
+					UptimeStatusService.buildOpenIncidentQuery(project),
+					UptimeStatusService.buildDailyRollupQuery(project, days),
+					UptimeStatusService.buildLastCheckQuery(project))
+			.map(query -> new Built(query.sql(), query.params()))
+			.toList();
+	}
+
+	/** The history {@code uptime_status} reads when the caller names none, from the Tool that owns it. */
+	public static int uptimeDefaultDays() {
+		return UptimeStatusTool.DEFAULT_DAYS;
+	}
+
+	/** The widest history it will read, which is the status page's own fixed span. */
+	public static int uptimeMaxDays() {
+		return UptimeStatusService.WINDOW_DAYS;
 	}
 
 	// ---------------------------------------------------------- traces/releases

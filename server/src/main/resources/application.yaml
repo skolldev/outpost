@@ -24,12 +24,19 @@ spring:
         # serves the API they read, so there is no skew to manage. Falls back to a
         # dev marker when run from the classpath rather than the jar.
         version: ${spring.application.version:0.0.0-dev}
-        # ADR-0014, restated where the model will actually read it.
+        # ADR-0014, restated where the model will actually read it — plus the two
+        # facts an agent cannot learn from any single Tool's schema: where the
+        # workflow starts, and how to state a time window without a clock.
         instructions: >-
           Outpost is a self-hosted error tracking and observability installation.
           These Tools report the telemetry it received; they never summarize, infer a
-          root cause or suggest a fix. Read the `caveats` array on every response — it
-          names what was truncated, defaulted or omitted.
+          root cause or suggest a fix. Call list_projects first: the other Tools name
+          Projects, Environments and releases by the exact values it returns. Read the
+          `caveats` array on every response — it names what was truncated, defaulted or
+          omitted. Timestamps are ISO-8601 instants in UTC; a windowed response echoes
+          the window it answered, whose end is the current time when you passed no `to`,
+          and `from` parameters also accept an ISO-8601 duration such as PT1H meaning
+          that far back from `to`.
         capabilities:
           # Tools only in v1: no resources, no prompts, no completion.
           resource: false

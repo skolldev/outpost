@@ -18,9 +18,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the log timeline (#141). Baselines measured 2026-08-05
+ * Performance guards for the log timeline (#141). Baselines re-measured 2026-08-29
  * against {@link TelemetrySeeder.Scale#GUARD}: 40 010 log records over 10 weekly
- * partitions, where a full scan of {@code log_record} costs ~5 050 blocks.
+ * partitions, where a full scan of {@code log_record} costs ~5 045 blocks.
  *
  * <p><b>What makes this different from every other guard in the package.</b> The
  * list queries cost O(page) — {@code V11} gave them an ordered walk that stops once
@@ -37,32 +37,43 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * — a project-filtered chart is a range scan of the covering index while the global
  * one scans all of it — so a guard measuring only the unfiltered 14-day view would
  * stay green through a regression in the shape most installs actually use. Measured
- * here on 2026-08-05, against the 412 blocks the log list beside it costs:
+ * over six reseeds on 2026-08-29, against the ~410 blocks the log list beside it costs.
+ * Every one of them is index-only on every populated partition:
  *
  * <pre>
- *   1h                       159    index-only throughout
- *   14d (the default)        663    index-only throughout
- *   14d, one project         312    index-only throughout
- *   14d, one environment     663    index-only throughout
- *   All time, one project    579    one partition sequentially scanned
- *   All time               2 685    five partitions sequentially scanned
+ *   1h                       253 –   281
+ *   14d, one project         318 –   363
+ *   All time, one project    591 –   645
+ *   14d, one environment     747 –   797
+ *   14d (the default)        756 –   807
+ *   All time               1 140 – 1 203
  * </pre>
  *
- * <p><b>Why All time has its own ceiling, and why no guard here forbids a sequential
- * scan.</b> At 40 000 records a weekly partition holds a few thousand rows, and
- * reading one end to end genuinely beats walking an index over it — so the unbounded
- * chart mixes index-only scans of the big recent partitions with sequential scans of
- * the small old ones, and that is the planner being right rather than a regression.
- * The consequence is that the guard tier cannot assert the property {@code V14} was
- * actually bought for. <b>That the timeline is index-only is a benchmark-tier claim</b>
- * — {@code LogTimelineIndexProbe} measures it at 2 000 000 records, where the same
- * shapes go 130 805 to 21 244 blocks (14d) and 250 106 to 40 191 (All time). This is
- * the same limit {@code LogQueryPerformanceTest} records for body-substring search:
- * a guard whose verdict flips with dataset size is worse than none.
+ * <p><b>Why those ranges are narrow, and what used to make them wide (#185).</b> This
+ * class flaked for months, on unchanged code and a dataset whose row counts move by
+ * well under a percent between seeds. The cause was not the data: at Postgres's
+ * shipped {@code random_page_cost = 4.0} the two candidate plans for the densest
+ * weekly partition price within a percent of each other — ~600 heap blocks read
+ * sequentially against ~140 index blocks charged at 4x apiece — and {@code VACUUM
+ * ANALYZE}'s random sample was enough to flip the winner. Roughly three runs in eight
+ * lost the covering index on that one partition, which doubled the 14-day chart's cost
+ * and sent the 1h chart through {@code idx_log_ts_id} and 546 scattered heap blocks.
+ * {@link dev.outpost.TestcontainersConfiguration} now pins the SSD-representative 1.1,
+ * as {@code docker-compose.yml} does for the database this ships, and the covering
+ * index wins every shape by a wide margin. <b>The setting is part of the fixture's
+ * meaning</b>: raise it back to 4.0 and these numbers roughly double, non-deterministically.
  *
- * <p>What the two ceilings can still catch is the regression that matters — losing
- * the covering index entirely. Before {@code V14} the same All-time query cost 5 066
- * blocks and the 14-day one 3 135, so both ceilings fail if it is dropped.
+ * <p><b>What that bought beyond a green build.</b> This class used to record that the
+ * timeline being index-only was a benchmark-tier claim only — that at guard scale the
+ * All-time chart legitimately mixed index-only scans of the big partitions with
+ * sequential scans of the small ones, so the tier could not assert the property
+ * {@code V14} was bought for. Under a planner priced for the storage the product runs
+ * on, that is no longer true: the only relation any shape reads end to end is the
+ * empty partition the manager keeps ahead of the newest row, and
+ * {@link #everyTimelineShapeIsIndexOnly} asserts it directly. {@code
+ * LogTimelineIndexProbe} still measures the magnitude at 2 000 000 records, where the
+ * same shapes go 130 805 to 21 244 blocks (14d) and 250 106 to 40 191 (All time); what
+ * is guarded here is the shape, which is the half that survives a change of scale.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -73,22 +84,24 @@ class LogTimelinePerformanceTest {
 	private static final int WINDOW_DAYS = 14;
 
 	/**
-	 * Bounded windows, whose worst measured shape is the 663-block 14-day default.
-	 * Half the ~5 050 a full scan costs rather than the standard 10x, which would be
-	 * 6 630 — above the scan cost, therefore unable to fail. 3.8x over the measurement
-	 * and well under the 3 135 the same query cost before {@code V14}.
+	 * One ceiling for every shape, at roughly twice the widest measurement (the 1 203
+	 * of an All-time chart) and half the ~5 045 a full scan of {@code log_record}
+	 * costs — {@link QueryGuard#assertCeilingCanFail} holds it to that second half.
+	 * Well under the 3 135 the 14-day query cost before {@code V14} and the 5 066 the
+	 * All-time one did, so dropping the covering index still fails it.
+	 *
+	 * <p>It used to take two constants, because "All time" was a different kind of
+	 * query at guard scale — sequentially scanned where every bounded shape was
+	 * index-only. Pricing the planner for the product's storage (#185, class javadoc)
+	 * made it the same kind of query, only wider, and one ceiling now covers the lot.
+	 *
+	 * <p>A fixed number rather than one derived from the window's row count, which
+	 * #185 raised as an option: the row count is not what moved. Across six reseeds
+	 * the widest shape spans 1 140–1 203, ~5 %, and the flake was a 2x plan flip on a
+	 * dataset that had not meaningfully changed. A ceiling that tracked the rows would
+	 * have followed the noise it was meant to survive and still admitted the flip.
 	 */
 	private static final long MAX_TIMELINE_BLOCKS = 2_500;
-
-	/**
-	 * "All time" separately, because at guard scale it is not the same kind of query:
-	 * five of ten partitions are small enough that a sequential scan is the right plan
-	 * (see the class javadoc), so it measures 2 685 where every bounded shape is
-	 * index-only. The ceiling sits above that and below both the 5 049 a full scan
-	 * costs and the 5 066 this query cost without the covering index — narrow, and
-	 * still able to fail for the one reason it is here to catch.
-	 */
-	private static final long MAX_ALL_TIME_BLOCKS = 4_000;
 
 	/** The index {@code V14} adds, and the only one any timeline shape may walk. */
 	private static final List<String> TIMELINE_INDEX = List.of("idx_log_timeline");
@@ -130,27 +143,41 @@ class LogTimelinePerformanceTest {
 	}
 
 	/**
-	 * No shape reads an index other than the covering one.
+	 * No shape reads an index other than the covering one, and no shape reads a
+	 * populated partition end to end. Together: every chart the UI can draw is served
+	 * index-only, by {@code V14}'s index, on every partition holding data.
 	 *
-	 * <p>Naming the index is what makes this able to fail. "Some index was used"
-	 * stays true when the planner falls back to walking {@code idx_log_ts_id} and
+	 * <p>Naming the index is what makes the first half able to fail. "Some index was
+	 * used" stays true when the planner falls back to walking {@code idx_log_ts_id} and
 	 * fetching {@code level} from the heap for every row it counts — which is the
 	 * 130 805-block plan {@code V14} exists to replace, is ordered, and is sort-free.
+	 * It is also precisely the plan #185 caught the 1h chart taking, so this is not a
+	 * hypothetical failure mode.
 	 *
-	 * <p>Read the claim precisely: this says <em>no other index</em>, not <em>no
-	 * sequential scan</em>. {@link QueryGuard#assertWalksIndex} is containment over
-	 * the indexes touched, and at guard scale the All-time chart legitimately reads
-	 * five small partitions end to end without touching any index at all. Asserting
-	 * the absence of sequential scans is what the class javadoc explains this tier
-	 * cannot do.
+	 * <p>The second half is the one that changed with #185. {@link
+	 * QueryGuard#assertWalksIndex} is containment over the indexes <em>touched</em>, so
+	 * on its own it stays green for a partition read with no index at all; this class
+	 * used to argue that the gap was unavoidable at guard scale, because a weekly
+	 * partition holding a few thousand rows was genuinely cheaper to read end to end.
+	 * That was an artefact of a planner priced for rotating disks. With {@code
+	 * random_page_cost} at the value the product ships, the covering index wins on
+	 * every partition that holds rows, and the two halves can be asserted together.
+	 *
+	 * <p>{@link QueryGuard#assertNoSequentialScanOfTelemetry} still discounts small
+	 * partitions, and that is load-bearing rather than a hedge: the partition manager
+	 * keeps a week of partitions ahead of the newest row and the seeder leaves one
+	 * behind the oldest, and an <em>empty</em> relation is read sequentially by any
+	 * planner because there is nothing to index-scan. Discounting it is not a way of
+	 * tolerating the failure this guards; every partition with data in it is covered.
 	 */
 	@Test
-	void everyTimelineShapeWalksNoOtherIndex() {
+	void everyTimelineShapeIsIndexOnly() {
 		Instant since = windowStart();
 		for (Shape shape : uiShapes(since)) {
 			PlanFacts facts = timeline(shape).explain(jdbc);
 
 			QueryGuard.assertWalksIndex(jdbc, facts, "log_record", TIMELINE_INDEX, "log timeline — " + shape.name());
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, "log timeline — " + shape.name());
 		}
 	}
 
@@ -159,13 +186,11 @@ class LogTimelinePerformanceTest {
 	void everyTimelineShapeStaysUnderItsCeiling() {
 		Instant since = windowStart();
 		for (Shape shape : uiShapes(since)) {
-			long ceiling = shape.from() == null ? MAX_ALL_TIME_BLOCKS : MAX_TIMELINE_BLOCKS;
 			PlanFacts facts = timeline(shape).explain(jdbc);
 
-			QueryGuard.assertUnderCeiling(facts, ceiling, "log timeline — " + shape.name());
+			QueryGuard.assertUnderCeiling(facts, MAX_TIMELINE_BLOCKS, "log timeline — " + shape.name());
 		}
 		QueryGuard.assertCeilingCanFail(jdbc, MAX_TIMELINE_BLOCKS, "log_record");
-		QueryGuard.assertCeilingCanFail(jdbc, MAX_ALL_TIME_BLOCKS, "log_record");
 	}
 
 	/**

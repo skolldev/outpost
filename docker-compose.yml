@@ -25,6 +25,12 @@ services:
     image: postgres:17-alpine
     ports: ["5432:5432"] # published for local backend development (./gradlew bootRun)
     environment: { POSTGRES_DB: outpost, POSTGRES_USER: outpost, POSTGRES_PASSWORD: outpost }
+    # Postgres still defaults random_page_cost to 4.0, a seek-to-scan ratio measured
+    # on rotating disks. Outpost's read paths are covering-index scans that the
+    # default under-prices into heap reads, and none of them run on a spindle. 1.1 is
+    # the usual SSD value; the test fixture in TestcontainersConfiguration pins the
+    # same one, so the CI performance guards measure the database this ships (#185).
+    command: ["postgres", "-c", "random_page_cost=1.1"]
     volumes: ["outpost-pg:/var/lib/postgresql/data"]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U outpost"], interval: 5s }
 

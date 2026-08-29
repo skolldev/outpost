@@ -130,7 +130,7 @@ that was going to say exactly that.
 
 ## Writing a retrieval benchmark that doesn't lie
 
-Seven traps. The harness avoids all of them deliberately; each one produces
+Eight traps. The harness avoids all of them deliberately; each one produces
 *fast, wrong* numbers, which is the dangerous direction.
 
 1. **Uniform events per issue.** Real telemetry is heavily skewed — a few issues
@@ -163,7 +163,20 @@ Seven traps. The harness avoids all of them deliberately; each one produces
    fast, worthless, and looks like a good result. `PageWalk` compares adjacent
    pages' row ids and the run fails on an overlap.
 
-A benchmark whose selectivity is a lie is the eighth trap, and it is subtle in
+8. **Inheriting `random_page_cost`.** Postgres ships 4.0, a seek-to-scan ratio
+   measured on rotating disks, and it is the constant that decides *which plan*
+   rather than only how fast one runs. At guard scale it priced the log
+   timeline's covering index-only scan and a plain heap read of the densest
+   weekly partition within a percent of each other, and `ANALYZE`'s random
+   sample flipped the winner between runs: `LogTimelinePerformanceTest` failed
+   roughly three runs in eight on unchanged code, with a 2x spread in blocks
+   (#185). `TestcontainersConfiguration` pins 1.1, and the `db` service in
+   `docker-compose.yml` passes the same value, so the guards measure the
+   database the product ships rather than one nobody deploys. **Pinning the
+   planner in the fixture only is the trap's other face** — that would be
+   tuning until the numbers were convenient. Change one and change both.
+
+A benchmark whose selectivity is a lie is the ninth trap, and it is subtle in
 both directions: a body-search needle matching every row makes the planner choose
 a scan on its own, and an attribute value matching half the table tells you
 nothing about whether an index could have been used. Both seeded filters are
@@ -179,7 +192,8 @@ are structural and will.**
 
 40 003 events, 40 010 log records, 8 004 transactions, 24 012 spans, 200 issues,
 10 weekly partitions per table. Reference full-scan costs on that dataset:
-`event` 15 042 blocks, `log_record` 5 043, `span` 5 184.
+`event` 15 042 blocks, `log_record` 5 043, `span` 5 184. `random_page_cost=1.1`
+since #185 — see trap 8; the rows below predate it except where noted.
 
 | Query | Blocks | Partitions read | Verdict |
 | --- | --: | --: | --- |
@@ -221,6 +235,15 @@ The log rows move by a few percent between runs (page 1 at All time was seen at 
 and at 725 on the same dataset) because they now read few enough blocks that cache
 state is a material share of the total. That is why the guards assert plan shape,
 and why the one buffer ceiling they keep sits at 2 500.
+
+**The log timeline rows were re-measured on 2026-08-29 after #185 pinned
+`random_page_cost`** (trap 8). They roughly halved, and — the point of the change —
+stopped moving: six reseeds put the 14-day chart at 756–807 and All time at
+1 140–1 203, every shape index-only on every populated partition. Before the pin the
+same two shapes were seen at 663 and 2 685 on a good run and 2 926 and 4 080 on a bad
+one, with nothing but the planner's coin toss between them. The rest of this table
+was **not** re-measured under the new setting; treat any row whose plan could reach a
+heap as unverified until it is.
 
 ### Benchmark tier
 

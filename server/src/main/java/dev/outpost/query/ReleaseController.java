@@ -137,6 +137,41 @@ public class ReleaseController {
 				""".formatted(PAGE_SIZE), List.of(project, project, project, project));
 	}
 
+	/**
+	 * The most recently created release versions of every Project at once, for the
+	 * MCP Surface's {@code list_projects}: an agent filters by exact version string
+	 * and cannot guess one, so the catalogue call hands out the recent ones the way
+	 * it hands out Environment Names. Capped per Project in SQL because a Project
+	 * can hold thousands of Releases and the caller wants the newest handful, not a
+	 * page of each.
+	 *
+	 * <p>Guarded by the same reasoning as
+	 * {@link ProjectController#buildProjectListQuery()}: {@code release} holds one
+	 * row per (Project, version) and is neither partitioned nor telemetry, so there
+	 * is no honest ceiling to put on it.
+	 */
+	static SearchQuery buildRecentReleasesQuery(int perProject) {
+		return new SearchQuery("""
+				SELECT project_id, version FROM (
+				    SELECT project_id, version,
+				           row_number() OVER (PARTITION BY project_id ORDER BY created_at DESC, id DESC) AS rn
+				    FROM release
+				) r WHERE rn <= ?
+				ORDER BY project_id, rn
+				""", List.of(perProject));
+	}
+
+	/**
+	 * Whether any Project has a Release of this exact version, for the MCP
+	 * Surface's release-filter validation. Installation-wide on purpose: a version
+	 * that exists on another Project than the one filtered is a legitimate empty
+	 * answer, where a version that exists nowhere is a typo, and only the typo is
+	 * worth refusing.
+	 */
+	static SearchQuery buildKnownReleaseQuery(String version) {
+		return new SearchQuery("SELECT count(*) FROM release WHERE version = ?", List.of(version));
+	}
+
 	@GetMapping("/{version}/artifacts")
 	public List<Artifact> artifacts(@PathVariable String version, @RequestParam long project) {
 		return jdbc.sql("""
