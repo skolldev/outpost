@@ -1,29 +1,77 @@
 <p class="mb-4 text-sm text-muted-foreground">
-  API tokens authenticate <code class="rounded bg-muted px-1">sentry-cli</code> source-map uploads
-  from CI (scope <code class="rounded bg-muted px-1">artifacts:write</code>).
+  API tokens authenticate tooling against Outpost: agents reading telemetry over the MCP surface
+  (scope <code class="rounded bg-muted px-1">telemetry:read</code>) and
+  <code class="rounded bg-muted px-1">sentry-cli</code> source-map uploads from CI (scope
+  <code class="rounded bg-muted px-1">artifacts:write</code>). A
+  <span class="font-medium text-foreground">personal</span> token belongs to your account and stops
+  working the moment that account is deleted; an
+  <span class="font-medium text-foreground">installation</span> token belongs to nobody and outlives
+  everyone.
 </p>
-<form [formRoot]="tokenForm" class="mb-4 flex flex-wrap items-end gap-3">
-  <div hlmField class="w-64">
-    <label hlmFieldLabel for="tokenName">Name</label>
-    <input
-      hlmInput
-      id="tokenName"
-      [formField]="tokenForm.name"
-      placeholder="ci-shop-frontend"
-      class="h-8"
-    />
-    @for (error of tokenForm.name().errors(); track error.kind) {
-      <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+<form [formRoot]="tokenForm" class="mb-4 flex flex-col gap-3">
+  <div class="flex flex-wrap items-end gap-3">
+    <div hlmField class="w-64">
+      <label hlmFieldLabel for="tokenName">Name</label>
+      <input
+        hlmInput
+        id="tokenName"
+        [formField]="tokenForm.name"
+        placeholder="ci-shop-frontend"
+        class="h-8"
+      />
+      @for (error of tokenForm.name().errors(); track error.kind) {
+        <hlm-field-error [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    </div>
+
+    @if (session.isAdmin()) {
+      <div hlmField class="w-48">
+        <label hlmFieldLabel for="tokenOwnership">Owner</label>
+        <hlm-select [formField]="tokenForm.ownership" [itemToString]="ownershipLabel">
+          <hlm-select-trigger buttonId="tokenOwnership" class="h-8">
+            <hlm-select-value />
+          </hlm-select-trigger>
+          <hlm-select-content *hlmSelectPortal>
+            @for (option of ownershipOptions; track option.value) {
+              <hlm-select-item [value]="option.value">{{ option.label }}</hlm-select-item>
+            }
+          </hlm-select-content>
+        </hlm-select>
+      </div>
     }
+
+    <button
+      hlmBtn
+      size="sm"
+      type="submit"
+      [disabled]="tokenForm().invalid() || tokenForm().submitting()"
+    >
+      Create token
+    </button>
   </div>
-  <button
-    hlmBtn
-    size="sm"
-    type="submit"
-    [disabled]="tokenForm().invalid() || tokenForm().submitting()"
-  >
-    Create token
-  </button>
+
+  <fieldset>
+    <legend hlmLabel class="mb-2">Scopes</legend>
+    <div class="flex flex-wrap gap-4">
+      @for (scope of scopeOptions(); track scope.value) {
+        <div hlmField orientation="horizontal">
+          <hlm-checkbox
+            [inputId]="'scope-' + scope.value"
+            [formField]="tokenForm.scopes[scope.value]"
+          />
+          <label hlmFieldLabel [for]="'scope-' + scope.value">
+            <span class="font-mono text-xs">{{ scope.label }}</span>
+            <span class="ml-2 text-xs text-muted-foreground">{{ scope.hint }}</span>
+          </label>
+        </div>
+      }
+    </div>
+    @if (tokenForm.scopes().touched()) {
+      @for (error of tokenForm.scopes().errors(); track error.kind) {
+        <hlm-field-error class="mt-1" [validator]="error.kind">{{ error.message }}</hlm-field-error>
+      }
+    }
+  </fieldset>
 </form>
 
 @if (createdToken(); as created) {
@@ -44,9 +92,30 @@
           {{ copied() === created.token ? 'Copied!' : 'Copy' }}
         </button>
       </div>
-      <pre
-        class="mt-3 overflow-x-auto rounded bg-muted px-3 py-3 text-xs leading-relaxed text-foreground"
-        >{{ cliSnippet(created.token!) }}</pre>
+
+      @if (hasScope(created, 'telemetry:read')) {
+        <p class="mt-3 text-xs">
+          MCP client configuration — the URL is this installation's, so it can be pasted as it is.
+        </p>
+        <pre
+          class="mt-1 overflow-x-auto rounded bg-muted px-3 py-3 text-xs leading-relaxed text-foreground"
+          >{{ mcpSnippet(created) }}</pre>
+        <button
+          hlmBtn
+          variant="outline"
+          size="xs"
+          class="mt-1 font-sans"
+          (click)="copy(mcpSnippet(created))"
+        >
+          {{ copied() === mcpSnippet(created) ? 'Copied!' : 'Copy configuration' }}
+        </button>
+      }
+
+      @if (hasScope(created, 'artifacts:write')) {
+        <pre
+          class="mt-3 overflow-x-auto rounded bg-muted px-3 py-3 text-xs leading-relaxed text-foreground"
+          >{{ cliSnippet(created.token!) }}</pre>
+      }
     </div>
   </div>
 }
@@ -56,6 +125,7 @@
     <thead class="border-b border-border bg-muted text-left text-xs text-muted-foreground">
       <tr>
         <th class="px-4 py-2 font-medium">Name</th>
+        <th class="px-4 py-2 font-medium">Owner</th>
         <th class="px-4 py-2 font-medium">Scopes</th>
         <th class="px-4 py-2 font-medium">Created</th>
         <th class="px-4 py-2"></th>
@@ -65,6 +135,14 @@
       @for (token of tokens(); track token.id) {
         <tr class="border-b border-border/60 last:border-0">
           <td class="px-4 py-2">{{ token.name }}</td>
+          <td class="px-4 py-2 text-xs">
+            @if (token.owner_email) {
+              <span class="rounded bg-muted px-1.5 py-0.5 font-medium">Personal</span>
+              <span class="ml-2 text-muted-foreground">{{ token.owner_email }}</span>
+            } @else {
+              <span class="rounded bg-muted px-1.5 py-0.5 font-medium">Installation</span>
+            }
+          </td>
           <td class="px-4 py-2 font-mono text-xs text-muted-foreground">
             {{ token.scopes.join(', ') }}
           </td>
@@ -79,7 +157,7 @@
         </tr>
       } @empty {
         <tr>
-          <td colspan="4" class="px-4 py-6 text-center text-sm text-muted-foreground">
+          <td colspan="5" class="px-4 py-6 text-center text-sm text-muted-foreground">
             No tokens yet.
           </td>
         </tr>

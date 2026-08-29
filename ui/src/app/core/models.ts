@@ -188,13 +188,23 @@ export interface ReleaseArtifact {
   uploaded_at: string;
 }
 
+/** The Scopes an API Token can carry; `artifacts:write` is Admin-only. */
+export type TokenScope = 'telemetry:read' | 'artifacts:write';
+
 export interface ApiToken {
   id: number;
   name: string;
-  scopes: string[];
+  scopes: TokenScope[];
   created_at: string;
+  // A Personal Token has an owner and dies with that account (ADR-0017); an
+  // Installation Token has neither field set and outlives everybody.
+  owner_user_id?: number | null;
+  owner_email?: string | null;
   // Only present on the creation response — shown once.
   token?: string;
+  // Also creation-only: the MCP Surface URL of this installation, which the
+  // browser cannot derive (a reverse-proxy sub-path is invisible to origin).
+  mcp_url?: string;
 }
 
 export interface AppUser {

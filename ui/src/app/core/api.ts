@@ -22,6 +22,7 @@ import {
   Project,
   ProjectKey,
   SessionUser,
+  TokenScope,
   TraceDetail,
   TraceFilters,
   TracePage,
@@ -162,8 +163,12 @@ export class Api {
     return this.http.get<ApiToken[]>(`${this.base}/tokens`);
   }
 
-  createToken(name: string): Observable<ApiToken> {
-    return this.http.post<ApiToken>(`${this.base}/tokens`, { name });
+  createToken(body: {
+    name: string;
+    scopes: TokenScope[];
+    personal: boolean;
+  }): Observable<ApiToken> {
+    return this.http.post<ApiToken>(`${this.base}/tokens`, body);
   }
 
   deleteToken(id: number): Observable<void> {

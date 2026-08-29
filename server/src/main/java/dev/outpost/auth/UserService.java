@@ -102,6 +102,18 @@ public class UserService {
 		return true;
 	}
 
+	/**
+	 * Resolves an account by email, which is what a Session carries as its
+	 * principal — callers holding an {@code Authentication} and needing the row's
+	 * id (token ownership, for one) go through here.
+	 */
+	public Optional<User> findByEmail(String email) {
+		return jdbc.sql("SELECT id, email, role, created_at FROM app_user WHERE lower(email) = lower(?)")
+			.param(email)
+			.query(this::mapUser)
+			.optional();
+	}
+
 	public Optional<User> find(long id) {
 		return jdbc.sql("SELECT id, email, role, created_at FROM app_user WHERE id = ?")
 			.param(id)
