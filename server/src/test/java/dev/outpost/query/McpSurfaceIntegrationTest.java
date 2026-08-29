@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.auth.ApiTokenService;
+import dev.outpost.support.McpTestClient;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -20,14 +21,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpEntity;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.web.client.RestTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -37,12 +35,13 @@ import tools.jackson.databind.ObjectMapper;
  * hand-rolled {@code SecurityConfig} chain, and gets one Tool back that returns
  * an Issue's context.
  *
- * <p>The exchange below is what the MCP streamable-HTTP transport actually does —
- * {@code initialize}, {@code notifications/initialized}, then {@code tools/list}
- * and {@code tools/call}, carrying the {@code Mcp-Session-Id} the server issued —
- * so it fails for the same reasons a client would rather than for reasons only a
- * test can hit. Responses come back either as JSON or as a one-event SSE stream
- * depending on what the transport chooses, which is why {@link #rpc} unwraps both.
+ * <p>The exchange runs through {@link McpTestClient}, which speaks what the
+ * streamable-HTTP transport actually speaks, so these tests fail for the same
+ * reasons a client would rather than for reasons only a test can hit.
+ *
+ * <p>What is proved here is the surface: the transport, the Scope that gates it,
+ * and {@code get_issue_context}, the one Tool the slice shipped. The other seven
+ * are driven by {@code McpToolsIntegrationTest} through the same client.
  *
  * <p>Telemetry is posted through the real ingest surface, as
  * {@code TraceQueryIntegrationTest} does: the Tool reads {@code event.data} the
@@ -70,13 +69,7 @@ class McpSurfaceIntegrationTest {
 	@Autowired
 	ObjectMapper mapper;
 
-	/**
-	 * {@code JdkClientHttpRequestFactory} rather than the default: the streamable
-	 * transport answers a POST with a chunked {@code text/event-stream} body, and
-	 * {@code HttpURLConnection} reports "Premature EOF" reading one. A real client
-	 * is on a modern HTTP stack, so this is the honest one to test against.
-	 */
-	final RestTemplate rest = new RestTemplate(new JdkClientHttpRequestFactory());
+	McpTestClient client;
 
 	/**
 	 * One base instant for the whole fixture, so the Log Record can be placed
@@ -90,11 +83,10 @@ class McpSurfaceIntegrationTest {
 	String projectKey;
 	String readToken;
 	String writeOnlyToken;
-	String sessionId;
 
 	@BeforeEach
 	void setUp() {
-		rest.setErrorHandler(new org.springframework.web.client.NoOpResponseErrorHandler());
+		client = new McpTestClient(port, mapper);
 		jdbc.sql("DELETE FROM span").update();
 		jdbc.sql("DELETE FROM txn").update();
 		jdbc.sql("DELETE FROM log_record").update();
@@ -113,7 +105,6 @@ class McpSurfaceIntegrationTest {
 		// No migration and no UI in this slice (#178): the token rows go in by hand.
 		readToken = insertToken("agent", ApiTokenService.SCOPE_TELEMETRY_READ);
 		writeOnlyToken = insertToken("ci", ApiTokenService.SCOPE_ARTIFACTS_WRITE);
-		sessionId = null;
 		base = Instant.now();
 	}
 
@@ -148,7 +139,8 @@ class McpSurfaceIntegrationTest {
 	void telemetryReadDoesNotOpenTheUploadSurface() {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setBearerAuth(readToken);
-		ResponseEntity<String> response = rest.exchange(url("/api/0/organizations/outpost/chunk-upload/"),
+		ResponseEntity<String> response = client.rest().exchange(
+				client.url("/api/0/organizations/outpost/chunk-upload/"),
 				HttpMethod.GET, new HttpEntity<>(headers), String.class);
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
@@ -156,15 +148,62 @@ class McpSurfaceIntegrationTest {
 
 	// -------------------------------------------------------------------- tools
 
+	/**
+	 * The whole Tool set, listed in one place so adding a ninth is a decision
+	 * somebody makes rather than a side effect of adding a bean. #177 sets the bar
+	 * for a ninth: an agent would otherwise need three calls and still get it wrong.
+	 */
+	private static final List<String> TOOLS = List.of("list_projects", "find_issues", "get_issue_context",
+			"search_logs", "get_trace", "get_event_raw", "uptime_status", "performance_overview");
+
+	/**
+	 * What {@code initialize} answers, which is the first thing a client reads and
+	 * the only place the server names itself.
+	 */
 	@Test
-	void aClientListsExactlyTheOneToolThisSliceShips() {
+	void theHandshakeNamesTheServerAndAdvertisesToolsOnly() {
+		ResponseEntity<String> response = post(initialize(), readToken);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(response.getHeaders().getFirst("Mcp-Session-Id")).isNotBlank();
+		JsonNode result = client.unwrap(response.getBody()).path("result");
+		assertThat(result.path("serverInfo").path("name").asString()).isEqualTo("outpost");
+		assertThat(result.path("capabilities").path("tools")).isNotEmpty();
+		// Tools only in v1, as application.yaml pins. Logging rides along with the
+		// transport and is not a surface this server offers anything through.
+		assertThat(result.path("capabilities").propertyNames())
+			.doesNotContain("resources", "prompts", "completions");
+	}
+
+	@Test
+	void aClientListsEveryToolThisSurfaceOffersAndNoOthers() {
 		connect();
 
 		JsonNode tools = rpc("tools/list", Map.of()).path("tools");
 
-		assertThat(tools.size()).isEqualTo(1);
-		JsonNode tool = tools.get(0);
-		assertThat(tool.path("name").asString()).isEqualTo("get_issue_context");
+		assertThat(tools.valueStream().map(tool -> tool.path("name").asString()).toList())
+			.containsExactlyInAnyOrderElementsOf(TOOLS);
+		// Read-only and non-destructive is the whole v1 posture: a client that gates
+		// writes behind a confirmation must not gate any of these.
+		assertThat(tools.valueStream().toList()).allSatisfy(tool -> {
+			assertThat(tool.path("annotations").path("readOnlyHint").asBoolean())
+				.as("%s is not annotated read-only", tool.path("name").asString())
+				.isTrue();
+			assertThat(tool.path("annotations").path("destructiveHint").asBoolean(true))
+				.as("%s is not annotated non-destructive", tool.path("name").asString())
+				.isFalse();
+		});
+	}
+
+	@Test
+	void getIssueContextAdvertisesItsSchema() {
+		connect();
+
+		JsonNode tool = rpc("tools/list", Map.of()).path("tools")
+			.valueStream()
+			.filter(candidate -> "get_issue_context".equals(candidate.path("name").asString()))
+			.findFirst()
+			.orElseThrow();
 		JsonNode properties = tool.path("inputSchema").path("properties");
 		assertThat(properties.propertyNames()).containsExactlyInAnyOrder("issue_id", "log_window_minutes");
 		assertThat(tool.path("inputSchema").path("required")).singleElement()
@@ -267,11 +306,10 @@ class McpSurfaceIntegrationTest {
 	void anUnknownIssueIsAToolErrorRatherThanAProtocolError() {
 		connect();
 
-		JsonNode result = rpc("tools/call",
-				Map.of("name", "get_issue_context", "arguments", Map.of("issue_id", 987654321L)));
+		String message = client.callToolExpectingError(readToken, "get_issue_context",
+				Map.of("issue_id", 987654321L));
 
-		assertThat(result.path("isError").asBoolean()).isTrue();
-		assertThat(textContent(result)).contains("987654321");
+		assertThat(message).contains("987654321");
 	}
 
 	@Test
@@ -290,81 +328,28 @@ class McpSurfaceIntegrationTest {
 
 	// ----------------------------------------------------------------- protocol
 
-	/** {@code initialize} + {@code notifications/initialized}, as a client does. */
 	private void connect() {
-		ResponseEntity<String> response = post(initialize(), readToken);
-		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-		sessionId = response.getHeaders().getFirst("Mcp-Session-Id");
-		JsonNode result = unwrap(response.getBody()).path("result");
-		assertThat(result.path("serverInfo").path("name").asString()).isEqualTo("outpost");
-		assertThat(result.path("capabilities").path("tools")).isNotEmpty();
-
-		ResponseEntity<String> initialized = post(
-				Map.of("jsonrpc", "2.0", "method", "notifications/initialized"), readToken);
-		assertThat(initialized.getStatusCode().is2xxSuccessful()).isTrue();
+		client.connect(readToken);
 	}
 
-	/** One JSON-RPC round trip, returning the {@code result} object. */
 	private JsonNode rpc(String method, Map<String, Object> params) {
-		ResponseEntity<String> response = post(
-				Map.of("jsonrpc", "2.0", "id", UUID.randomUUID().toString(), "method", method, "params", params),
-				readToken);
-		assertThat(response.getStatusCode()).as("%s: %s", method, response.getBody()).isEqualTo(HttpStatus.OK);
-		JsonNode body = unwrap(response.getBody());
-		assertThat(body.has("error")).as("JSON-RPC error from %s: %s", method, response.getBody()).isFalse();
-		return body.path("result");
+		return client.rpc(readToken, method, params);
 	}
 
-	/** {@code tools/call} for {@code get_issue_context}, read from its typed MCP result. */
 	private JsonNode callTool(Map<String, Object> arguments) {
-		JsonNode result = rpc("tools/call", Map.of("name", "get_issue_context", "arguments", arguments));
-		assertThat(result.path("isError").asBoolean(false)).as("tool error: %s", result).isFalse();
-		assertThat(result.path("structuredContent").isObject()).as("structured tool result: %s", result).isTrue();
-		return result.path("structuredContent");
-	}
-
-	private String textContent(JsonNode result) {
-		return result.path("content").get(0).path("text").asString();
+		return client.callTool(readToken, "get_issue_context", arguments);
 	}
 
 	private List<String> caveats(JsonNode context) {
 		return context.path("caveats").valueStream().map(JsonNode::asString).toList();
 	}
 
-	private Map<String, Object> initialize() {
-		return Map.of("jsonrpc", "2.0", "id", "init", "method", "initialize", "params",
-				Map.of("protocolVersion", PROTOCOL_VERSION, "capabilities", Map.of(), "clientInfo",
-						Map.of("name", "outpost-integration-test", "version", "1.0.0")));
-	}
-
 	private ResponseEntity<String> post(Map<String, Object> body, String token) {
-		HttpHeaders headers = new HttpHeaders();
-		headers.setContentType(MediaType.APPLICATION_JSON);
-		// Both, exactly as the streamable-HTTP transport requires: the server may
-		// answer a POST with a JSON body or with a single-event SSE stream.
-		headers.set(HttpHeaders.ACCEPT, "application/json, text/event-stream");
-		if (token != null) {
-			headers.setBearerAuth(token);
-		}
-		if (sessionId != null) {
-			headers.set("Mcp-Session-Id", sessionId);
-		}
-		return rest.exchange(url("/mcp"), HttpMethod.POST,
-				new HttpEntity<>(mapper.writeValueAsString(body), headers), String.class);
+		return client.post(body, token);
 	}
 
-	/** Reads a JSON-RPC message out of either a plain body or an SSE frame. */
-	private JsonNode unwrap(String body) {
-		assertThat(body).isNotBlank();
-		if (!body.stripLeading().startsWith("{")) {
-			String data = body.lines()
-				.filter(line -> line.startsWith("data:"))
-				.map(line -> line.substring("data:".length()).strip())
-				.findFirst()
-				.orElseThrow(() -> new AssertionError("no SSE data frame in: " + body));
-			return mapper.readTree(data);
-		}
-		return mapper.readTree(body);
+	private Map<String, Object> initialize() {
+		return client.initialize();
 	}
 
 	// ------------------------------------------------------------------ fixture
@@ -443,8 +428,9 @@ class McpSurfaceIntegrationTest {
 	private void postEnvelope(String envelope) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.set("Content-Type", "application/x-sentry-envelope");
-		ResponseEntity<String> response = rest.exchange(url("/api/" + projectId + "/envelope/?sentry_key=" + projectKey),
-				HttpMethod.POST, new HttpEntity<>(envelope.getBytes(StandardCharsets.UTF_8), headers), String.class);
+		ResponseEntity<String> response = client.rest().exchange(
+				client.url("/api/" + projectId + "/envelope/?sentry_key=" + projectKey), HttpMethod.POST,
+				new HttpEntity<>(envelope.getBytes(StandardCharsets.UTF_8), headers), String.class);
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 	}
 
@@ -472,9 +458,5 @@ class McpSurfaceIntegrationTest {
 
 	private String hexId() {
 		return UUID.randomUUID().toString().replace("-", "");
-	}
-
-	private String url(String path) {
-		return "http://localhost:" + port + path;
 	}
 }

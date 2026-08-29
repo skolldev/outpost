@@ -17,8 +17,6 @@ import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
-import org.springframework.beans.factory.annotation.Value;
-import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -156,17 +154,11 @@ public class IssueContextTool {
 	private final ObjectMapper mapper;
 
 	/**
-	 * A statement timeout bounds this path, per the MCP Surface's performance rules.
-	 * It is a backstop for the unexpected rather than the plan for the expected —
-	 * ADR-0001 and ADR-0003 put these queries on the same single Postgres the ingest
-	 * pipeline is writing to, so a runaway agent query is a runaway ingest queue.
+	 * Queries through {@link ToolSupport}'s {@code JdbcTemplate}, which is where the
+	 * statement timeout that bounds the whole MCP path lives.
 	 */
-	public IssueContextTool(DataSource dataSource, ObjectMapper mapper,
-			@Value("${outpost.mcp.query-timeout-seconds:15}") int queryTimeoutSeconds) {
-		// Its own JdbcTemplate rather than the shared one, because the timeout is the
-		// point: setting it on the injected bean would put it on every controller too.
-		this.jdbc = new JdbcTemplate(dataSource);
-		this.jdbc.setQueryTimeout(queryTimeoutSeconds);
+	public IssueContextTool(ToolSupport support, ObjectMapper mapper) {
+		this.jdbc = support.jdbc();
 		this.mapper = mapper;
 	}
 

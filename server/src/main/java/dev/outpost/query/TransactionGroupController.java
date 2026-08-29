@@ -641,4 +641,19 @@ public class TransactionGroupController {
 		return List.copyOf(SORTS.keySet());
 	}
 
+	/**
+	 * The two numbers that decide what a leaderboard response is <em>not</em> showing,
+	 * read from the constants that enforce them rather than restated. The MCP Surface's
+	 * {@code performance_overview} Tool discloses both in its {@code caveats}, and a
+	 * disclosure carrying its own copy of a limit is one that goes quietly wrong the
+	 * day the limit changes.
+	 */
+	static int maxGroups() {
+		return MAX_GROUPS;
+	}
+
+	static int minSamples() {
+		return MIN_SAMPLES;
+	}
+
 }

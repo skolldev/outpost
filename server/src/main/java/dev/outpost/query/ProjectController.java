@@ -60,9 +60,20 @@ public class ProjectController {
 
 	@GetMapping
 	public List<Project> list() {
-		return jdbc.sql("SELECT id, slug, name, platform, created_at FROM project ORDER BY slug")
-			.query(this::mapProject)
-			.list();
+		SearchQuery search = buildProjectListQuery();
+		return jdbc.sql(search.sql()).params(search.params()).query(this::mapProject).list();
+	}
+
+	/**
+	 * Every Project, ordered by slug — extracted per {@link SearchQuery} so the MCP
+	 * Surface's {@code list_projects} Tool reads the same statement rather than a
+	 * copy of it (ADR-0016). No guard accompanies it, and that is a statement about
+	 * the table rather than an omission: {@code project} is a catalogue with one row
+	 * per Project and no partitions, so a buffer ceiling over it could not be set
+	 * anywhere it was able to fail.
+	 */
+	static SearchQuery buildProjectListQuery() {
+		return new SearchQuery("SELECT id, slug, name, platform, created_at FROM project ORDER BY slug", List.of());
 	}
 
 	@PostMapping
@@ -120,10 +131,26 @@ public class ProjectController {
 
 	@GetMapping("/{id}/environments")
 	public List<String> environments(@PathVariable long id) {
-		return jdbc.sql("SELECT name FROM environment WHERE project_id = ? ORDER BY name")
-			.param(id)
-			.query(String.class)
-			.list();
+		SearchQuery search = buildEnvironmentsQuery(List.of(id));
+		return jdbc.sql(search.sql()).params(search.params()).query((rs, row) -> rs.getString("name")).list();
+	}
+
+	/**
+	 * The Environment Names of the given Projects, or of every Project when none are
+	 * given — extracted per {@link SearchQuery} so {@code list_projects} can answer
+	 * "which environments may I filter on" from the same statement this endpoint
+	 * runs, in one round trip rather than one per Project.
+	 *
+	 * <p>Guarded by the same reasoning as {@link #buildProjectListQuery()}:
+	 * {@code environment} holds one row per (Project, Environment Name) and is
+	 * neither partitioned nor telemetry, so there is no honest ceiling to put on it.
+	 */
+	static SearchQuery buildEnvironmentsQuery(List<Long> project) {
+		StringBuilder sql = new StringBuilder("SELECT project_id, name FROM environment WHERE 1=1");
+		List<Object> params = new ArrayList<>();
+		QuerySupport.appendInClause(sql, "project_id", project, params);
+		sql.append(" ORDER BY project_id, name");
+		return new SearchQuery(sql.toString(), params);
 	}
 
 	/**

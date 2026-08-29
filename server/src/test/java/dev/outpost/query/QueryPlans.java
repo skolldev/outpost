@@ -244,6 +244,81 @@ public final class QueryPlans {
 				Duration.ofMinutes(IssueContextTool.MAX_LOG_WINDOW_MINUTES));
 	}
 
+	/**
+	 * The window every list Tool applies when the caller supplies no {@code from},
+	 * from the class that owns it. Read rather than restated, for the reason
+	 * {@link #sparklineSince()} is read: it is the bind parameter that decides which
+	 * partitions are pruned, and it is the whole subject of ADR-0016's warning that
+	 * an agent omits what a user never picks. A guard with its own copy would
+	 * {@code EXPLAIN} a window no Tool binds and would keep passing after the default
+	 * widened.
+	 */
+	public static Duration toolWindow() {
+		return Duration.ofDays(ToolSupport.DEFAULT_WINDOW_DAYS);
+	}
+
+	/** The Issue list as {@code find_issues} binds it, through the Tool's own factory. */
+	public static Built findIssues(List<Long> project, List<String> environment, String status, String release,
+			Instant from, Instant to, String query, String sort, String cursor) {
+		return Built.of(IssueSearchTool.buildIssueSearchQuery(project, environment, status, release, from, to, query,
+				sort, cursor));
+	}
+
+	/** The status {@code find_issues} applies when the caller names none. */
+	public static String toolIssueStatus() {
+		return IssueSearchTool.DEFAULT_STATUS;
+	}
+
+	/** Both statuses the Tool answers, so a guard covers the tab #126 originally missed. */
+	public static List<String> toolIssueStatuses() {
+		return IssueSearchTool.STATUSES;
+	}
+
+	/** The log stream as {@code search_logs} binds it, through the Tool's own factory. */
+	public static Built searchLogs(List<Long> project, List<String> environment, List<String> level, String traceId,
+			String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
+		return Built.of(LogSearchTool.buildLogSearchQuery(project, environment, level, traceId, release, query, attr,
+				from, to, cursor));
+	}
+
+	/**
+	 * The one statement {@code get_event_raw} issues. It is the event detail page's
+	 * own row lookup <em>without</em> the two neighbour probes that page also runs —
+	 * a different shape from {@link #eventDetail}, and the only one this Tool pays
+	 * for.
+	 */
+	public static Built eventRaw(UUID id) {
+		return new Built(IssueController.EVENT_BY_ID, List.of(id));
+	}
+
+	/** The leaderboard as {@code performance_overview} binds it, through the Tool's own factory. */
+	public static Built performanceOverview(List<Long> project, List<String> environment, String release, String query,
+			String sort, Instant from, Instant to) {
+		return Built.of(PerformanceOverviewTool.buildPerformanceOverviewQuery(project, environment, release, query,
+				sort, from, to));
+	}
+
+	/** The cardinality count it issues alongside, likewise through the Tool's own factory. */
+	public static Built performanceCardinality(List<Long> project, List<String> environment, String release,
+			String query, Instant from, Instant to) {
+		return Built.of(PerformanceOverviewTool.buildPerformanceCardinalityQuery(project, environment, release, query,
+				from, to));
+	}
+
+	/**
+	 * Every ranking {@code performance_overview} accepts, paired with the controller
+	 * key it resolves to — read from the Tool's own whitelist so a ranking added
+	 * there is one the guards cover on the same commit.
+	 */
+	public static List<String> performanceSorts() {
+		return PerformanceOverviewTool.sortKeys().stream().map(PerformanceOverviewTool::controllerSort).toList();
+	}
+
+	/** The window the leaderboard is bound by once the Tool's default has been through the 30-day cap. */
+	public static TransactionGroupController.Window performanceWindow(Instant from, Instant to) {
+		return TransactionGroupController.window(from, to);
+	}
+
 	// ---------------------------------------------------------- traces/releases
 
 	public static Built traceSearch(List<Long> project, List<String> environment, String release, String query,
