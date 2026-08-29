@@ -161,9 +161,19 @@ public final class TelemetrySeeder {
 	/** Sparser than any real monitor: the overview buckets by day, so per-minute rows only cost time. */
 	private static final int UPTIME_CHECK_INTERVAL_MINUTES = 15;
 
-	/** Postgres settings that decide whether a run is measuring cache or disk; recorded, never assumed. */
+	/**
+	 * Postgres settings that decide whether a run is measuring cache or disk; recorded,
+	 * never assumed.
+	 *
+	 * <p>{@code random_page_cost} is here because #185 showed it is the one that decides
+	 * <em>which plan</em> rather than only how fast a plan runs: at the shipped 4.0 the log
+	 * timeline's index-only scan and a heap read priced within a percent of each other and
+	 * {@code ANALYZE}'s sample noise picked the winner. {@code TestcontainersConfiguration}
+	 * pins it, and a report that does not state it is a report about an unknown planner.
+	 */
 	private static final List<String> REPORTED_SETTINGS = List.of("shared_buffers", "work_mem", "maintenance_work_mem",
-			"effective_cache_size", "synchronous_commit", "max_parallel_workers_per_gather", "server_version");
+			"effective_cache_size", "random_page_cost", "seq_page_cost", "synchronous_commit",
+			"max_parallel_workers_per_gather", "server_version");
 
 	private final JdbcClient jdbc;
 
