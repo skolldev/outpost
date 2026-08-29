@@ -153,6 +153,14 @@ public final class TelemetrySeeder {
 	/** The trace guaranteed to fan out across all four tables. */
 	private static final String KNOWN_TRACE_ID = "0".repeat(24) + "cafebabe";
 
+	/**
+	 * The Transaction Group the known trace's Transactions belong to, for scenarios
+	 * that drill into one group — {@code find_transactions}' guard binds this key.
+	 */
+	public static final String KNOWN_TRANSACTION_NAME = "GET /api/checkout/{id}";
+
+	public static final String KNOWN_TRANSACTION_OP = "http.server";
+
 	/** Rows per {@code INSERT … SELECT}: big enough to amortize, small enough to bound WAL and memory. */
 	private static final long CHUNK = 250_000;
 
@@ -506,11 +514,16 @@ public final class TelemetrySeeder {
 				                 name, op, start_ts, end_ts, duration_ms, status, data)
 				SELECT gen_random_uuid(), ?, 'production', 'app@1.0.0', ?, lpad(to_hex(g), 16, '0'),
 				       CASE WHEN g > 1 THEN lpad(to_hex(1), 16, '0') END,
-				       'GET /api/checkout/{id}', 'http.server',
+				       ?, ?,
 				       now() - make_interval(hours => g), now() - make_interval(hours => g) + interval '120 ms',
 				       120, 'ok', ?::jsonb
 				FROM generate_series(1, 4) g
-				""").param(project).param(KNOWN_TRACE_ID).param(syntheticPayload()).update();
+				""").param(project)
+			.param(KNOWN_TRACE_ID)
+			.param(KNOWN_TRANSACTION_NAME)
+			.param(KNOWN_TRANSACTION_OP)
+			.param(syntheticPayload())
+			.update();
 		jdbc.sql("""
 				INSERT INTO span (id, txn_id, project_id, trace_id, span_id, parent_span_id, op, description,
 				                  start_ts, end_ts, duration_ms, status, data)

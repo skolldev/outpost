@@ -309,6 +309,37 @@ class McpToolPerformanceTest {
 			.isFalse();
 	}
 
+	// -------------------------------------------------------- find_transactions
+
+	/**
+	 * The one statement {@code find_transactions} issues, in both orderings it
+	 * offers. This is the Tool's own SQL — the UI's drill-down aggregates a group
+	 * and never lists its rows, so there was no factory to reuse — which is exactly
+	 * the case ADR-0016 says gets a guard of its own. Healthy is an index range
+	 * over one group's window rows via {@code idx_txn_performance} with a top-N
+	 * sort on top; the regression this catches is the key predicates falling off
+	 * that index and the lookup reading every group.
+	 */
+	@Test
+	void findTransactionsReadsOneGroupNotTheTable() {
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_PERFORMANCE_BLOCKS, PartitionManager.TXN);
+		TransactionGroupController.Window window = QueryPlans.performanceWindow(from, to);
+
+		for (String sort : QueryPlans.findTransactionsSorts()) {
+			PlanFacts facts = QueryPlans
+				.findTransactions(seeded.projectId(), TelemetrySeeder.KNOWN_TRANSACTION_NAME,
+						TelemetrySeeder.KNOWN_TRANSACTION_OP, null, null, sort, window.from(), window.to(),
+						QueryPlans.findTransactionsDefaultFetch())
+				.explain(jdbc);
+			String what = "find_transactions sorted by " + sort;
+
+			QueryGuard.assertUnderCeiling(facts, MAX_PERFORMANCE_BLOCKS, what);
+			QueryGuard.assertNoTempFiles(facts, what);
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+			QueryGuard.assertPrunesFrom(jdbc, facts, PartitionManager.TXN, window.from(), what);
+		}
+	}
+
 	// ------------------------------------------------------------ uptime_status
 
 	/**

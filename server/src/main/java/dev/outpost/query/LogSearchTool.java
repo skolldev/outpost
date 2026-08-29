@@ -80,18 +80,21 @@ public class LogSearchTool {
 	public LogSearchResult searchLogs(
 			@McpToolParam(required = false,
 					description = "Project slugs from list_projects. Omit for every Project.") List<String> project_slugs,
-			@McpToolParam(required = false,
-					description = "Environment Names from list_projects. Omit for every Environment.") List<String> environments,
-			@McpToolParam(required = false,
-					description = "Severity levels, e.g. error, warn, info. Omit for every level.") List<String> levels,
+			@McpToolParam(required = false, description = "Environment Names from list_projects. Matched exactly. "
+					+ "Omit for every Environment.") List<String> environments,
+			@McpToolParam(required = false, description = "Severity levels, e.g. error, warn, info. Matched exactly "
+					+ "against the level text the SDK sent — an SDK that logs 'warning' does not match 'warn'. Omit "
+					+ "for every level.") List<String> levels,
 			@McpToolParam(required = false,
 					description = "32-character hex Trace ID; returns only Log Records correlated with that Trace.") String trace_id,
-			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2.") String release,
+			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2 — list_projects "
+					+ "shows each Project's recent versions.") String release,
 			@McpToolParam(required = false,
 					description = "Case-insensitive substring of the Log Record body.") String query,
 			@McpToolParam(required = false, description = "Attribute filters as key=value, or a bare key to match "
 					+ "records that carry it at all. Attribute names are visible on returned records.") List<String> attribute_filters,
-			@McpToolParam(required = false, description = "Start of the window as an ISO-8601 instant. Defaults to "
+			@McpToolParam(required = false, description = "Start of the window: an ISO-8601 instant, or an ISO-8601 "
+					+ "duration such as PT1H or P2D meaning that far back from `to`. Defaults to "
 					+ ToolSupport.DEFAULT_WINDOW_DAYS + " days before `to`.") String from,
 			@McpToolParam(required = false,
 					description = "End of the window as an ISO-8601 instant. Defaults to now.") String to,
@@ -100,6 +103,10 @@ public class LogSearchTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
+		// Refused rather than bound, like an unknown slug: an exact-match filter for a
+		// value nothing carries returns an empty result that reads as "nothing matched".
+		support.requireKnownEnvironments(environments);
+		support.requireKnownRelease(release);
 		ToolSupport.Window window = ToolSupport.window(from, to, caveats);
 
 		SearchQuery search = buildLogSearchQuery(projectIds, environments, levels, trace_id, release, query,
@@ -148,6 +155,16 @@ public class LogSearchTool {
 		if (attributesTruncated) {
 			caveats.add("At least one Log Record carried more than " + MAX_ATTRIBUTES
 					+ " attributes and only the first " + MAX_ATTRIBUTES + " are returned.");
+		}
+		if (records.isEmpty()) {
+			// Levels are the one filter that can be wrong without being refused —
+			// they are free text an SDK chose, so there is no catalogue to validate
+			// against, and 'warning' for 'warn' silently matches nothing.
+			caveats.add("No Log Record matched between " + window.from() + " and " + window.to() + "."
+					+ (levels == null || levels.isEmpty() ? ""
+							: " Levels are matched exactly against the text the SDK sent — 'warn' and 'warning' are "
+									+ "different levels — so a level filter that misses may be spelled differently "
+									+ "than the records are; the level field is visible on any unfiltered result."));
 		}
 		return new LogSearchResult(window, records, page.nextCursor(), caveats);
 	}

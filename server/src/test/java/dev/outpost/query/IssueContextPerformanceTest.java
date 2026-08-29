@@ -130,6 +130,25 @@ class IssueContextPerformanceTest {
 				"the get_issue_context join");
 	}
 
+	/**
+	 * The Environment-scoped variant is the same walk filtering as it goes, so it
+	 * stops at the first <em>matching</em> row rather than the first row — how far
+	 * that is depends on the data, which is why it gets its own guard rather than
+	 * inheriting the unfiltered one's. The seeder spreads Events over three
+	 * Environments, so at guard scale the walk passes a couple of rows before
+	 * stopping and the same ceiling holds.
+	 */
+	@Test
+	void theEnvironmentScopedLookupWalksTheSameIndexUnderTheSameCeiling() {
+		PlanFacts facts = QueryPlans.issueContext(seeded.issueId(), seeded.environment()).explain(jdbc);
+		String what = "the get_issue_context join scoped to one Environment";
+
+		QueryGuard.assertUnderCeiling(facts, MAX_ISSUE_CONTEXT_BLOCKS, what);
+		QueryGuard.assertNoTempFiles(facts, what);
+		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+		QueryGuard.assertWalksIndex(jdbc, facts, PartitionManager.EVENT, List.of("idx_event_issue_ts"), what);
+	}
+
 	// -------------------------------------------------------------------- trace
 
 	@Test

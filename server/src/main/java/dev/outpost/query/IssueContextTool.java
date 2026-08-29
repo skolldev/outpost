@@ -151,6 +151,8 @@ public class IssueContextTool {
 
 	private final JdbcTemplate jdbc;
 
+	private final ToolSupport support;
+
 	private final ObjectMapper mapper;
 
 	/**
@@ -159,6 +161,7 @@ public class IssueContextTool {
 	 */
 	public IssueContextTool(ToolSupport support, ObjectMapper mapper) {
 		this.jdbc = support.jdbc();
+		this.support = support;
 		this.mapper = mapper;
 	}
 
@@ -177,18 +180,26 @@ public class IssueContextTool {
 					destructiveHint = false, idempotentHint = true, openWorldHint = false),
 			description = """
 					Everything needed to reason about one Outpost Issue in a single call: the Issue itself, its \
-					latest Event, that Event's exception and stack frames, the breadcrumbs leading up to it, the \
-					Log Records recorded around it, and a summary of its Trace. Reports received telemetry only — \
-					no root cause, no suggested fix. Read the `caveats` array: it names what was truncated, \
-					defaulted, or omitted, including which parts of the raw event payload are not returned here.""")
+					latest Event — optionally the latest within one Environment — that Event's exception and stack \
+					frames, the breadcrumbs leading up to it, the Log Records recorded around it, and a summary of \
+					its Trace. Reports received telemetry only — no root cause, no suggested fix. Read the `caveats` \
+					array: it names what was truncated, defaulted, or omitted, including which parts of the raw \
+					event payload are not returned here.""")
 	public IssueContextResult getIssueContext(
 			@McpToolParam(description = "Outpost Issue id, as shown in the issue URL.") long issue_id,
+			@McpToolParam(required = false, description = "Environment Name from list_projects; scopes latest_event "
+					+ "to the Issue's latest Event in that Environment. Useful when an Issue spans environments and "
+					+ "the overall latest Event is from the wrong one.") String environment,
 			@McpToolParam(required = false,
 					description = "Minutes before the Event to read Log Records over. Defaults to "
 							+ DEFAULT_LOG_WINDOW_MINUTES + ", clamped to " + MAX_LOG_WINDOW_MINUTES
 							+ ".") Integer log_window_minutes) {
 
-		SearchQuery search = buildIssueContextQuery(issue_id);
+		String scopedEnvironment = environment == null || environment.isBlank() ? null : environment;
+		if (scopedEnvironment != null) {
+			support.requireKnownEnvironments(List.of(scopedEnvironment));
+		}
+		SearchQuery search = buildIssueContextQuery(issue_id, scopedEnvironment);
 		Context context = jdbc.query(search.sql(), this::mapContext, search.params().toArray())
 			.stream()
 			.findFirst()
@@ -197,10 +208,20 @@ public class IssueContextTool {
 		List<String> caveats = new ArrayList<>();
 		if (context.eventId() == null) {
 			// An Issue outlives its Events: the counters on `issue` are cumulative while
-			// `event` is bounded by retention. Saying so beats returning empty arrays.
-			caveats.add("This Issue has no Event left in retention, so no Event, stack, breadcrumbs, "
-					+ "Log Records or Trace are returned. The Issue's own counters are cumulative and still stand.");
+			// `event` is bounded by retention. Saying so beats returning empty arrays —
+			// and when an Environment was asked for, the two reasons for the absence
+			// point in different directions, so both are named.
+			caveats.add(scopedEnvironment == null
+					? "This Issue has no Event left in retention, so no Event, stack, breadcrumbs, Log Records or "
+							+ "Trace are returned. The Issue's own counters are cumulative and still stand."
+					: "This Issue has no Event in retention for Environment '" + scopedEnvironment + "' — it may "
+							+ "never have occurred there, or those Events may have aged out. Omit environment for "
+							+ "the Issue's latest Event overall.");
 			return new IssueContextResult(context.issue(), null, null, List.of(), null, List.of(), null, caveats);
+		}
+		if (scopedEnvironment != null) {
+			caveats.add("latest_event is the latest Event received in Environment '" + scopedEnvironment
+					+ "', not the Issue's latest overall. Omit environment for that one.");
 		}
 
 		ExceptionPayload exception = exception(context, caveats);
@@ -231,8 +252,14 @@ public class IssueContextTool {
 	 * <p>{@code ORDER BY "timestamp" DESC, id DESC} rather than by timestamp alone,
 	 * so two Events arriving in the same microsecond do not make the payload depend
 	 * on which partition the planner reached first.
+	 *
+	 * <p>An {@code environment} narrows the {@code LATERAL} rather than adding a
+	 * second statement: the walk down {@code idx_event_issue_ts} is the same walk,
+	 * filtering as it goes, and it still stops at the first row that matches.
 	 */
-	static SearchQuery buildIssueContextQuery(long issueId) {
+	static SearchQuery buildIssueContextQuery(long issueId, @Nullable String environment) {
+		String environmentPredicate = environment == null ? "" : " AND environment = ?";
+		List<Object> params = environment == null ? List.of(issueId) : List.of(environment, issueId);
 		return new SearchQuery("""
 				SELECT i.id, i.project_id, p.slug AS project_slug, p.name AS project_name, p.platform,
 				       i.fingerprint, i.title, i.culprit, i.level, i.status, i.first_seen, i.last_seen,
@@ -245,12 +272,12 @@ public class IssueContextTool {
 				LEFT JOIN LATERAL (
 				    SELECT id, "timestamp", environment, release, level, message, exception_type, user_ident,
 				           trace_id, symbolication_status, data
-				    FROM event WHERE issue_id = i.id
+				    FROM event WHERE issue_id = i.id%s
 				    ORDER BY "timestamp" DESC, id DESC
 				    LIMIT 1
 				) e ON true
 				WHERE i.id = ?
-				""", List.of(issueId));
+				""".formatted(environmentPredicate), params);
 	}
 
 	/**

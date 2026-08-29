@@ -154,7 +154,8 @@ class McpSurfaceIntegrationTest {
 	 * for a ninth: an agent would otherwise need three calls and still get it wrong.
 	 */
 	private static final List<String> TOOLS = List.of("list_projects", "find_issues", "get_issue_context",
-			"search_logs", "get_trace", "get_event_raw", "uptime_status", "performance_overview");
+			"search_logs", "get_trace", "get_event_raw", "uptime_status", "performance_overview",
+			"find_transactions");
 
 	/**
 	 * What {@code initialize} answers, which is the first thing a client reads and
@@ -205,7 +206,8 @@ class McpSurfaceIntegrationTest {
 			.findFirst()
 			.orElseThrow();
 		JsonNode properties = tool.path("inputSchema").path("properties");
-		assertThat(properties.propertyNames()).containsExactlyInAnyOrder("issue_id", "log_window_minutes");
+		assertThat(properties.propertyNames()).containsExactlyInAnyOrder("issue_id", "environment",
+				"log_window_minutes");
 		assertThat(tool.path("inputSchema").path("required")).singleElement()
 			.satisfies(required -> assertThat(required.asString()).isEqualTo("issue_id"));
 

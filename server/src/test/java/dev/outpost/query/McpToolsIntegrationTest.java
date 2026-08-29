@@ -133,6 +133,9 @@ class McpToolsIntegrationTest {
 		await("log records", () -> jdbc.sql("SELECT id::text FROM log_record").query(String.class).list(), 2);
 		await("transactions", () -> jdbc.sql("SELECT id::text FROM txn").query(String.class).list(),
 				CHECKOUT_TRANSACTIONS + 1);
+		// A known Environment with no Events, so "known name, nothing there" is
+		// distinguishable from "unknown name" — the two answer differently.
+		jdbc.sql("INSERT INTO environment (project_id, name) VALUES (?, 'staging')").param(shopId).update();
 		seedUptime();
 
 		client.connect(token);
@@ -153,6 +156,21 @@ class McpToolsIntegrationTest {
 		assertThat(shop.path("name").asString()).isEqualTo("Shop");
 		assertThat(shop.path("platform").asString()).isEqualTo("java");
 		assertThat(shop.path("environments").valueStream().map(JsonNode::asString).toList()).contains("prod");
+	}
+
+	/**
+	 * Release versions are exact-match filters an agent cannot guess, so the
+	 * catalogue call hands out the recent ones the way it hands out Environment
+	 * Names — the release here was auto-created when the Event carrying it was
+	 * ingested.
+	 */
+	@Test
+	void listProjectsNamesEachProjectsRecentReleases() {
+		JsonNode result = call("list_projects", Map.of());
+
+		assertThat(project(result, "shop").path("recent_releases").valueStream().map(JsonNode::asString).toList())
+			.contains("shop@1.0.0");
+		assertThat(project(result, "billing").path("recent_releases")).isEmpty();
 	}
 
 	/**
@@ -222,6 +240,45 @@ class McpToolsIntegrationTest {
 		assertThat(message).contains("no Project has the slug 'nope'").contains("list_projects");
 	}
 
+	/**
+	 * The same rule for the other exact-match filters: an Environment Name or
+	 * release version nothing has ever carried is a typo, and binding it would
+	 * return an empty result that reads as "nothing happened there". The fixture's
+	 * Environment is 'prod', so 'production' is exactly the near-miss an agent
+	 * makes.
+	 */
+	@Test
+	void anUnknownEnvironmentOrReleaseIsRefusedRatherThanBound() {
+		assertThat(error("find_issues", Map.of("environments", List.of("production"))))
+			.contains("no telemetry has arrived under an Environment named 'production'")
+			.contains("list_projects");
+		assertThat(error("find_issues", Map.of("release", "shop-1.0.0")))
+			.contains("no Project has received telemetry for a release 'shop-1.0.0'")
+			.contains("matched exactly");
+
+		// The exact values pass, and a known-but-empty Environment answers empty
+		// rather than erroring: staging exists, and nothing has happened there.
+		assertThat(call("find_issues", Map.of("release", "shop@1.0.0")).path("issues")).hasSize(1);
+		assertThat(call("find_issues", Map.of("environments", List.of("staging"))).path("issues")).isEmpty();
+	}
+
+	/**
+	 * A relative window, stated as a duration rather than as an instant the caller
+	 * would have to invent: a model has no reliable clock, so "the last hour" is
+	 * only honest as PT1H against the server's own now.
+	 */
+	@Test
+	void findIssuesAcceptsADurationAsTheStartOfTheWindow() {
+		JsonNode window = call("find_issues", Map.of("from", "PT1H")).path("window");
+
+		assertThat(window.path("defaulted").asBoolean()).isFalse();
+		assertThat(Duration.between(Instant.parse(window.path("from").asString()),
+				Instant.parse(window.path("to").asString())))
+			.isEqualTo(Duration.ofHours(1));
+
+		assertThat(error("find_issues", Map.of("from", "PT0S"))).contains("must be positive");
+	}
+
 	// -------------------------------------------------------------- search_logs
 
 	@Test
@@ -244,6 +301,58 @@ class McpToolsIntegrationTest {
 		assertThat(call("search_logs", Map.of("query", "handling")).path("log_records")).singleElement()
 			.satisfies(record -> assertThat(record.path("body").asString()).isEqualTo("handling checkout"));
 		assertThat(call("search_logs", Map.of("query", "nothing matches this")).path("log_records")).isEmpty();
+	}
+
+	/**
+	 * Levels are the one filter that cannot be validated — they are free text an
+	 * SDK chose — so a near-miss returns empty, and the caveat is what keeps that
+	 * from reading as "nothing was logged at that level". 'warning' for the stored
+	 * 'error' stands in for the classic 'warning'-vs-'warn' miss.
+	 */
+	@Test
+	void anEmptyLogResultUnderALevelFilterExplainsTheExactMatching() {
+		JsonNode result = call("search_logs", Map.of("levels", List.of("warning")));
+
+		assertThat(result.path("log_records")).isEmpty();
+		assertThat(caveats(result))
+			.anySatisfy(caveat -> assertThat(caveat).contains("No Log Record matched"))
+			.anySatisfy(caveat -> assertThat(caveat).contains("'warn' and 'warning' are different levels"));
+	}
+
+	// -------------------------------------------------- get_issue_context (env)
+
+	/**
+	 * The Environment scope on {@code get_issue_context}: an Issue spanning
+	 * environments has a latest Event per Environment, and the overall latest may
+	 * be from the wrong one. The rest of the Tool is covered by
+	 * {@code McpSurfaceIntegrationTest}; what belongs here is the scoping and its
+	 * disclosures.
+	 */
+	@Test
+	void getIssueContextScopesTheLatestEventToAnEnvironmentAndSaysSo() {
+		JsonNode result = call("get_issue_context", Map.of("issue_id", issueId, "environment", "prod"));
+
+		assertThat(result.path("latest_event").path("environment").asString()).isEqualTo("prod");
+		assertThat(caveats(result)).anySatisfy(
+				caveat -> assertThat(caveat).contains("latest Event received in Environment 'prod'"));
+	}
+
+	/**
+	 * A known Environment with no Events answers with the distinction that
+	 * matters: "never occurred there or aged out", not "no Event in retention" —
+	 * and an unknown Environment Name is refused outright, like everywhere else.
+	 */
+	@Test
+	void getIssueContextTellsAnEmptyEnvironmentApartFromAnUnknownOne() {
+		JsonNode result = call("get_issue_context", Map.of("issue_id", issueId, "environment", "staging"));
+
+		assertThat(result.path("latest_event").isMissingNode() || result.path("latest_event").isNull()).isTrue();
+		assertThat(caveats(result)).anySatisfy(caveat -> assertThat(caveat)
+			.contains("no Event in retention for Environment 'staging'")
+			.contains("Omit environment"));
+
+		assertThat(error("get_issue_context", Map.of("issue_id", issueId, "environment", "production")))
+			.contains("no telemetry has arrived under an Environment named 'production'");
 	}
 
 	// ---------------------------------------------------------------- get_trace
@@ -427,6 +536,65 @@ class McpToolsIntegrationTest {
 				.isEqualTo(sort);
 		}
 		assertThat(error("performance_overview", Map.of("sort", "p95"))).contains("sort must be one of");
+	}
+
+	// -------------------------------------------------------- find_transactions
+
+	/**
+	 * The drill-down that closes the performance workflow: the leaderboard names
+	 * the group, this lists its members slowest first, and every row carries the
+	 * trace_id get_trace needs. Without it "what is slow" and "what did a slow
+	 * request do" were both answerable and unconnected.
+	 */
+	@Test
+	void findTransactionsListsAGroupsMembersSlowestFirstWithTheirTraceIds() {
+		JsonNode result = call("find_transactions",
+				Map.of("project_slug", "shop", "name", CHECKOUT, "op", "http.server"));
+
+		assertThat(result.path("transactions")).hasSize(CHECKOUT_TRANSACTIONS);
+		assertThat(result.path("sorted_by").asString()).isEqualTo("duration_ms");
+		assertThat(result.path("more_transactions_matched").asBoolean()).isFalse();
+		List<Double> durations = result.path("transactions")
+			.valueStream()
+			.map(txn -> txn.path("duration_ms").asDouble())
+			.toList();
+		assertThat(durations).isSortedAccordingTo(java.util.Comparator.reverseOrder());
+		assertThat(result.path("transactions").get(0).path("trace_id").asString()).isEqualTo(TRACE_ID);
+		assertThat(result.path("transactions").get(0).path("environment").asString()).isEqualTo("prod");
+		assertThat(caveats(result)).anySatisfy(caveat -> assertThat(caveat)
+			.contains("not the requests served")
+			.contains("stores no sample rate"));
+	}
+
+	@Test
+	void findTransactionsCapsItsPayloadAndSaysTheCutIsNotTheWholeGroup() {
+		JsonNode result = call("find_transactions",
+				Map.of("project_slug", "shop", "name", CHECKOUT, "op", "http.server", "limit", 2));
+
+		assertThat(result.path("transactions")).hasSize(2);
+		assertThat(result.path("more_transactions_matched").asBoolean()).isTrue();
+		assertThat(caveats(result))
+			.anySatisfy(caveat -> assertThat(caveat).contains("More Transactions matched").contains("slowest 2"));
+	}
+
+	/**
+	 * The group key is (name, op) matched exactly, and the two near-misses an
+	 * agent actually makes — a mistyped name, and omitting the op of a group that
+	 * has one — both answer empty with the caveat that says why, because there is
+	 * no group catalogue to validate against the way slugs are validated.
+	 */
+	@Test
+	void aNearMissOnTheGroupKeyAnswersEmptyWithTheExactMatchingExplained() {
+		for (Map<String, Object> arguments : List.of(
+				Map.<String, Object>of("project_slug", "shop", "name", "POST /api/checkout/"),
+				Map.<String, Object>of("project_slug", "shop", "name", CHECKOUT))) {
+			JsonNode result = call("find_transactions", arguments);
+
+			assertThat(result.path("transactions")).isEmpty();
+			assertThat(caveats(result)).anySatisfy(caveat -> assertThat(caveat)
+				.contains("No Transaction matched")
+				.contains("character-for-character"));
+		}
 	}
 
 	// ------------------------------------------------------------------ helpers

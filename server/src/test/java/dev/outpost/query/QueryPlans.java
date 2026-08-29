@@ -211,7 +211,17 @@ public final class QueryPlans {
 	 * needing guards of their own — the reuse rule is not an exemption from guarding.
 	 */
 	public static Built issueContext(long issueId) {
-		return Built.of(IssueContextTool.buildIssueContextQuery(issueId));
+		return Built.of(IssueContextTool.buildIssueContextQuery(issueId, null));
+	}
+
+	/**
+	 * The same join with the {@code LATERAL} narrowed to one Environment — the
+	 * other shape the Tool can bind, guarded because the walk down
+	 * {@code idx_event_issue_ts} no longer stops at the first row but at the first
+	 * row <em>matching</em>, and how far that is depends on the data.
+	 */
+	public static Built issueContext(long issueId, String environment) {
+		return Built.of(IssueContextTool.buildIssueContextQuery(issueId, environment));
 	}
 
 	/**
@@ -331,6 +341,29 @@ public final class QueryPlans {
 	/** The window the leaderboard is bound by once the Tool's default has been through the 30-day cap. */
 	public static TransactionGroupController.Window performanceWindow(Instant from, Instant to) {
 		return TransactionGroupController.window(from, to);
+	}
+
+	/**
+	 * The one statement {@code find_transactions} issues: a Transaction Group's
+	 * members over a window. The Tool's own SQL — the UI's drill-down aggregates
+	 * the group and never lists its rows, so there was no factory to reuse — which
+	 * is exactly why it is guarded here (ADR-0016: the reuse rule is not an
+	 * exemption from guarding, and new SQL gets a guard of its own).
+	 */
+	public static Built findTransactions(long project, String name, String op, List<String> environment,
+			String release, String sort, Instant from, Instant to, int limit) {
+		return Built.of(TransactionSearchTool.buildTransactionSearchQuery(project, name, op, environment, release,
+				sort, from, to, limit));
+	}
+
+	/** Every ranking {@code find_transactions} accepts, from the Tool's own whitelist. */
+	public static List<String> findTransactionsSorts() {
+		return TransactionSearchTool.sortKeys();
+	}
+
+	/** The rows {@code find_transactions} asks for when the caller names no limit: the default plus its look-ahead row. */
+	public static int findTransactionsDefaultFetch() {
+		return TransactionSearchTool.DEFAULT_LIMIT + 1;
 	}
 
 	/**

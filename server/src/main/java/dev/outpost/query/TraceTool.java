@@ -95,9 +95,9 @@ public class TraceTool {
 			description = """
 					One Trace: every Transaction, Span, error Event and Log Record sharing its Trace ID, across all \
 					Projects. Spans nest by parent_span_id and are ordered by start_ts, so the waterfall can be \
-					rebuilt from them. Trace IDs come from get_issue_context, find_issues results, search_logs and \
-					performance_overview. Long Traces are truncated — compare each list's length with the matching \
-					`*_received` count, and read the `caveats` array.""")
+					rebuilt from them. Trace IDs appear on get_issue_context's Event and Trace, on search_logs \
+					records, and on find_transactions results. Long Traces are truncated — compare each list's \
+					length with the matching `*_received` count, and read the `caveats` array.""")
 	public TraceResult getTrace(
 			@McpToolParam(description = "32-character hex Trace ID.") String trace_id) {
 

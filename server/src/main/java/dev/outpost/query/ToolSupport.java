@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -128,6 +129,58 @@ class ToolSupport {
 	}
 
 	/**
+	 * Rejects an Environment Name no telemetry has ever arrived under, before it
+	 * reaches a statement. The same reasoning as {@link Projects#resolve}: an
+	 * unknown value bound into an equality predicate matches nothing, and an empty
+	 * result scoped to a typo reads exactly like "nothing happened there" — the one
+	 * failure on this surface that produces a confidently wrong conclusion rather
+	 * than an error.
+	 *
+	 * <p>Known installation-wide rather than per filtered Project, deliberately: an
+	 * Environment that exists on another Project but not the one asked about is a
+	 * legitimate empty answer ("shop has sent nothing from staging"), where a name
+	 * that exists nowhere is a typo. Only the typo is refused.
+	 */
+	void requireKnownEnvironments(@Nullable List<String> environments) {
+		if (environments == null || environments.isEmpty()) {
+			return;
+		}
+		SearchQuery search = ProjectController.buildEnvironmentsQuery(List.of());
+		Set<String> known = new HashSet<>();
+		jdbc.query(search.sql(), rs -> {
+			known.add(rs.getString("name"));
+		}, search.params().toArray());
+		for (String environment : environments) {
+			if (environment == null || !known.contains(environment)) {
+				throw new IllegalArgumentException("no telemetry has arrived under an Environment named '" + environment
+						+ "'. Environment Names are matched exactly; list_projects shows the names this "
+						+ "installation has received.");
+			}
+		}
+	}
+
+	/**
+	 * Rejects a release version no telemetry has ever carried, for the reason
+	 * {@link #requireKnownEnvironments} rejects an unknown Environment Name: the
+	 * filter is an exact string match, and {@code shop-1.4.2} for {@code shop@1.4.2}
+	 * would otherwise return an empty result indistinguishable from "this release is
+	 * clean". Releases are auto-created on ingest, so every version any signal has
+	 * carried has a row to be found in.
+	 */
+	void requireKnownRelease(@Nullable String release) {
+		if (release == null || release.isBlank()) {
+			return;
+		}
+		SearchQuery search = ReleaseController.buildKnownReleaseQuery(release);
+		Long matches = jdbc.queryForObject(search.sql(), Long.class, search.params().toArray());
+		if (matches == null || matches == 0) {
+			throw new IllegalArgumentException("no Project has received telemetry for a release '" + release
+					+ "'. Release versions are matched exactly, e.g. shop@1.4.2; list_projects shows each "
+					+ "Project's most recent versions.");
+		}
+	}
+
+	/**
 	 * A snapshot of the Project catalogue, read through the controller's own
 	 * statement (ADR-0016). One extra round trip per Tool call, over a table holding
 	 * one row per Project — cheaper than joining {@code project} into every
@@ -179,17 +232,18 @@ class ToolSupport {
 	 * Resolves the {@code from}/{@code to} pair a Tool was called with, applying the
 	 * default and disclosing it.
 	 *
-	 * <p>ISO-8601 instants rather than a "last N hours" integer, even though a
-	 * relative window is what an agent usually means. A model has no reliable clock,
-	 * so it cannot convert between the two — but every timestamp in every payload
-	 * these Tools return is absolute, which makes an absolute window the one an agent
-	 * can narrow to <em>from a previous result</em>. The relative case is covered by
-	 * omitting {@code from} entirely.
+	 * <p>{@code from} also accepts an ISO-8601 <em>duration</em> — {@code PT1H},
+	 * {@code P2D} — meaning that far back from {@code to}. A relative window is what
+	 * an agent usually means and a model has no reliable clock, so "the last hour"
+	 * as an absolute instant is an instant the caller has to invent; a duration is
+	 * the version of that request it can state without one. The resolved window is
+	 * echoed absolute in the payload, so the caller can still narrow further from a
+	 * previous result.
 	 */
 	static Window window(@Nullable String from, @Nullable String to, List<String> caveats) {
 		Instant upper = blank(to) ? Instant.now() : parse(to, "to");
 		boolean defaulted = blank(from);
-		Instant lower = defaulted ? upper.minus(Duration.ofDays(DEFAULT_WINDOW_DAYS)) : parse(from, "from");
+		Instant lower = defaulted ? upper.minus(Duration.ofDays(DEFAULT_WINDOW_DAYS)) : lower(from, upper);
 		if (!lower.isBefore(upper)) {
 			throw new IllegalArgumentException("from (" + lower + ") must be before to (" + upper + ")");
 		}
@@ -199,6 +253,31 @@ class ToolSupport {
 					+ "reported in the window field. Supply from to read further back.");
 		}
 		return new Window(lower.toString(), upper.toString(), defaulted);
+	}
+
+	/**
+	 * The start of the window: an instant, or a duration counted back from
+	 * {@code upper}. The two are distinguishable by the first character — an
+	 * ISO-8601 duration starts with {@code P} and an instant with a digit — so
+	 * nothing valid is ambiguous.
+	 */
+	private static Instant lower(String from, Instant upper) {
+		String value = from.trim();
+		if (value.regionMatches(true, 0, "P", 0, 1)) {
+			Duration back;
+			try {
+				back = Duration.parse(value);
+			}
+			catch (DateTimeParseException e) {
+				throw new IllegalArgumentException("from must be an ISO-8601 instant in UTC, such as "
+						+ "2026-08-29T14:30:00Z, or an ISO-8601 duration such as PT1H; got '" + from + "'");
+			}
+			if (back.isZero() || back.isNegative()) {
+				throw new IllegalArgumentException("a duration for from must be positive; got '" + from + "'");
+			}
+			return upper.minus(back);
+		}
+		return parse(value, "from");
 	}
 
 	private static boolean blank(@Nullable String value) {

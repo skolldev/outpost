@@ -113,21 +113,25 @@ public class PerformanceOverviewTool {
 			description = """
 					Transaction Groups ranked by duration, worst first. A Transaction Group is the recurring \
 					activity that Transactions sharing a Project, name and op are instances of — typically a route \
-					or a job. Answers "what is slow"; it does not answer "what is broken", which is find_issues. \
-					You must read the `caveats` array before drawing a conclusion from these numbers: they describe \
-					the Transactions Outpost received, which is a sample whenever a Project's SDK samples traces.""")
+					or a job. Answers "what is slow"; it does not answer "what is broken", which is find_issues. To \
+					see the Transactions behind one group — including Trace IDs for get_trace — call \
+					find_transactions with the group's name and op. You must read the `caveats` array before drawing \
+					a conclusion from these numbers: they describe the Transactions Outpost received, which is a \
+					sample whenever a Project's SDK samples traces.""")
 	public PerformanceOverviewResult performanceOverview(
 			@McpToolParam(required = false,
 					description = "Project slugs from list_projects. Omit for every Project.") List<String> project_slugs,
-			@McpToolParam(required = false,
-					description = "Environment Names from list_projects. Omit for every Environment.") List<String> environments,
-			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2. Narrows which "
-					+ "Transactions are measured; it does not split the groups.") String release,
+			@McpToolParam(required = false, description = "Environment Names from list_projects. Matched exactly. "
+					+ "Omit for every Environment.") List<String> environments,
+			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2 — list_projects "
+					+ "shows each Project's recent versions. Narrows which Transactions are measured; it does not "
+					+ "split the groups.") String release,
 			@McpToolParam(required = false,
 					description = "Case-insensitive substring of the Transaction Group name.") String query,
 			@McpToolParam(required = false, description = "total_ms (the default), p95_ms, p50_ms or "
 					+ "transactions_received. All rank worst first.") String sort,
-			@McpToolParam(required = false, description = "Start of the window as an ISO-8601 instant. Defaults to "
+			@McpToolParam(required = false, description = "Start of the window: an ISO-8601 instant, or an ISO-8601 "
+					+ "duration such as PT1H or P2D meaning that far back from `to`. Defaults to "
 					+ ToolSupport.DEFAULT_WINDOW_DAYS + " days before `to`; anything earlier than 30 days before "
 					+ "`to` is clamped.") String from,
 			@McpToolParam(required = false,
@@ -138,6 +142,10 @@ public class PerformanceOverviewTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
+		// Refused rather than bound, like an unknown slug: an exact-match filter for a
+		// value nothing carries returns an empty result that reads as "nothing matched".
+		support.requireKnownEnvironments(environments);
+		support.requireKnownRelease(release);
 		ToolSupport.Window requested = ToolSupport.window(from, to, caveats);
 		String sortedBy = sort(sort);
 		int size = limit(limit);

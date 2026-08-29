@@ -47,13 +47,18 @@ class McpToolQueryReuseTest {
 	private static final Path TOOLS = Path.of("src/main/java/dev/outpost/query");
 
 	/**
-	 * The only Tool allowed to declare SQL, and the reason ADR-0016 says the reuse
-	 * rule is not an exemption from guarding: its Issue + Project + latest-Event join
-	 * and its Trace summary are questions no controller asks, so they are written
-	 * here and guarded by {@code IssueContextPerformanceTest}. Anything added to this
-	 * set needs the same treatment.
+	 * The Tools allowed to declare SQL, and the reason ADR-0016 says the reuse
+	 * rule is not an exemption from guarding: each asks a question no controller
+	 * asks, so the statement is written in the Tool and guarded on its own.
+	 * {@code IssueContextTool}'s Issue + Project + latest-Event join and Trace
+	 * summary are guarded by {@code IssueContextPerformanceTest};
+	 * {@code TransactionSearchTool}'s group-member listing — the UI's drill-down
+	 * aggregates a group and never lists its rows — by
+	 * {@code McpToolPerformanceTest}. Anything added to this set needs the same
+	 * treatment.
 	 */
-	private static final Set<String> TOOLS_WITH_THEIR_OWN_SQL = Set.of("IssueContextTool.java");
+	private static final Set<String> TOOLS_WITH_THEIR_OWN_SQL = Set.of("IssueContextTool.java",
+			"TransactionSearchTool.java");
 
 	@Test
 	void noToolDeclaresSqlOfItsOwn() throws IOException {

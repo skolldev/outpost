@@ -88,14 +88,16 @@ public class IssueSearchTool {
 	public IssueSearchResult findIssues(
 			@McpToolParam(required = false,
 					description = "Project slugs from list_projects. Omit for every Project.") List<String> project_slugs,
-			@McpToolParam(required = false,
-					description = "Environment Names from list_projects, e.g. production. Omit for every Environment.") List<String> environments,
+			@McpToolParam(required = false, description = "Environment Names from list_projects, e.g. production. "
+					+ "Matched exactly. Omit for every Environment.") List<String> environments,
 			@McpToolParam(required = false, description = "unresolved (the default) or resolved. There is no value "
 					+ "for both: call twice.") String status,
-			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2.") String release,
+			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2 — list_projects "
+					+ "shows each Project's recent versions.") String release,
 			@McpToolParam(required = false,
 					description = "Case-insensitive substring of the Issue title or culprit.") String query,
-			@McpToolParam(required = false, description = "Start of the window as an ISO-8601 instant. Defaults to "
+			@McpToolParam(required = false, description = "Start of the window: an ISO-8601 instant, or an ISO-8601 "
+					+ "duration such as PT1H or P2D meaning that far back from `to`. Defaults to "
 					+ ToolSupport.DEFAULT_WINDOW_DAYS + " days before `to`.") String from,
 			@McpToolParam(required = false,
 					description = "End of the window as an ISO-8601 instant. Defaults to now.") String to,
@@ -106,6 +108,10 @@ public class IssueSearchTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
+		// Refused rather than bound, like an unknown slug: an exact-match filter for a
+		// value nothing carries returns an empty result that reads as "nothing matched".
+		support.requireKnownEnvironments(environments);
+		support.requireKnownRelease(release);
 		ToolSupport.Window window = ToolSupport.window(from, to, caveats);
 		String appliedStatus = status(status, caveats);
 		String appliedSort = sort(sort);
