@@ -58,11 +58,10 @@ export const routes: Routes = [
       },
       {
         // The signed-in user's own account. Authenticated but deliberately not
-        // Admin-guarded, and deliberately not a Settings tab: /settings is
-        // Admin-only in its entirety (see settings.routes.ts and the Member
-        // definition in CONTEXT.md), so hanging this off it would mean
-        // weakening or special-casing that guard just so a Member can change a
-        // password. A top-level route keeps that invariant intact.
+        // Admin-guarded, and deliberately not a Settings tab: Settings is where
+        // an Installation is managed, and a Member reaches exactly one tab of it
+        // (API tokens — see settings.routes.ts). A password change belongs to the
+        // person, not to the Installation, so it stays a top-level route.
         path: 'account',
         loadComponent: () => import('./pages/account/account').then((m) => m.AccountPage),
       },

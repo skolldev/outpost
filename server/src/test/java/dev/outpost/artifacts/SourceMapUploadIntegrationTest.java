@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.TestcontainersConfiguration;
+import dev.outpost.auth.ApiTokenService;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -342,7 +343,9 @@ class SourceMapUploadIntegrationTest {
 		headers.set(HttpHeaders.COOKIE, sessionCookie);
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		ResponseEntity<Map> response = rest.postForEntity(url("/api/internal/tokens"),
-				new HttpEntity<>(Map.of("name", "ci"), headers), Map.class);
+				new HttpEntity<>(Map.of("name", "ci", "scopes", List.of(ApiTokenService.SCOPE_ARTIFACTS_WRITE)),
+						headers),
+				Map.class);
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 		return (String) response.getBody().get("token");
 	}

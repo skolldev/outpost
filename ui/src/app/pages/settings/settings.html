@@ -1,5 +1,5 @@
 <div class="mb-6 flex gap-1 border-b border-border text-sm">
-  @for (tab of tabs; track tab.path) {
+  @for (tab of tabs(); track tab.path) {
     <a
       #rla="routerLinkActive"
       [routerLink]="tab.path"
