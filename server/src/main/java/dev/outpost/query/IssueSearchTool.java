@@ -5,8 +5,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
@@ -161,6 +161,16 @@ public class IssueSearchTool {
 		return IssueController.buildIssueQuery(project, environment, status, release, from, to, query, sort, cursor);
 	}
 
+	/** Every ranking this Tool accepts, in payload names — read by the guards and the reuse test. */
+	static List<String> sortKeys() {
+		return List.copyOf(SORTS.keySet());
+	}
+
+	/** The controller key a payload-named ranking resolves to. */
+	static String controllerSort(String sort) {
+		return SORTS.get(sort);
+	}
+
 	private static String status(String requested, List<String> caveats) {
 		if (requested == null || requested.isBlank()) {
 			caveats.add("status was not supplied, so the default of '" + DEFAULT_STATUS
@@ -168,26 +178,11 @@ public class IssueSearchTool {
 					+ "to see those.");
 			return DEFAULT_STATUS;
 		}
-		String normalized = requested.trim().toLowerCase(Locale.ROOT);
-		if (!STATUSES.contains(normalized)) {
-			// Rejected rather than coerced: a caller handed the default silently would
-			// read a list of unresolved Issues as the list it asked for.
-			throw new IllegalArgumentException(
-					"status must be one of " + String.join(", ", STATUSES) + "; got '" + requested + "'");
-		}
-		return normalized;
+		return ToolSupport.choose(requested, Set.copyOf(STATUSES), DEFAULT_STATUS, "status");
 	}
 
 	private static String sort(String requested) {
-		if (requested == null || requested.isBlank()) {
-			return DEFAULT_SORT;
-		}
-		String normalized = requested.trim().toLowerCase(Locale.ROOT);
-		if (!SORTS.containsKey(normalized)) {
-			throw new IllegalArgumentException(
-					"sort must be one of " + String.join(", ", SORTS.keySet()) + "; got '" + requested + "'");
-		}
-		return normalized;
+		return ToolSupport.choose(requested, SORTS.keySet(), DEFAULT_SORT, "sort");
 	}
 
 }

@@ -344,11 +344,26 @@ class McpToolsIntegrationTest {
 	}
 
 	@Test
-	void uptimeStatusClampsTheHistoryItWillRenderAndSaysSo() {
+	void uptimeStatusClampsTheHistoryItWillReadAndSaysSo() {
 		JsonNode result = call("uptime_status", Map.of("days", 10_000));
 
-		assertThat(result.path("days_returned").asInt()).isEqualTo(90);
+		assertThat(result.path("window_days").asInt()).isEqualTo(90);
 		assertThat(caveats(result)).anySatisfy(caveat -> assertThat(caveat).contains("clamped from 10000"));
+	}
+
+	/**
+	 * {@code days} bounds the read, not the rendering. The Uptime Checks here span
+	 * ten minutes, so a one-day window keeps them all and the count is unchanged —
+	 * what this pins is that the parameter reaches the statement at all, which
+	 * {@code McpToolPerformanceTest} asserts on the SQL and this asserts end to end.
+	 */
+	@Test
+	void uptimeStatusReadsOnlyTheHistoryItWasAskedFor() {
+		JsonNode result = call("uptime_status", Map.of("days", 1));
+
+		assertThat(result.path("window_days").asInt()).isEqualTo(1);
+		assertThat(result.path("monitors").get(0).path("days")).hasSize(1);
+		assertThat(result.path("monitors").get(0).path("checks_received").asLong()).isEqualTo(10);
 	}
 
 	@Test

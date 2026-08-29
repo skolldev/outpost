@@ -136,7 +136,7 @@ public class LogSearchTool {
 			attributesTruncated |= attributes.size() < size((JsonNode) row.get("attributes"));
 			records.add(new LogRecordPayload(row.get("id").toString(), row.get("timestamp").toString(),
 					projects.slug((Long) row.get("project_id")), (String) row.get("environment"),
-					(String) row.get("level"), (Integer) row.get("severity_number"), body(body),
+					(String) row.get("level"), (Integer) row.get("severity_number"), ToolSupport.truncate(body, MAX_BODY_CHARS),
 					(String) row.get("trace_id"), (String) row.get("span_id"), (String) row.get("release"),
 					attributes));
 		}
@@ -162,10 +162,6 @@ public class LogSearchTool {
 			String traceId, String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
 		return LogController.buildLogQuery(project, environment, level, traceId, release, query, attr, from, to,
 				cursor);
-	}
-
-	private static String body(String body) {
-		return body != null && body.length() > MAX_BODY_CHARS ? body.substring(0, MAX_BODY_CHARS) : body;
 	}
 
 	/**

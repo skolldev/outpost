@@ -149,6 +149,7 @@ public class UptimeController {
 		return status.monitor(id).orElseThrow();
 	}
 
+
 	private String validate(MonitorRequest request) {
 		if (request.projectId() == null) {
 			return "project_id is required";

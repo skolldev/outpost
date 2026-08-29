@@ -80,9 +80,6 @@ public class TraceTool {
 
 	static final int MAX_LOG_RECORDS = 100;
 
-	/** Characters of a Log Record body kept, as {@link LogSearchTool#MAX_BODY_CHARS} keeps them. */
-	private static final int MAX_BODY_CHARS = LogSearchTool.MAX_BODY_CHARS;
-
 	private final JdbcTemplate jdbc;
 
 	private final ToolSupport support;
@@ -137,7 +134,8 @@ public class TraceTool {
 		List<LogRecordPayload> logs = jdbc.query(TraceController.LOGS_BY_TRACE,
 				(rs, row) -> new LogRecordPayload(rs.getObject("id", UUID.class).toString(),
 						rs.getTimestamp("timestamp").toInstant().toString(), projects.slug(rs.getLong("project_id")),
-						rs.getString("environment"), rs.getString("level"), body(rs.getString("body")),
+						rs.getString("environment"), rs.getString("level"),
+						ToolSupport.truncate(rs.getString("body"), LogSearchTool.MAX_BODY_CHARS),
 						rs.getString("span_id")),
 				traceId);
 
@@ -178,10 +176,6 @@ public class TraceTool {
 		caveats.add("This Trace holds " + rows.size() + " " + what + " and only the earliest " + limit
 				+ " are returned. The full count is reported alongside the list.");
 		return rows.subList(0, limit);
-	}
-
-	private static String body(String body) {
-		return body != null && body.length() > MAX_BODY_CHARS ? body.substring(0, MAX_BODY_CHARS) : body;
 	}
 
 }

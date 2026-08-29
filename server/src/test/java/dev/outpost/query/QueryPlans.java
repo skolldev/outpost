@@ -1,6 +1,7 @@
 package dev.outpost.query;
 
 import dev.outpost.support.PlanFacts;
+import dev.outpost.uptime.UptimeStatusService;
 import java.sql.ResultSetMetaData;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
@@ -264,6 +266,18 @@ public final class QueryPlans {
 				sort, cursor));
 	}
 
+	/**
+	 * Every ranking {@code find_issues} accepts, paired with the controller key it
+	 * resolves to — read from the Tool's own whitelist, so a ranking added there is
+	 * one the guards cover on the same commit. The Tool renames them:
+	 * {@code events_received} rather than the controller's {@code count}, because
+	 * ADR-0014 will not have a caller learn a second name for a number it can read
+	 * off a row.
+	 */
+	public static List<String> findIssuesSorts() {
+		return IssueSearchTool.sortKeys().stream().map(IssueSearchTool::controllerSort).toList();
+	}
+
 	/** The status {@code find_issues} applies when the caller names none. */
 	public static String toolIssueStatus() {
 		return IssueSearchTool.DEFAULT_STATUS;
@@ -317,6 +331,37 @@ public final class QueryPlans {
 	/** The window the leaderboard is bound by once the Tool's default has been through the 30-day cap. */
 	public static TransactionGroupController.Window performanceWindow(Instant from, Instant to) {
 		return TransactionGroupController.window(from, to);
+	}
+
+	/**
+	 * The four statements {@code uptime_status} issues, as the Tool binds them —
+	 * scoped to the Projects asked for and to the days of history asked for, which
+	 * on this path are predicates rather than post-filters. Returned as a list
+	 * because one Tool call is their sum.
+	 *
+	 * <p>{@code uptime_check} is a plain table rather than one of the partitioned
+	 * telemetry tables, so {@link QueryGuard#assertCeilingCanFail} has no full-scan
+	 * cost to validate a ceiling against — see the guard for what is asserted
+	 * instead.
+	 */
+	public static List<Built> uptimeStatus(List<Long> project, int days) {
+		return Stream
+			.of(UptimeStatusService.buildMonitorQuery(project, null),
+					UptimeStatusService.buildOpenIncidentQuery(project),
+					UptimeStatusService.buildDailyRollupQuery(project, days),
+					UptimeStatusService.buildLastCheckQuery(project))
+			.map(query -> new Built(query.sql(), query.params()))
+			.toList();
+	}
+
+	/** The history {@code uptime_status} reads when the caller names none, from the Tool that owns it. */
+	public static int uptimeDefaultDays() {
+		return UptimeStatusTool.DEFAULT_DAYS;
+	}
+
+	/** The widest history it will read, which is the status page's own fixed span. */
+	public static int uptimeMaxDays() {
+		return UptimeStatusService.WINDOW_DAYS;
 	}
 
 	// ---------------------------------------------------------- traces/releases

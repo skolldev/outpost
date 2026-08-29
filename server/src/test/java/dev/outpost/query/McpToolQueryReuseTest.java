@@ -28,11 +28,18 @@ import org.junit.jupiter.api.Test;
  * is #126's failure with the guard aimed at the wrong statement instead of at the
  * wrong shape.
  *
- * <p>Two assertions, because either alone is escapable. {@link
- * #noToolDeclaresSqlOfItsOwn()} says no Tool has SQL in it at all, which catches
- * a statement pasted in beside the factory call; the equality tests say the
- * factories are called with the arguments straight through, which catches a
- * wrapper that quietly drops one.
+ * <p>Two kinds of assertion, because either alone is escapable.
+ * {@link #noToolDeclaresSqlOfItsOwn()} says no Tool has SQL in it at all, which
+ * catches a statement pasted in beside the factory call — it is the one that
+ * fails when the rule is broken outright.
+ *
+ * <p>The equality tests catch something narrower and worth naming, because a
+ * pass-through wrapper looks like it cannot fail: <b>they pin the argument
+ * order</b>. {@code buildIssueQuery} takes four consecutive {@code String}
+ * parameters and two consecutive {@code Instant}s, {@code buildLogQuery} takes
+ * three more Strings in a row — transposing any adjacent pair compiles, runs, and
+ * silently filters on the wrong column. That is the live failure mode of a
+ * delegating factory, and it is what these assert against.
  */
 class McpToolQueryReuseTest {
 
@@ -74,6 +81,10 @@ class McpToolQueryReuseTest {
 			.isEmpty();
 	}
 
+	/**
+	 * Distinct values per parameter on purpose: identical placeholders would make a
+	 * transposition invisible, which is the only thing this test exists to see.
+	 */
 	@Test
 	void findIssuesRunsTheIssueListsOwnStatement() {
 		Instant to = Instant.now();
@@ -130,6 +141,28 @@ class McpToolQueryReuseTest {
 				"checkout", from, to))
 			.isEqualTo(TransactionGroupController.buildDistinctGroupQuery(project, environment, "shop@1.0.0",
 					"checkout", from, to));
+	}
+
+	/**
+	 * The uptime read has one definition. {@code uptime_status} reuses it through
+	 * {@link dev.outpost.uptime.UptimeStatusService} rather than through a
+	 * {@code build…Query} factory in this package, which is a second mechanism and
+	 * therefore a second place the reuse rule can be broken —
+	 * {@link #noToolDeclaresSqlOfItsOwn()} scans {@code dev.outpost.query} and would
+	 * not see it. What it would look like is the controller keeping its own copy of
+	 * these statements after the service was extracted.
+	 */
+	@Test
+	void theUptimeReadIsNotDeclaredTwice() throws IOException {
+		Path controller = Path.of("src/main/java/dev/outpost/uptime/UptimeController.java");
+		assertThat(controller).as("the uptime controller is not where this test expects it").isRegularFile();
+
+		String text = Files.readString(controller, StandardCharsets.UTF_8);
+		assertThat(text)
+			.as("UptimeController declares statements over the uptime read tables again; it must delegate to "
+					+ "UptimeStatusService, which uptime_status reads through too")
+			.doesNotContain("FROM uptime_check")
+			.doesNotContain("FROM uptime_incident");
 	}
 
 	/**

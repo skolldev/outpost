@@ -138,19 +138,31 @@ class McpToolPerformanceTest {
 	@Test
 	void findIssuesBindsBothPredicatesTheListIndexesLeadWith() {
 		for (String status : QueryPlans.toolIssueStatuses()) {
-			String sql = QueryPlans.findIssues(List.of(), null, status, null, from, to, null, "last_seen", null).sql();
+			for (String sort : QueryPlans.findIssuesSorts()) {
+				String sql = QueryPlans.findIssues(List.of(), null, status, null, from, to, null, sort, null).sql();
 
-			assertThat(sql).as("find_issues, status=%s", status).contains("AND status = ?").contains(
-					"AND last_seen >= ?");
+				assertThat(sql).as("find_issues, status=%s sort=%s", status, sort)
+					.contains("AND status = ?")
+					.contains("AND last_seen >= ?");
+			}
 		}
 	}
 
+	/**
+	 * Both orderings the Tool offers, not just the default. The second one pages by
+	 * {@code (event_count, id)} against a different index, and it is exactly the kind
+	 * of shape that gets added to a whitelist and never to a guard — which is why the
+	 * loop reads the whitelist rather than a list written here.
+	 */
 	@Test
-	void findIssuesSortsInMemoryForEveryStatusItAnswers() {
+	void findIssuesSortsInMemoryForEveryStatusAndOrderItAnswers() {
 		for (String status : QueryPlans.toolIssueStatuses()) {
-			PlanFacts facts = findIssues(status);
+			for (String sort : QueryPlans.findIssuesSorts()) {
+				PlanFacts facts = QueryPlans.findIssues(List.of(), null, status, null, from, to, null, sort, null)
+					.explain(jdbc);
 
-			QueryGuard.assertNoTempFiles(facts, "find_issues, status=" + status);
+				QueryGuard.assertNoTempFiles(facts, "find_issues, status=" + status + " sort=" + sort);
+			}
 		}
 	}
 
@@ -295,6 +307,55 @@ class McpToolPerformanceTest {
 		assertThat(QueryPlans.performanceWindow(from, to).clamped())
 			.as("the Tool's default window is clamped by the Performance view's cap before any caller asks for it")
 			.isFalse();
+	}
+
+	// ------------------------------------------------------------ uptime_status
+
+	/**
+	 * The parameters {@code uptime_status} takes reach the database. This is the
+	 * assertion the Tool's whole shape rests on: {@code uptime_check} is a plain
+	 * table holding one row per probe per interval, and a {@code days} that trimmed
+	 * the payload rather than the read would leave every call paying for ninety days
+	 * of every Monitor.
+	 *
+	 * <p>Asserted on the statements rather than only on their plans because at guard
+	 * scale the whole table is a handful of blocks, so a plan assertion here would
+	 * pass with both predicates deleted — the same reason
+	 * {@link #findIssuesBindsBothPredicatesTheListIndexesLeadWith} reads SQL.
+	 */
+	@Test
+	void uptimeStatusNarrowsInTheDatabaseRatherThanInJava() {
+		List<QueryPlans.Built> scoped = QueryPlans.uptimeStatus(List.of(seeded.projectId()),
+				QueryPlans.uptimeDefaultDays());
+
+		assertThat(scoped).allSatisfy(built -> assertThat(built.sql())
+			.as("a uptime_status statement that ignores the Project filter")
+			.contains("m.project_id IN ("));
+		assertThat(scoped).anySatisfy(built -> assertThat(built.params()).contains(
+				QueryPlans.uptimeDefaultDays() - 1));
+	}
+
+	/**
+	 * No buffer ceiling here, and the reason is the table rather than an omission.
+	 * {@code uptime_check} is not one of the partitioned telemetry tables, so
+	 * {@link QueryGuard#assertCeilingCanFail} has no full-scan cost to validate a
+	 * ceiling against — and the daily rollup is an aggregate that must read every
+	 * matching row, so any number above the healthy plan is above the scan and
+	 * cannot fail.
+	 *
+	 * <p>What can fail is a spill. The rollup groups by (Monitor, day) and the
+	 * {@code DISTINCT ON} sorts per Monitor, and both are bounded by the window and
+	 * the Project filter above; a temp file says one of those bounds stopped
+	 * working. Asserted for the widest history the Tool will read, not the default,
+	 * because the clamp exists precisely because an agent will ask for more.
+	 */
+	@Test
+	void noUptimeStatusStatementSpillsAtTheWidestHistoryItWillRead() {
+		for (int days : new int[] { QueryPlans.uptimeDefaultDays(), QueryPlans.uptimeMaxDays() }) {
+			for (QueryPlans.Built built : QueryPlans.uptimeStatus(List.of(), days)) {
+				QueryGuard.assertNoTempFiles(built.explain(jdbc), "a uptime_status statement over " + days + " days");
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ shapes

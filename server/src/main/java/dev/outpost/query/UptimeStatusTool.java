@@ -2,8 +2,6 @@ package dev.outpost.query;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import dev.outpost.uptime.UptimeStatusService;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
@@ -18,9 +16,19 @@ import org.springframework.stereotype.Component;
  *
  * <p>It reads through {@link UptimeStatusService}, the same component the status
  * page reads through, so there is no second copy of these statements and no
- * second definition of what {@code up} means. Nothing new is computed here: the
- * window totals below are the sums of the daily buckets the service already
- * produced.
+ * second definition of what {@code up} means. It passes {@link ToolSupport}'s own
+ * {@code JdbcClient}, so the statement timeout that bounds the rest of the MCP
+ * path bounds this Tool too — the service takes the client from its caller
+ * precisely so that timeout does not become the status page's.
+ *
+ * <p><b>Both parameters are predicates, not post-filters.</b> {@code uptime_check}
+ * is a plain table holding one row per probe per interval, and the daily rollup
+ * over it is the one statement on this path whose cost grows with retention
+ * rather than with the number of Monitors. Narrowing in Java would have made
+ * {@code days} and {@code project_slugs} trim the payload while the work stayed
+ * the same; {@code McpToolPerformanceTest} guards the difference. Nothing new is
+ * computed here — the window totals below are the sums of the daily buckets the
+ * service produced.
  *
  * <p><b>The percentage is named for what it measures.</b> It is
  * {@code successful_checks_pct}, not {@code uptime_pct}, because the two are not
@@ -30,12 +38,26 @@ import org.springframework.stereotype.Component;
  * Checks at all. A field called {@code uptime_pct} invites a model to report
  * availability, which is a stronger statement than a ratio of two counts of
  * probes — exactly the naming failure ADR-0014 forbids.
+ *
+ * <p>The same number is still called {@code uptime_pct} on
+ * {@code /api/internal/uptime/overview}, which is a knowing inconsistency rather
+ * than an oversight, and one worth its own change. ADR-0014's argument for
+ * putting a disclosure in a field name is that a name survives where a footnote
+ * does not — and the status page has a legend beside the number while a Tool
+ * result has nothing at all. Renaming the wire contract touches
+ * {@code ui/src/app/core/models.ts} and the components under it, which is not
+ * this change.
  */
 @Component
 public class UptimeStatusTool {
 
-	public record UptimeStatusResult(int days_returned, int days_read, List<MonitorPayload> monitors,
-			List<String> caveats) {
+	/**
+	 * @param window_days the span the Uptime Checks below were read over, ending
+	 * today. It is a property of the query rather than of the data: a Monitor first
+	 * probed yesterday reports the same {@code window_days} as one probed for a year,
+	 * and how much of it that Monitor actually has is the length of its {@code days}.
+	 */
+	public record UptimeStatusResult(int window_days, List<MonitorPayload> monitors, List<String> caveats) {
 	}
 
 	@JsonInclude(JsonInclude.Include.NON_NULL)
@@ -87,16 +109,12 @@ public class UptimeStatusTool {
 		List<String> caveats = new ArrayList<>();
 		List<Long> projectIds = support.projects().resolve(project_slugs);
 		int window = days(days, caveats);
-		LocalDate earliest = LocalDate.now(ZoneOffset.UTC).minusDays(window - 1L);
 
 		List<MonitorPayload> monitors = new ArrayList<>();
-		for (UptimeStatusService.MonitorOverview monitor : uptime.overview().monitors()) {
-			if (!projectIds.isEmpty() && !projectIds.contains(monitor.projectId())) {
-				continue;
-			}
+		for (UptimeStatusService.MonitorOverview monitor : uptime.overview(support.jdbcClient(), projectIds, window)
+			.monitors()) {
 			List<DayPayload> buckets = monitor.days()
 				.stream()
-				.filter(day -> !day.date().isBefore(earliest))
 				.map(day -> new DayPayload(day.date().toString(), day.total(), day.failures(), day.uptimePct(),
 						day.avgLatencyMs()))
 				.toList();
@@ -117,8 +135,9 @@ public class UptimeStatusTool {
 				+ "Outpost probes on each Monitor's interval, so time between probes is unobserved, and an "
 				+ "interval in which Outpost itself was not running records no Checks at all.");
 		caveats.add("An open Incident is opened by three consecutive failed Uptime Checks and closed by the first "
-				+ "success, so status lags a change by up to three intervals.");
-		return new UptimeStatusResult(window, UptimeStatusService.WINDOW_DAYS, monitors, caveats);
+				+ "success, so status lags a change by up to three intervals. An Incident that opened before "
+				+ "the window is still reported, because it is still open now.");
+		return new UptimeStatusResult(window, monitors, caveats);
 	}
 
 	private static OpenIncidentPayload incident(UptimeStatusService.MonitorOverview monitor) {

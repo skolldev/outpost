@@ -12,6 +12,7 @@ import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -86,12 +87,23 @@ public class EventRawTool {
 						+ "frames as received. Outpost's symbolicated view of them is in get_issue_context; "
 						+ "this Tool does not rewrite the stored payload.");
 			}
+			JsonNode stored = QuerySupport.parseJson(mapper, json);
+			if (!stored.isObject() && json != null && !json.isBlank()) {
+				// The one Tool whose whole job is completeness must not answer an
+				// unreadable payload with an empty object and no explanation: data_bytes
+				// beside it would say the row held something, and nothing would say what.
+				// The column is jsonb, so this is not malformed JSON — it is valid JSON
+				// that is not an object, which no SDK sends and no other Tool can render.
+				caveats.add("The stored payload is not a JSON object but a " + stored.getNodeType()
+						+ ", so data is empty even though data_bytes reports what the column holds. "
+						+ "Every Outpost SDK sends an object; this row is anomalous.");
+			}
 			return new EventRawResult(rs.getObject("id", UUID.class).toString(), rs.getLong("issue_id"),
 					projects.slug(rs.getLong("project_id")), rs.getTimestamp("timestamp").toInstant().toString(),
 					rs.getString("environment"), rs.getString("release"), rs.getString("level"),
 					rs.getString("message"), rs.getString("exception_type"), rs.getString("user_ident"),
 					rs.getString("trace_id"), status, json == null ? 0 : json.getBytes(StandardCharsets.UTF_8).length,
-					data(json), caveats);
+					data(stored), caveats);
 		}, id);
 
 		if (rows.isEmpty()) {
@@ -116,21 +128,16 @@ public class EventRawTool {
 	}
 
 	/**
-	 * The stored document as a map. Degrades to empty on unparseable JSON for the
-	 * reason {@link QuerySupport#parseJson} does: a stored column should never be
-	 * unreadable, and one bad row is not a reason to fail the call.
+	 * The stored document as a map, or empty when the column does not hold an
+	 * object. Degrading rather than failing, for the reason
+	 * {@link QuerySupport#parseJson} degrades: one anomalous row is not a reason to
+	 * fail the call — but unlike that helper, this one's caller discloses the
+	 * degradation, because an empty {@code data} is the single answer this Tool
+	 * must never give silently.
 	 */
 	@SuppressWarnings("unchecked")
-	private Map<String, Object> data(String json) {
-		if (json == null || json.isBlank()) {
-			return Map.of();
-		}
-		try {
-			return mapper.readValue(json, LinkedHashMap.class);
-		}
-		catch (RuntimeException e) {
-			return Map.of();
-		}
+	private Map<String, Object> data(JsonNode stored) {
+		return stored.isObject() ? mapper.convertValue(stored, LinkedHashMap.class) : Map.of();
 	}
 
 }

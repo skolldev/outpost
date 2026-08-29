@@ -6,11 +6,14 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import javax.sql.DataSource;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
@@ -18,14 +21,19 @@ import org.springframework.stereotype.Component;
  * they all query through, the Project slug the caller names a Project by, and
  * the time window applied when the caller names none.
  *
- * <p>All three are one object rather than three because all three are the same
- * decision — <b>an agent omits what a user never has to pick</b>. ADR-0016 states
- * it as a performance rule: the query factories these Tools reuse arrive with
- * their guards written for the shapes the UI sends, and every real page load
- * carries a time range because the range picker has a default. A Tool that
- * passed an agent's silence straight through would run the unbounded shape
- * nobody measured, which is #126's failure mode on a new surface. So the default
- * is applied here, once, and disclosed by every Tool that applies it.
+ * <p>The window default and the slug translation are here for the same reason —
+ * <b>an agent omits what a user never has to pick</b>. ADR-0016 states it as a
+ * performance rule: the query factories these Tools reuse arrive with their
+ * guards written for the shapes the UI sends, and every real page load carries a
+ * time range because the range picker has a default. A Tool that passed an
+ * agent's silence straight through would run the unbounded shape nobody
+ * measured, which is #126's failure mode on a new surface. So the default is
+ * applied here, once, and disclosed by every Tool that applies it.
+ *
+ * <p>The {@code JdbcTemplate} is here for a different reason, and it is worth
+ * being clear that it is a different one: the statement timeout below belongs to
+ * the MCP path and to nothing else, so it needs exactly one owner that the
+ * controllers do not share.
  *
  * <p>Package-private, and deliberately not a bean any controller can reach: the
  * timeout below belongs to the MCP path and putting it on the shared
@@ -61,6 +69,16 @@ class ToolSupport {
 
 	JdbcTemplate jdbc() {
 		return jdbc;
+	}
+
+	/**
+	 * The same bounded template as a {@link JdbcClient}, for the statements outside
+	 * this package that are written against that API — {@code UptimeStatusService}'s.
+	 * Its callers choose the client so the timeout can be the Tool's without becoming
+	 * the UI's.
+	 */
+	JdbcClient jdbcClient() {
+		return JdbcClient.create(jdbc);
 	}
 
 	// --------------------------------------------------------------- projects
@@ -185,6 +203,41 @@ class ToolSupport {
 
 	private static boolean blank(@Nullable String value) {
 		return value == null || value.isBlank();
+	}
+
+	/**
+	 * The value of a whitelisted enumerated parameter, or {@code fallback} when the
+	 * caller named none.
+	 *
+	 * <p><b>An unrecognised value is rejected, never coerced to the fallback.</b> A
+	 * caller handed a different sort or status than it asked for reads the result as
+	 * the one it asked for, and nothing in the payload contradicts it — which is the
+	 * single failure on this surface that produces a confident wrong answer rather
+	 * than an error.
+	 */
+	static String choose(@Nullable String requested, Set<String> allowed, String fallback, String parameter) {
+		if (blank(requested)) {
+			return fallback;
+		}
+		String normalized = requested.trim().toLowerCase(Locale.ROOT);
+		if (!allowed.contains(normalized)) {
+			throw new IllegalArgumentException(
+					parameter + " must be one of " + String.join(", ", allowed) + "; got '" + requested + "'");
+		}
+		return normalized;
+	}
+
+	/**
+	 * Text cut to {@code max} characters, or returned as it arrived.
+	 *
+	 * <p>Shared by the Tools that return a Log Record body, which is frequently a
+	 * stack trace: a page of them is a context window. The kept part is the received
+	 * text verbatim — nothing here summarizes — and the caller is told the cut
+	 * happened by the Tool that made it.
+	 */
+	@Nullable
+	static String truncate(@Nullable String text, int max) {
+		return text != null && text.length() > max ? text.substring(0, max) : text;
 	}
 
 	/**

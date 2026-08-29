@@ -6,7 +6,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.mcp.annotation.McpTool;
@@ -231,17 +230,7 @@ public class PerformanceOverviewTool {
 	}
 
 	private static String sort(String requested) {
-		if (requested == null || requested.isBlank()) {
-			return DEFAULT_SORT;
-		}
-		String normalized = requested.trim().toLowerCase(Locale.ROOT);
-		if (!SORTS.containsKey(normalized)) {
-			// Rejected rather than coerced to the default: a caller handed a different
-			// ranking than it asked for would read it as the one it asked for.
-			throw new IllegalArgumentException(
-					"sort must be one of " + String.join(", ", SORTS.keySet()) + "; got '" + requested + "'");
-		}
-		return normalized;
+		return ToolSupport.choose(requested, SORTS.keySet(), DEFAULT_SORT, "sort");
 	}
 
 	private static int limit(Integer requested) {

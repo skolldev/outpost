@@ -6,7 +6,12 @@ Validation**; SQL is written inline with `JdbcClient`.
 ## Code style
 
 - Tabs for indentation. Records over classes.
-- DTOs are `record`s declared inside the controller that uses them.
+- DTOs are `record`s declared inside the controller that uses them. Where a
+  second production consumer appears — the MCP Surface's Tools read the same
+  data as the UI — the records move to the service that owns the statements
+  producing them, and both callers import from there. See
+  `uptime/UptimeStatusService`. The alternative is a copy of the SQL or a Tool
+  injecting a `@RestController`, and both are worse.
 
 ## Database
 
