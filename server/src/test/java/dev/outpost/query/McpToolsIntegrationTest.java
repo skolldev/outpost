@@ -196,10 +196,31 @@ class McpToolsIntegrationTest {
 		assertThat(result.path("issues")).singleElement().satisfies(issue -> {
 			assertThat(issue.path("id").asLong()).isEqualTo(issueId);
 			assertThat(issue.path("project_slug").asString()).isEqualTo("shop");
-			assertThat(issue.path("status").asString()).isEqualTo("unresolved");
 			// Named for what it counts, per ADR-0014 — not `event_count`.
 			assertThat(issue.path("events_received").asLong()).isEqualTo(1);
+			// status is the filter, not a per-Issue fact: every row here has the
+			// applied one, so it is reported once instead of on each of them.
+			assertThat(issue.has("status")).isFalse();
 		});
+		assertThat(result.path("applied_status").asString()).isEqualTo("unresolved");
+	}
+
+	/**
+	 * The limit is the MCP Surface's, not the Issues page's. An agent spends a
+	 * context window per call where a user spends a scroll, so the page size the
+	 * statement fetches is a ceiling rather than the answer.
+	 */
+	@Test
+	void findIssuesDefaultsToItsOwnLimitAndClampsAHigherOne() {
+		assertThat(IssueSearchTool.DEFAULT_LIMIT).isLessThan(IssueController.PAGE_SIZE);
+
+		// One Issue is seeded, so the limit cannot be observed by count here; what is
+		// observable is that an over-limit ask is clamped rather than refused.
+		JsonNode clamped = call("find_issues", Map.of("limit", IssueController.PAGE_SIZE * 10));
+		assertThat(clamped.path("issues")).hasSize(1);
+		assertThat(caveats(clamped)).anySatisfy(
+				caveat -> assertThat(caveat).contains("clamped to " + IssueController.PAGE_SIZE));
+		assertThat(call("find_issues", Map.of("limit", 1)).path("issues")).hasSize(1);
 	}
 
 	/**
@@ -218,7 +239,9 @@ class McpToolsIntegrationTest {
 			.isBefore(Instant.now().minus(Duration.ofDays(13)));
 		assertThat(caveats(result))
 			.anySatisfy(caveat -> assertThat(caveat).contains("status was not supplied").contains("unresolved"))
-			.anySatisfy(caveat -> assertThat(caveat).contains("from was not supplied"));
+			.anySatisfy(caveat -> assertThat(caveat).contains("from was not supplied"))
+			.anySatisfy(caveat -> assertThat(caveat).contains("limit was not supplied")
+				.contains(String.valueOf(IssueSearchTool.DEFAULT_LIMIT)));
 	}
 
 	@Test
@@ -289,9 +312,95 @@ class McpToolsIntegrationTest {
 		JsonNode newest = result.path("log_records").get(0);
 		assertThat(newest.path("body").asString()).isEqualTo("checkout failed for order 4711");
 		assertThat(newest.path("level").asString()).isEqualTo("error");
-		assertThat(newest.path("project_slug").asString()).isEqualTo("shop");
 		assertThat(newest.path("trace_id").asString()).isEqualTo(TRACE_ID);
 		assertThat(newest.path("attributes").path("order.id").asString()).isEqualTo("4711");
+
+		// Both records are the same Project's, so the slug is stated once rather than
+		// on each of them.
+		assertThat(result.path("common").path("project_slug").asString()).isEqualTo("shop");
+		assertThat(newest.has("project_slug")).isFalse();
+
+		// Neither field is a parameter of any Tool here, so neither is returned.
+		assertThat(newest.has("id")).isFalse();
+		assertThat(newest.has("severity_number")).isFalse();
+	}
+
+	/**
+	 * A record that agrees with nothing keeps its own fields: hoisting a single
+	 * record's values into {@code common} would split one record across two objects
+	 * and save nothing.
+	 */
+	@Test
+	void searchLogsKeepsPerRecordFieldsWhenThereIsNothingToShare() {
+		JsonNode result = call("search_logs", Map.of("levels", List.of("error")));
+
+		assertThat(result.path("log_records")).singleElement()
+			.satisfies(record -> assertThat(record.path("project_slug").asString()).isEqualTo("shop"));
+		assertThat(result.has("common")).isFalse();
+	}
+
+	/**
+	 * Sentry-prefixed attributes are withheld from the payload, but still matched
+	 * by {@code attribute_filters} and returned when named there.
+	 */
+	@Test
+	void searchLogsWithholdsSentryAttributesUnlessTheCallerNamesOne() {
+		JsonNode withheld = call("search_logs", Map.of("levels", List.of("error"))).path("log_records").get(0);
+
+		assertThat(withheld.path("attributes").has("sentry.environment")).isFalse();
+		assertThat(withheld.path("attributes").has("sentry.message.template")).isFalse();
+		assertThat(withheld.path("attributes").path("order.id").asString()).isEqualTo("4711");
+
+		JsonNode named = call("search_logs",
+				Map.of("levels", List.of("error"), "attribute_filters", List.of("sentry.environment=prod")));
+		assertThat(named.path("log_records")).singleElement()
+			.satisfies(record -> assertThat(record.path("attributes").path("sentry.environment").asString())
+				.isEqualTo("prod"));
+	}
+
+	@Test
+	void searchLogsAnnouncesWhatItWithheld() {
+		assertThat(caveats(call("search_logs", Map.of("levels", List.of("error")))))
+			.anySatisfy(caveat -> assertThat(caveat).contains("Sentry-prefixed attributes")
+				.contains("sentry.environment")
+				.contains("sentry.message.template")
+				.doesNotContain("sentry.sdk.version")
+				.contains("attribute_filters"));
+	}
+
+	@Test
+	void searchLogsDisclosesItsDefaultAndClampedLimit() {
+		assertThat(caveats(call("search_logs", Map.of("levels", List.of("error")))))
+			.anySatisfy(caveat -> assertThat(caveat).contains("limit was not supplied")
+				.contains(String.valueOf(LogSearchTool.DEFAULT_LIMIT)));
+
+		JsonNode clamped = call("search_logs", Map.of("levels", List.of("error"), "limit", Integer.MAX_VALUE));
+		assertThat(caveats(clamped))
+			.anySatisfy(caveat -> assertThat(caveat).contains("clamped to " + LogController.PAGE_SIZE));
+	}
+
+	/**
+	 * The limit is this surface's own, well under the log page's, and the cursor
+	 * resumes where the caller stopped reading rather than where the statement
+	 * stopped fetching — the whole point of trimming after the keyset rather than
+	 * before it.
+	 */
+	@Test
+	void searchLogsHonoursItsLimitAndPagesFromWhereItStopped() {
+		assertThat(LogSearchTool.DEFAULT_LIMIT).isLessThan(LogController.PAGE_SIZE);
+
+		JsonNode first = call("search_logs", Map.of("limit", 1));
+		assertThat(first.path("log_records")).hasSize(1);
+		assertThat(first.path("log_records").get(0).path("body").asString())
+			.isEqualTo("checkout failed for order 4711");
+		assertThat(first.path("next_cursor").asString()).isNotBlank();
+		assertThat(caveats(first)).anySatisfy(caveat -> assertThat(caveat).contains("More Log Records matched"));
+
+		JsonNode second = call("search_logs",
+				Map.of("limit", 1, "cursor", first.path("next_cursor").asString()));
+		assertThat(second.path("log_records")).singleElement()
+			.satisfies(record -> assertThat(record.path("body").asString()).isEqualTo("handling checkout"));
+		assertThat(second.has("next_cursor")).isFalse();
 	}
 
 	@Test
@@ -317,6 +426,26 @@ class McpToolsIntegrationTest {
 		assertThat(caveats(result))
 			.anySatisfy(caveat -> assertThat(caveat).contains("No Log Record matched"))
 			.anySatisfy(caveat -> assertThat(caveat).contains("'warn' and 'warning' are different levels"));
+	}
+
+	// -------------------------------------------------------- get_issue_context
+
+	/**
+	 * The surrounding Log Records are one section of a result that also carries a
+	 * stack, breadcrumbs and a Trace summary, so they are capped by this Tool rather
+	 * than by the log page — whose size would let that one section run to a hundred
+	 * records of up to {@link LogSearchTool#MAX_BODY_CHARS} each.
+	 */
+	@Test
+	void getIssueContextCapsItsLogRecordsTighterThanTheLogPage() {
+		assertThat(IssueContextTool.MAX_LOG_RECORDS).isLessThan(LogController.PAGE_SIZE);
+
+		JsonNode result = call("get_issue_context", Map.of("issue_id", issueId));
+
+		assertThat(result.path("log_records")).isNotEmpty().hasSizeLessThanOrEqualTo(IssueContextTool.MAX_LOG_RECORDS);
+		// A Log Record's id is a parameter of nothing on this surface.
+		assertThat(result.path("log_records").get(0).has("id")).isFalse();
+		assertThat(result.path("log_records").get(0).path("trace_id").asString()).isEqualTo(TRACE_ID);
 	}
 
 	// -------------------------------------------------- get_issue_context (env)
@@ -372,6 +501,20 @@ class McpToolsIntegrationTest {
 		assertThat(result.path("spans").get(0).path("parent_span_id").asString()).isEqualTo(ROOT_SPAN);
 		assertThat(result.path("error_events").get(0).path("issue_id").asLong()).isEqualTo(issueId);
 		assertThat(result.path("log_records").get(0).path("body").asString()).isEqualTo("handling checkout");
+	}
+
+	/**
+	 * An identifier earns its bytes by leading somewhere. An error Event's id is
+	 * what {@code get_event_raw} is called with; a Log Record's is a parameter of
+	 * nothing on this surface, so it is a UUID per record the caller can only look
+	 * at.
+	 */
+	@Test
+	void getTraceKeepsTheIdsThatLeadSomewhereAndDropsTheOnesThatDoNot() {
+		JsonNode result = call("get_trace", Map.of("trace_id", TRACE_ID));
+
+		assertThat(result.path("error_events").get(0).path("id").asString()).isNotBlank();
+		assertThat(result.path("log_records").get(0).has("id")).isFalse();
 	}
 
 	/**
@@ -711,6 +854,7 @@ class McpToolsIntegrationTest {
 		String payload = """
 				{"items":[{"timestamp":%s,"trace_id":"%s","span_id":"%s","level":"%s","severity_number":9,\
 				"body":"%s","attributes":{"sentry.environment":{"value":"prod","type":"string"},\
+				"sentry.message.template":{"value":"checkout failed for order {}","type":"string"},\
 				"order.id":{"value":"4711","type":"string"}}}]}"""
 			.formatted(epochSeconds(base.minusSeconds("error".equals(level) ? 1 : 2)), traceId, CHILD_SPAN, level,
 					body);

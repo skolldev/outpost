@@ -62,9 +62,21 @@ public class TraceTool {
 			@Nullable String exception_type) {
 	}
 
+	/**
+	 * One Log Record correlated with the Trace.
+	 *
+	 * <p>No {@code id}, for the reason {@code search_logs} omits it: a Log Record's
+	 * id is not a parameter of any Tool on this surface, so it is a UUID per record
+	 * the caller can only look at. An {@link ErrorEventPayload}'s id is kept because
+	 * {@code get_event_raw} spends it, and that is the distinction — an identifier
+	 * earns its bytes by leading somewhere.
+	 *
+	 * <p>No {@code trace_id} either: every row here has the Trace's, which the
+	 * result states once.
+	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
-	public record LogRecordPayload(String id, String timestamp, @Nullable String project_slug, String environment,
-			String level, String body, @Nullable String span_id) {
+	public record LogRecordPayload(String timestamp, @Nullable String project_slug, String environment, String level,
+			String body, @Nullable String span_id) {
 	}
 
 	/**
@@ -132,9 +144,8 @@ public class TraceTool {
 				traceId);
 
 		List<LogRecordPayload> logs = jdbc.query(TraceController.LOGS_BY_TRACE,
-				(rs, row) -> new LogRecordPayload(rs.getObject("id", UUID.class).toString(),
-						rs.getTimestamp("timestamp").toInstant().toString(), projects.slug(rs.getLong("project_id")),
-						rs.getString("environment"), rs.getString("level"),
+				(rs, row) -> new LogRecordPayload(rs.getTimestamp("timestamp").toInstant().toString(),
+						projects.slug(rs.getLong("project_id")), rs.getString("environment"), rs.getString("level"),
 						ToolSupport.truncate(rs.getString("body"), LogSearchTool.MAX_BODY_CHARS),
 						rs.getString("span_id")),
 				traceId);

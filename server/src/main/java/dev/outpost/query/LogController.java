@@ -32,7 +32,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping("/api/internal")
 public class LogController {
 
-	private static final int PAGE_SIZE = 100;
+	/** The list page size, and therefore the ceiling on any per-call limit built over this keyset. */
+	static final int PAGE_SIZE = 100;
 
 	/** Log list keyset by {@code (timestamp, id)}; the SQL column is quoted, the row key is not. */
 	private static final KeysetPage PAGE = KeysetPage.of(KeysetPage.KeyColumn.instant("\"timestamp\"", "timestamp"),
