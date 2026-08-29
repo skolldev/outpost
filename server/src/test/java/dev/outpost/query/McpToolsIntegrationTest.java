@@ -362,9 +362,7 @@ class McpToolsIntegrationTest {
 	void searchLogsAnnouncesWhatItWithheld() {
 		assertThat(caveats(call("search_logs", Map.of("levels", List.of("error")))))
 			.anySatisfy(caveat -> assertThat(caveat).contains("Sentry-prefixed attributes")
-				.contains("sentry.environment")
-				.contains("sentry.message.template")
-				.doesNotContain("sentry.sdk.version")
+				.doesNotContain("sentry.environment", "sentry.message.template", "sentry.sdk.version")
 				.contains("attribute_filters"));
 	}
 

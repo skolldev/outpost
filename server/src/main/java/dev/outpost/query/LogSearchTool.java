@@ -226,14 +226,14 @@ public class LogSearchTool {
 		Set<String> requestedAttributes = requestedAttributes(attribute_filters);
 		boolean bodyTruncated = false;
 		boolean attributesTruncated = false;
-		Set<String> attributesWithheld = new LinkedHashSet<>();
+		boolean attributesWithheld = false;
 		List<LogRecordPayload> records = new ArrayList<>();
 		for (Map<String, Object> row : page.rows()) {
 			String body = (String) row.get("body");
 			bodyTruncated |= body != null && body.length() > MAX_BODY_CHARS;
 			Attributes attributes = attributes((JsonNode) row.get("attributes"), requestedAttributes);
 			attributesTruncated |= attributes.truncated();
-			attributesWithheld.addAll(attributes.withheld());
+			attributesWithheld |= attributes.withheld();
 			String slug = projects.slug((Long) row.get("project_id"));
 			String environment = (String) row.get("environment");
 			String recordRelease = (String) row.get("release");
@@ -253,10 +253,8 @@ public class LogSearchTool {
 			caveats.add("At least one Log Record carried more than " + MAX_ATTRIBUTES
 					+ " attributes and only the first " + MAX_ATTRIBUTES + " are returned.");
 		}
-		if (!attributesWithheld.isEmpty()) {
-			caveats.add("Sentry-prefixed attributes were withheld from the records: "
-					+ String.join(", ", sorted(attributesWithheld)) + ". They are still matched by "
-					+ "attribute_filters, and naming one there returns it.");
+		if (attributesWithheld) {
+			caveats.add("Sentry-prefixed attributes were withheld. Name one in attribute_filters to return it.");
 		}
 		if (records.isEmpty()) {
 			// Levels are the one filter that can be wrong without being refused —
@@ -319,7 +317,7 @@ public class LogSearchTool {
 	}
 
 	/** The attributes kept for one Log Record, and why the rest are not there. */
-	private record Attributes(Map<String, String> kept, boolean truncated, Set<String> withheld) {
+	private record Attributes(Map<String, String> kept, boolean truncated, boolean withheld) {
 	}
 
 	/**
@@ -331,14 +329,14 @@ public class LogSearchTool {
 	 */
 	private static Attributes attributes(@Nullable JsonNode node, Set<String> requested) {
 		if (node == null || !node.isObject() || node.isEmpty()) {
-			return new Attributes(Map.of(), false, Set.of());
+			return new Attributes(Map.of(), false, false);
 		}
 		Map<String, String> attributes = new LinkedHashMap<>();
 		boolean truncated = false;
-		Set<String> withheld = new LinkedHashSet<>();
+		boolean withheld = false;
 		for (Map.Entry<String, JsonNode> entry : node.properties()) {
 			if (entry.getKey().startsWith(WITHHELD_ATTRIBUTE_PREFIX) && !requested.contains(entry.getKey())) {
-				withheld.add(entry.getKey());
+				withheld = true;
 				continue;
 			}
 			if (attributes.size() == MAX_ATTRIBUTES) {
@@ -349,10 +347,6 @@ public class LogSearchTool {
 			attributes.put(entry.getKey(), value.isValueNode() ? value.asString() : value.toString());
 		}
 		return new Attributes(attributes, truncated, withheld);
-	}
-
-	private static List<String> sorted(Set<String> values) {
-		return values.stream().sorted().toList();
 	}
 
 }
