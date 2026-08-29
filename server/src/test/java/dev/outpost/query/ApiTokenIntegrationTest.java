@@ -33,7 +33,7 @@ import org.springframework.web.client.RestTemplate;
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
 				"outpost.public-url=https://outpost.test.local/o" })
 @Import(TestcontainersConfiguration.class)
-class TokenAdminIntegrationTest {
+class ApiTokenIntegrationTest {
 
 	private static final String TOKENS = "/api/internal/tokens";
 
@@ -168,18 +168,27 @@ class TokenAdminIntegrationTest {
 
 	// ------------------------------------------------------------- visibility
 
+	/**
+	 * The two tokens a Member must not reach are a second Member's Personal Token —
+	 * which the {@code owner_user_id} predicate is what excludes — and an
+	 * Installation Token, which has no owner at all.
+	 */
 	@Test
 	void aMemberSeesAndRevokesOnlyTheirOwnTokens() {
+		createUser("other@test.local", "other-password", "member");
+		String otherCookie = login("other@test.local", "other-password");
 		create(memberCookie, Map.of("name", "mine", "scopes", List.of(ApiTokenService.SCOPE_TELEMETRY_READ)));
+		create(otherCookie, Map.of("name", "theirs", "scopes", List.of(ApiTokenService.SCOPE_TELEMETRY_READ)));
 		create(adminCookie, Map.of("name", "ci", "scopes", List.of(ApiTokenService.SCOPE_ARTIFACTS_WRITE)));
-		long installationId = idOf(list(adminCookie), "ci");
 
 		assertThat(tokenNames(list(memberCookie))).containsExactly("mine");
-		assertThat(tokenNames(list(adminCookie))).containsExactlyInAnyOrder("mine", "ci");
+		assertThat(tokenNames(list(adminCookie))).containsExactlyInAnyOrder("mine", "theirs", "ci");
 
 		// Someone else's token is a 404, not a 403 — a 403 would confirm the id.
-		assertThat(delete(TOKENS + "/" + installationId, memberCookie)).isEqualTo(HttpStatus.NOT_FOUND);
-		assertThat(tokenNames(list(adminCookie))).contains("ci");
+		List<Map<String, Object>> all = list(adminCookie);
+		assertThat(delete(TOKENS + "/" + idOf(all, "theirs"), memberCookie)).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(delete(TOKENS + "/" + idOf(all, "ci"), memberCookie)).isEqualTo(HttpStatus.NOT_FOUND);
+		assertThat(tokenNames(list(adminCookie))).contains("theirs", "ci");
 
 		assertThat(delete(TOKENS + "/" + idOf(list(memberCookie), "mine"), memberCookie))
 			.isEqualTo(HttpStatus.NO_CONTENT);

@@ -52,19 +52,28 @@ async function pickOption(
   await user.click(await screen.findByRole('option', { name: optionName }));
 }
 
-/** Captures the create request body so ownership and scopes can be asserted. */
-function captureCreate(created: Partial<ApiToken> = {}): { body?: Record<string, unknown> } {
+/**
+ * Captures the create request body so ownership and scopes can be asserted.
+ * `onCreated` lets a test feed the new token back into the list handler, which is
+ * how the reload after a successful create is observed.
+ */
+function captureCreate(
+  created: Partial<ApiToken> & { onCreated?: (token: ApiToken) => void } = {},
+): { body?: Record<string, unknown> } {
+  const { onCreated, ...overrides } = created;
   const captured: { body?: Record<string, unknown> } = {};
   server.use(
     http.post(`${BASE}/tokens`, async ({ request }) => {
       captured.body = (await request.json()) as Record<string, unknown>;
-      return HttpResponse.json({
+      const token: ApiToken = {
         ...PERSONAL_TOKEN,
-        name: captured.body['name'],
-        scopes: captured.body['scopes'],
+        name: captured.body['name'] as string,
+        scopes: captured.body['scopes'] as ApiToken['scopes'],
         token: 'secret-xyz',
-        ...created,
-      });
+        ...overrides,
+      };
+      onCreated?.(token);
+      return HttpResponse.json(token);
     }),
   );
   return captured;
@@ -92,6 +101,7 @@ describe('ApiTokensSettings', () => {
     const captured = captureCreate({
       name: 'ci-new',
       mcp_url: 'https://outpost.example.test/o/mcp',
+      onCreated: (created) => tokens.push(created),
     });
     await renderTokens();
     const user = userEvent.setup();
@@ -105,6 +115,10 @@ describe('ApiTokensSettings', () => {
       scopes: ['telemetry:read'],
       personal: true,
     });
+    // The list reloads, so the new token joins the table.
+    await waitFor(() =>
+      expect(within(screen.getByRole('table')).getByText('ci-new')).toBeInTheDocument(),
+    );
   });
 
   it('renders a paste-ready MCP client configuration built from the returned URL', async () => {

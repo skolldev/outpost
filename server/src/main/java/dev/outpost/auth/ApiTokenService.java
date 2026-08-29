@@ -114,7 +114,12 @@ public class ApiTokenService {
 			.update() > 0;
 	}
 
-	/** Resolves a presented bearer token, or empty if unknown. */
+	/**
+	 * Resolves a presented bearer token, or empty if unknown. Runs on every request
+	 * to {@code /api/0/**} and {@code /mcp}: a unique-index hit on {@code token_hash}
+	 * plus a primary-key join for the owner, which the filter does not read but
+	 * which keeps one token shape rather than a second, half-populated one.
+	 */
 	public Optional<ApiToken> authenticate(String bearerToken) {
 		return jdbc.sql(SELECT + "WHERE t.token_hash = ?")
 			.param(hash(bearerToken))

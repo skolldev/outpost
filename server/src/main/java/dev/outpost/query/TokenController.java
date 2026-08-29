@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpStatus;
@@ -87,9 +88,7 @@ public class TokenController {
 		if (isAdmin(authentication)) {
 			return tokens.list();
 		}
-		return users.findByEmail(authentication.getName())
-			.map(user -> tokens.listOwnedBy(user.id()))
-			.orElseGet(List::of);
+		return caller(authentication).map(user -> tokens.listOwnedBy(user.id())).orElseGet(List::of);
 	}
 
 	@PostMapping
@@ -123,7 +122,7 @@ public class TokenController {
 			// The Session outlives the account it was granted to (ADR-0012), so a
 			// caller can still be authenticated after their row is gone. Minting a
 			// Personal Token for nobody would silently produce an Installation Token.
-			UserService.User owner = users.findByEmail(authentication.getName()).orElse(null);
+			UserService.User owner = caller(authentication).orElse(null);
 			if (owner == null) {
 				return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
 					.body(Map.of("detail", "Your account no longer exists."));
@@ -145,10 +144,17 @@ public class TokenController {
 	@DeleteMapping("/{id}")
 	public ResponseEntity<Void> delete(@PathVariable long id, Authentication authentication) {
 		boolean deleted = isAdmin(authentication) ? tokens.delete(id)
-				: users.findByEmail(authentication.getName())
-					.map(user -> tokens.deleteOwnedBy(id, user.id()))
-					.orElse(false);
+				: caller(authentication).map(user -> tokens.deleteOwnedBy(id, user.id())).orElse(false);
 		return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+	}
+
+	/**
+	 * The account behind the Session, which carries an email as its principal.
+	 * Empty when the account has been deleted out from under a live Session
+	 * (ADR-0012) — every caller here treats that as owning no tokens.
+	 */
+	private Optional<UserService.User> caller(Authentication authentication) {
+		return users.findByEmail(authentication.getName());
 	}
 
 	private static boolean isAdmin(Authentication authentication) {

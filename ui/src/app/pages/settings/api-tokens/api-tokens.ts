@@ -72,15 +72,7 @@ export class ApiTokensSettings {
   readonly ownershipLabel = (value: Ownership): string =>
     this.ownershipOptions.find((option) => option.value === value)?.label ?? value;
 
-  /**
-   * `telemetry:read` and a Personal Token are the defaults because that is the
-   * agent-onboarding path; an Admin minting a CI credential switches both.
-   */
-  private readonly model = signal({
-    name: '',
-    scopes: { 'telemetry:read': true, 'artifacts:write': false } as Record<TokenScope, boolean>,
-    ownership: 'personal' as Ownership,
-  });
+  private readonly model = signal(blankToken());
 
   readonly tokenForm = form(
     this.model,
@@ -109,11 +101,7 @@ export class ApiTokensSettings {
               }),
             );
             this.createdToken.set(created);
-            this.tokenForm().reset({
-              name: '',
-              scopes: { 'telemetry:read': true, 'artifacts:write': false },
-              ownership: 'personal',
-            });
+            this.tokenForm().reset(blankToken());
             this.tokensResource.reload();
           } catch {
             this.feedback.error('Could not create token.');
@@ -151,11 +139,16 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
   }
 
   /**
-   * A paste-ready MCP client configuration. The URL comes from the creation
-   * response rather than `location.origin`, which loses a reverse-proxy sub-path
-   * and is the piece people most often assemble wrongly by hand.
+   * A paste-ready MCP client configuration for the token just revealed. The URL
+   * comes from the creation response rather than `location.origin`, which loses a
+   * reverse-proxy sub-path and is the piece people most often assemble wrongly by
+   * hand. Computed rather than a method: the template reads it three times.
    */
-  mcpSnippet(created: ApiToken): string {
+  readonly mcpSnippet = computed(() => {
+    const created = this.createdToken();
+    if (!created) {
+      return '';
+    }
     return JSON.stringify(
       {
         mcpServers: {
@@ -169,7 +162,7 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
       null,
       2,
     );
-  }
+  });
 
   copy(text: string): void {
     void navigator.clipboard.writeText(text).then(() => {
@@ -177,6 +170,22 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
       setTimeout(() => this.copied.set(null), 1500);
     });
   }
+}
+
+/**
+ * A fresh create form: `telemetry:read` and a Personal Token, because that is the
+ * agent-onboarding path; an Admin minting a CI credential switches both.
+ */
+function blankToken(): {
+  name: string;
+  scopes: Record<TokenScope, boolean>;
+  ownership: Ownership;
+} {
+  return {
+    name: '',
+    scopes: { 'telemetry:read': true, 'artifacts:write': false },
+    ownership: 'personal',
+  };
 }
 
 const ALL_SCOPES: readonly {

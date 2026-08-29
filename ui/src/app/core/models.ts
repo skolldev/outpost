@@ -198,8 +198,8 @@ export interface ApiToken {
   created_at: string;
   // A Personal Token has an owner and dies with that account (ADR-0017); an
   // Installation Token has neither field set and outlives everybody.
-  owner_user_id?: number | null;
-  owner_email?: string | null;
+  owner_user_id: number | null;
+  owner_email: string | null;
   // Only present on the creation response — shown once.
   token?: string;
   // Also creation-only: the MCP Surface URL of this installation, which the

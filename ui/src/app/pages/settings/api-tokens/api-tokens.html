@@ -99,15 +99,15 @@
         </p>
         <pre
           class="mt-1 overflow-x-auto rounded bg-muted px-3 py-3 text-xs leading-relaxed text-foreground"
-          >{{ mcpSnippet(created) }}</pre>
+          >{{ mcpSnippet() }}</pre>
         <button
           hlmBtn
           variant="outline"
           size="xs"
           class="mt-1 font-sans"
-          (click)="copy(mcpSnippet(created))"
+          (click)="copy(mcpSnippet())"
         >
-          {{ copied() === mcpSnippet(created) ? 'Copied!' : 'Copy configuration' }}
+          {{ copied() === mcpSnippet() ? 'Copied!' : 'Copy configuration' }}
         </button>
       }
 
