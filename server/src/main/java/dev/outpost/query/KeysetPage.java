@@ -105,8 +105,29 @@ final class KeysetPage {
 
 	/** Trims the raw {@code pageSize + 1} rows to a page and encodes the next cursor. */
 	Page paginate(List<Map<String, Object>> rows) {
-		boolean hasMore = rows.size() > pageSize;
-		List<Map<String, Object>> pageRows = hasMore ? rows.subList(0, pageSize) : rows;
+		return paginate(rows, pageSize);
+	}
+
+	/**
+	 * The same trim against a smaller page than the statement fetched, for a caller
+	 * that wants fewer rows than the page size the SQL was built with.
+	 *
+	 * <p>The statement's {@code LIMIT} is unchanged, so this trims the payload and
+	 * not the work — the same trade {@code find_transactions} and
+	 * {@code performance_overview} make. It is the trade worth making on the MCP
+	 * Surface: the index scan costs the same for a hundred rows as for
+	 * twenty-five, while the hundred rows are what a context window is spent on.
+	 * Keeping the SQL identical is also what lets {@code McpToolQueryReuseTest}
+	 * still assert these Tools run the list page's own statement, byte for byte.
+	 *
+	 * <p>The cursor is encoded from the last row actually returned, so paging from
+	 * a trimmed page resumes where the caller stopped reading rather than where the
+	 * statement stopped fetching.
+	 */
+	Page paginate(List<Map<String, Object>> rows, int size) {
+		int trim = Math.max(1, Math.min(size, pageSize));
+		boolean hasMore = rows.size() > trim;
+		List<Map<String, Object>> pageRows = hasMore ? rows.subList(0, trim) : rows;
 		String nextCursor = null;
 		if (hasMore && !pageRows.isEmpty()) {
 			Map<String, Object> last = pageRows.get(pageRows.size() - 1);

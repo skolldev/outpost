@@ -31,7 +31,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/internal")
 public class IssueController {
 
-	private static final int PAGE_SIZE = 50;
+	/** The list page size, and therefore the ceiling on any per-call limit built over this keyset. */
+	static final int PAGE_SIZE = 50;
 	private static final int SPARKLINE_DAYS = 14;
 
 	/** Issue list keyset: default by {@code (last_seen, id)}, or by {@code (event_count, id)} when sort=count. */

@@ -119,6 +119,42 @@ class KeysetPageTest {
 		assertThat(result.nextCursor()).isNull();
 	}
 
+	// -------------------------------------------------- trim to a smaller page
+
+	/**
+	 * The MCP Surface's Tools fetch the list page's page size and return fewer. The
+	 * cursor has to come from the last row <em>returned</em>, not the last row
+	 * fetched, or the next page silently skips everything trimmed away.
+	 */
+	@Test
+	void trimmingToASmallerPageCursorsFromTheLastRowReturned() {
+		KeysetPage page = KeysetPage.of(KeyColumn.longs("event_count"), KeyColumn.longs("id"), 10);
+		KeysetPage.Page result = page.paginate(rows(8), 3);
+
+		assertThat(result.rows()).hasSize(3);
+		assertThat(result.nextCursor()).isNotNull();
+		assertThat(result.nextCursor()).isEqualTo(page.paginate(rows(4), 3).nextCursor());
+	}
+
+	@Test
+	void aSmallerPageThanTheRowsInHandStillEndsWithoutACursor() {
+		KeysetPage page = KeysetPage.of(KeyColumn.longs("event_count"), KeyColumn.longs("id"), 10);
+		KeysetPage.Page result = page.paginate(rows(2), 5);
+
+		assertThat(result.rows()).hasSize(2);
+		assertThat(result.nextCursor()).isNull();
+	}
+
+	/** A limit above the page size cannot widen it: the statement only fetched that many. */
+	@Test
+	void aLargerRequestedPageIsCappedAtThePageSize() {
+		KeysetPage page = KeysetPage.of(KeyColumn.longs("event_count"), KeyColumn.longs("id"), 2);
+		KeysetPage.Page result = page.paginate(rows(3), 50);
+
+		assertThat(result.rows()).hasSize(2);
+		assertThat(result.nextCursor()).isNotNull();
+	}
+
 	// ------------------------------------------------------------- build phase
 
 	@Test

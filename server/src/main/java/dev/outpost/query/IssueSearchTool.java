@@ -47,13 +47,34 @@ public class IssueSearchTool {
 			List<IssuePayload> issues, @Nullable String next_cursor, List<String> caveats) {
 	}
 
+	/**
+	 * One Issue.
+	 *
+	 * <p>No {@code status}: {@code status} is an exact-match filter with no value
+	 * for "either", so every Issue here has the status the result already echoes as
+	 * {@code applied_status}, and repeating it per row states a constant as though
+	 * it varied. The {@code id} does stay — unlike a Log Record's, it is what
+	 * {@code get_issue_context} is called with.
+	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record IssuePayload(long id, @Nullable String project_slug, String title, @Nullable String culprit,
-			String level, String status, String first_seen, String last_seen, long events_received) {
+			String level, String first_seen, String last_seen, long events_received) {
 	}
 
 	/** What the Issues page sends when the user has picked nothing — and therefore the shape the indexes serve. */
 	static final String DEFAULT_STATUS = "unresolved";
+
+	/**
+	 * Issues returned when the caller names no limit. Under the page size the
+	 * statement fetches: the leaderboard shape an agent asks for is the worst
+	 * handful, and a caller that wants the rest has {@code next_cursor}. The
+	 * statement reads the same index either way, so the limit trims the payload,
+	 * not the work.
+	 */
+	static final int DEFAULT_LIMIT = 25;
+
+	/** The Issue page's own page size: the statement's {@code LIMIT}, and so the ceiling on this one. */
+	static final int MAX_LIMIT = IssueController.PAGE_SIZE;
 
 	static final List<String> STATUSES = List.of("unresolved", "resolved");
 
@@ -83,8 +104,9 @@ public class IssueSearchTool {
 					Issues matching a filter, newest activity first. An Issue is a group of Events sharing a \
 					fingerprint. Use this to find an issue_id, then call get_issue_context for its Event, stack, \
 					Log Records and Trace. Filters are combined with AND. Results are paged: pass the returned \
-					next_cursor back as cursor for the next page. Read the `caveats` array — it names the defaults \
-					that were applied when you omitted a parameter.""")
+					next_cursor back as cursor for the next page. Every Issue returned has the status reported as \
+					applied_status, so the Issues themselves do not repeat it. Read the `caveats` array — it names \
+					the defaults that were applied when you omitted a parameter.""")
 	public IssueSearchResult findIssues(
 			@McpToolParam(required = false,
 					description = "Project slugs from list_projects. Omit for every Project.") List<String> project_slugs,
@@ -103,6 +125,8 @@ public class IssueSearchTool {
 					description = "End of the window as an ISO-8601 instant. Defaults to now.") String to,
 			@McpToolParam(required = false,
 					description = "last_seen (the default) or events_received.") String sort,
+			@McpToolParam(required = false, description = "Issues to return. Defaults to " + DEFAULT_LIMIT
+					+ ", at most " + MAX_LIMIT + ".") Integer limit,
 			@McpToolParam(required = false, description = "next_cursor from a previous call.") String cursor) {
 
 		List<String> caveats = new ArrayList<>();
@@ -115,6 +139,7 @@ public class IssueSearchTool {
 		ToolSupport.Window window = ToolSupport.window(from, to, caveats);
 		String appliedStatus = status(status, caveats);
 		String appliedSort = sort(sort);
+		int size = ToolSupport.limit(limit, DEFAULT_LIMIT, MAX_LIMIT, "Issues", caveats);
 
 		SearchQuery search = buildIssueSearchQuery(projectIds, environments, appliedStatus, release,
 				window.fromInstant(), window.toInstant(), query, SORTS.get(appliedSort), cursor);
@@ -127,24 +152,23 @@ public class IssueSearchTool {
 			mapped.put("title", rs.getString("title"));
 			mapped.put("culprit", rs.getString("culprit"));
 			mapped.put("level", rs.getString("level"));
-			mapped.put("status", rs.getString("status"));
 			mapped.put("first_seen", rs.getTimestamp("first_seen").toInstant());
 			mapped.put("last_seen", rs.getTimestamp("last_seen").toInstant());
 			mapped.put("event_count", rs.getLong("event_count"));
 			return mapped;
 		}, search.params().toArray());
 
-		KeysetPage.Page page = IssueController.issuePage(SORTS.get(appliedSort)).paginate(rows);
+		KeysetPage.Page page = IssueController.issuePage(SORTS.get(appliedSort)).paginate(rows, size);
 		if (page.nextCursor() != null) {
-			caveats.add("More Issues matched than one page holds. Pass next_cursor back as cursor to read the rest, "
-					+ "or narrow the filter — this page is not the whole answer.");
+			caveats.add("More Issues matched than the " + size + " returned. Pass next_cursor back as cursor to read "
+					+ "the rest, raise limit to at most " + MAX_LIMIT + ", or narrow the filter — this page is not "
+					+ "the whole answer.");
 		}
 		List<IssuePayload> issues = page.rows()
 			.stream()
 			.map(row -> new IssuePayload((Long) row.get("id"), projects.slug((Long) row.get("project_id")),
 					(String) row.get("title"), (String) row.get("culprit"), (String) row.get("level"),
-					(String) row.get("status"), row.get("first_seen").toString(), row.get("last_seen").toString(),
-					(Long) row.get("event_count")))
+					row.get("first_seen").toString(), row.get("last_seen").toString(), (Long) row.get("event_count")))
 			.toList();
 		if (issues.isEmpty()) {
 			// An empty list has two readings — "nothing is broken" and "you looked in the

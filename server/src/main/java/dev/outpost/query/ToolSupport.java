@@ -307,6 +307,24 @@ class ToolSupport {
 	}
 
 	/**
+	 * Resolves a Tool's per-call result limit, applying its default or bounds and
+	 * disclosing either change to the caller.
+	 */
+	static int limit(@Nullable Integer requested, int fallback, int max, String rows, List<String> caveats) {
+		if (requested == null) {
+			caveats.add("limit was not supplied, so at most " + fallback + " " + rows + " are returned per call. "
+					+ "Supply limit to return between 1 and " + max + ".");
+			return fallback;
+		}
+		int applied = Math.max(1, Math.min(requested, max));
+		if (applied != requested) {
+			caveats.add("limit " + requested + " is outside the accepted range of 1 to " + max
+					+ ", so it was clamped to " + applied + ".");
+		}
+		return applied;
+	}
+
+	/**
 	 * Text cut to {@code max} characters, or returned as it arrived.
 	 *
 	 * <p>Shared by the Tools that return a Log Record body, which is frequently a

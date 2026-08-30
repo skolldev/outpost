@@ -105,8 +105,15 @@ public class IssueContextTool {
 	public record LogWindowPayload(String start, String end, int minutes_before_event) {
 	}
 
+	/**
+	 * One Log Record from the window before the Event.
+	 *
+	 * <p>No {@code id}, for the reason {@code search_logs} omits it: a Log Record's
+	 * id is not a parameter of any Tool on this surface. The {@code trace_id} is
+	 * what leads anywhere from a row here, via {@code get_trace}.
+	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
-	public record LogRecordPayload(String id, String timestamp, String environment, String level, String body,
+	public record LogRecordPayload(String timestamp, String environment, String level, String body,
 			@Nullable String trace_id, @Nullable String span_id) {
 	}
 
@@ -132,6 +139,19 @@ public class IssueContextTool {
 
 	/** Breadcrumbs kept, counted back from the Event. */
 	static final int MAX_BREADCRUMBS = 20;
+
+	/**
+	 * Log Records kept, counted back from the Event.
+	 *
+	 * <p>A cap of this Tool's own rather than the log page's. These records are one
+	 * section of a result that also carries a stack, breadcrumbs and a Trace
+	 * summary, and the log page's size would let that one section run to a hundred
+	 * records of up to {@link LogSearchTool#MAX_BODY_CHARS} each — a context window
+	 * spent on the context around the Event rather than on the Event. The knob for
+	 * reaching further is {@code log_window_minutes}, which narrows what is read
+	 * rather than widening what is returned.
+	 */
+	static final int MAX_LOG_RECORDS = 25;
 
 	/**
 	 * Keys of {@code event.data} the payload projects. Everything else is dropped
@@ -414,7 +434,7 @@ public class IssueContextTool {
 			return row;
 		}, search.params().toArray());
 
-		KeysetPage.Page page = LogController.logPage().paginate(rows);
+		KeysetPage.Page page = LogController.logPage().paginate(rows, MAX_LOG_RECORDS);
 		if (page.nextCursor() != null) {
 			caveats.add("Only the " + page.rows().size() + " Log Records closest to the Event are returned; "
 					+ "more matched the window, and the earliest of them were dropped. Narrow "
@@ -422,11 +442,21 @@ public class IssueContextTool {
 		}
 		List<Map<String, Object>> chronological = new ArrayList<>(page.rows());
 		Collections.reverse(chronological);
-		return chronological.stream()
-			.map(row -> new LogRecordPayload((String) row.get("id"), (String) row.get("timestamp"),
-					(String) row.get("environment"), (String) row.get("level"), (String) row.get("body"),
-					(String) row.get("trace_id"), (String) row.get("span_id")))
-			.toList();
+		boolean bodyTruncated = false;
+		List<LogRecordPayload> records = new ArrayList<>();
+		for (Map<String, Object> row : chronological) {
+			String body = (String) row.get("body");
+			bodyTruncated |= body != null && body.length() > LogSearchTool.MAX_BODY_CHARS;
+			records.add(new LogRecordPayload((String) row.get("timestamp"), (String) row.get("environment"),
+					(String) row.get("level"), ToolSupport.truncate(body, LogSearchTool.MAX_BODY_CHARS),
+					(String) row.get("trace_id"), (String) row.get("span_id")));
+		}
+		if (bodyTruncated) {
+			caveats.add("At least one Log Record body was longer than " + LogSearchTool.MAX_BODY_CHARS
+					+ " characters and was cut off at that length. The kept text is the start of what was "
+					+ "received, verbatim.");
+		}
+		return records;
 	}
 
 	/** The Trace summary, or null with a caveat saying which of the two reasons applies. */
