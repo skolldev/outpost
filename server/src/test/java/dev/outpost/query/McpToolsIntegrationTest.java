@@ -248,7 +248,9 @@ class McpToolsIntegrationTest {
 	void findIssuesFiltersByStatusAndRejectsAStatusItCannotAnswer() {
 		assertThat(call("find_issues", Map.of("status", "resolved")).path("issues")).isEmpty();
 
-		assertThat(error("find_issues", Map.of("status", "any"))).contains("status must be one of");
+		// Refused against the advertised enum, before dispatch, and named back with the
+		// values that would have worked — never coerced to the default.
+		assertThat(error("find_issues", Map.of("status", "any"))).contains("/status", "unresolved", "resolved");
 	}
 
 	/**
@@ -676,7 +678,8 @@ class McpToolsIntegrationTest {
 			assertThat(call("performance_overview", Map.of("sort", sort)).path("sorted_by").asString())
 				.isEqualTo(sort);
 		}
-		assertThat(error("performance_overview", Map.of("sort", "p95"))).contains("sort must be one of");
+		assertThat(error("performance_overview", Map.of("sort", "p95"))).contains("/sort", "total_ms", "p95_ms",
+				"p50_ms", "transactions_received");
 	}
 
 	// -------------------------------------------------------- find_transactions

@@ -196,6 +196,38 @@ class McpSurfaceIntegrationTest {
 		});
 	}
 
+	/**
+	 * The enumerated parameters reach the caller as a schema {@code enum}, not as
+	 * prose inside a description. It is the difference between a value a client can
+	 * validate before dispatch and one only this server can reject after it, and it
+	 * is the whole reason these parameters are declared as types.
+	 */
+	@Test
+	void enumeratedParametersAdvertiseTheirValuesInTheSchema() {
+		connect();
+
+		JsonNode tools = rpc("tools/list", Map.of()).path("tools");
+		assertThat(enumValues(tools, "find_issues", "status")).containsExactly("unresolved", "resolved");
+		assertThat(enumValues(tools, "find_issues", "sort")).containsExactly("last_seen", "events_received");
+		assertThat(enumValues(tools, "find_transactions", "sort")).containsExactly("duration_ms", "start_ts");
+		assertThat(enumValues(tools, "performance_overview", "sort")).containsExactly("total_ms", "p95_ms", "p50_ms",
+				"transactions_received");
+	}
+
+	private static List<String> enumValues(JsonNode tools, String tool, String parameter) {
+		return tools.valueStream()
+			.filter(candidate -> tool.equals(candidate.path("name").asString()))
+			.findFirst()
+			.orElseThrow()
+			.path("inputSchema")
+			.path("properties")
+			.path(parameter)
+			.path("enum")
+			.valueStream()
+			.map(JsonNode::asString)
+			.toList();
+	}
+
 	@Test
 	void getIssueContextAdvertisesItsSchema() {
 		connect();

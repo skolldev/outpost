@@ -71,7 +71,7 @@ public class TransactionSearchTool {
 
 	/**
 	 * The orderings offered, mapped to the ORDER BY each resolves to. The map is
-	 * also the whitelist: an unrecognised key is rejected in {@link ToolSupport#choose}
+	 * also the whitelist: an unrecognised value is rejected against {@link Sort}
 	 * and never reaches the statement.
 	 */
 	private static final Map<String, String> SORTS = sorts();
@@ -84,6 +84,17 @@ public class TransactionSearchTool {
 	}
 
 	private static final String DEFAULT_SORT = "duration_ms";
+
+	/**
+	 * The orderings this Tool accepts, as the JSON Schema advertises them. Named in
+	 * payload spelling so the schema's {@code enum} and {@link #SORTS}'s keys are
+	 * the same strings.
+	 */
+	public enum Sort {
+
+		duration_ms, start_ts
+
+	}
 
 	private final JdbcTemplate jdbc;
 
@@ -115,7 +126,7 @@ public class TransactionSearchTool {
 			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2 — list_projects "
 					+ "shows each Project's recent versions.") String release,
 			@McpToolParam(required = false, description = "duration_ms (the default, slowest first) or start_ts "
-					+ "(most recent first).") String sort,
+					+ "(most recent first).") Sort sort,
 			@McpToolParam(required = false, description = "Start of the window: an ISO-8601 instant, or an ISO-8601 "
 					+ "duration such as PT1H or P2D meaning that far back from `to`. Defaults to "
 					+ ToolSupport.DEFAULT_WINDOW_DAYS + " days before `to`; anything earlier than 30 days before "
@@ -138,7 +149,7 @@ public class TransactionSearchTool {
 		long projectId = projects.resolve(List.of(project_slug)).get(0);
 		support.requireKnownEnvironments(environments);
 		support.requireKnownRelease(release);
-		String sortedBy = ToolSupport.choose(sort, SORTS.keySet(), DEFAULT_SORT, "sort");
+		String sortedBy = sort == null ? DEFAULT_SORT : sort.name();
 		int size = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(limit, MAX_LIMIT));
 		String groupOp = op == null || op.isBlank() ? null : op;
 
