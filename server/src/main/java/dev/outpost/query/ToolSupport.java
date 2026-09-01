@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import javax.sql.DataSource;
@@ -282,28 +281,6 @@ class ToolSupport {
 
 	private static boolean blank(@Nullable String value) {
 		return value == null || value.isBlank();
-	}
-
-	/**
-	 * The value of a whitelisted enumerated parameter, or {@code fallback} when the
-	 * caller named none.
-	 *
-	 * <p><b>An unrecognised value is rejected, never coerced to the fallback.</b> A
-	 * caller handed a different sort or status than it asked for reads the result as
-	 * the one it asked for, and nothing in the payload contradicts it — which is the
-	 * single failure on this surface that produces a confident wrong answer rather
-	 * than an error.
-	 */
-	static String choose(@Nullable String requested, Set<String> allowed, String fallback, String parameter) {
-		if (blank(requested)) {
-			return fallback;
-		}
-		String normalized = requested.trim().toLowerCase(Locale.ROOT);
-		if (!allowed.contains(normalized)) {
-			throw new IllegalArgumentException(
-					parameter + " must be one of " + String.join(", ", allowed) + "; got '" + requested + "'");
-		}
-		return normalized;
 	}
 
 	/**

@@ -204,4 +204,31 @@ class McpToolQueryReuseTest {
 				.contains(PerformanceOverviewTool.controllerSort(sort)));
 	}
 
+	/**
+	 * The enumerated parameters are declared twice over: once as the {@code enum}
+	 * whose constants the JSON Schema advertises, and once as the whitelist the
+	 * statement resolves a value through. The two are the same strings or the
+	 * schema is lying — it would advertise a ranking the statement cannot bind, or
+	 * hide one it can.
+	 *
+	 * <p>Asserted rather than derived because the enum is the wire contract and the
+	 * map is the SQL, and collapsing either into the other would make one of them
+	 * follow the other's changes silently. This test is what makes them follow
+	 * loudly.
+	 */
+	@Test
+	void everyEnumeratedParameterAdvertisesExactlyTheValuesItsWhitelistAccepts() {
+		assertThat(names(IssueSearchTool.Sort.values())).containsExactlyInAnyOrderElementsOf(IssueSearchTool.sortKeys());
+		assertThat(names(IssueSearchTool.Status.values()))
+			.containsExactlyInAnyOrderElementsOf(IssueSearchTool.STATUSES);
+		assertThat(names(TransactionSearchTool.Sort.values()))
+			.containsExactlyInAnyOrderElementsOf(TransactionSearchTool.sortKeys());
+		assertThat(names(PerformanceOverviewTool.Sort.values()))
+			.containsExactlyInAnyOrderElementsOf(PerformanceOverviewTool.sortKeys());
+	}
+
+	private static List<String> names(Enum<?>[] constants) {
+		return Stream.of(constants).map(Enum::name).toList();
+	}
+
 }

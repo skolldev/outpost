@@ -91,6 +91,17 @@ public class PerformanceOverviewTool {
 	private static final String DEFAULT_SORT = "total_ms";
 
 	/**
+	 * The rankings this Tool accepts, as the JSON Schema advertises them. Constants
+	 * are named in payload spelling so the schema's {@code enum} and the value a
+	 * caller sends are the same string, and {@link #SORTS} is keyed by that spelling.
+	 */
+	public enum Sort {
+
+		total_ms, p95_ms, p50_ms, transactions_received
+
+	}
+
+	/**
 	 * Transaction Groups returned when the caller names no limit. Far below the
 	 * hundred the Performance view renders: a screen scrolls and a context window
 	 * does not, and the statement costs the same either way — the limit here trims
@@ -129,7 +140,7 @@ public class PerformanceOverviewTool {
 			@McpToolParam(required = false,
 					description = "Case-insensitive substring of the Transaction Group name.") String query,
 			@McpToolParam(required = false, description = "total_ms (the default), p95_ms, p50_ms or "
-					+ "transactions_received. All rank worst first.") String sort,
+					+ "transactions_received. All rank worst first.") Sort sort,
 			@McpToolParam(required = false, description = "Start of the window: an ISO-8601 instant, or an ISO-8601 "
 					+ "duration such as PT1H or P2D meaning that far back from `to`. Defaults to "
 					+ ToolSupport.DEFAULT_WINDOW_DAYS + " days before `to`; anything earlier than 30 days before "
@@ -237,8 +248,8 @@ public class PerformanceOverviewTool {
 		return SORTS.get(sort);
 	}
 
-	private static String sort(String requested) {
-		return ToolSupport.choose(requested, SORTS.keySet(), DEFAULT_SORT, "sort");
+	private static String sort(@Nullable Sort requested) {
+		return requested == null ? DEFAULT_SORT : requested.name();
 	}
 
 	private static int limit(Integer requested) {

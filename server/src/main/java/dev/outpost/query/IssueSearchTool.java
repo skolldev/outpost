@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
@@ -79,6 +78,27 @@ public class IssueSearchTool {
 	static final List<String> STATUSES = List.of("unresolved", "resolved");
 
 	/**
+	 * The statuses this Tool accepts, as the JSON Schema advertises them.
+	 *
+	 * <p>Declaring the closed set as a type rather than prose is what makes the
+	 * refusal happen before dispatch: the schema carries an {@code enum}, so an
+	 * unrecognised value is rejected against the advertised contract and named back
+	 * to the caller with the values that would have worked. <b>It is never coerced
+	 * to the default</b> — a caller handed a different status than it asked for
+	 * reads the result as the one it asked for, and nothing in the payload
+	 * contradicts it, which is the single failure on this surface that produces a
+	 * confident wrong answer rather than an error.
+	 *
+	 * <p>Constants are named in payload spelling so the schema's {@code enum}, the
+	 * value a caller sends and {@link #STATUSES} are all the same string.
+	 */
+	public enum Status {
+
+		unresolved, resolved
+
+	}
+
+	/**
 	 * The orderings the list offers, under the names this surface reports the
 	 * underlying numbers by. {@code events_received} rather than the controller's
 	 * {@code count}, because a caller sorting by a column it can see in the payload
@@ -87,6 +107,17 @@ public class IssueSearchTool {
 	private static final Map<String, String> SORTS = Map.of("last_seen", "last_seen", "events_received", "count");
 
 	private static final String DEFAULT_SORT = "last_seen";
+
+	/**
+	 * The rankings this Tool accepts, as the JSON Schema advertises them. Named in
+	 * payload spelling, like {@link Status}, so the schema's {@code enum} and
+	 * {@link #SORTS}'s keys are the same strings.
+	 */
+	public enum Sort {
+
+		last_seen, events_received
+
+	}
 
 	private final JdbcTemplate jdbc;
 
@@ -113,7 +144,7 @@ public class IssueSearchTool {
 			@McpToolParam(required = false, description = "Environment Names from list_projects, e.g. production. "
 					+ "Matched exactly. Omit for every Environment.") List<String> environments,
 			@McpToolParam(required = false, description = "unresolved (the default) or resolved. There is no value "
-					+ "for both: call twice.") String status,
+					+ "for both: call twice.") Status status,
 			@McpToolParam(required = false, description = "Exact release version, e.g. shop@1.4.2 — list_projects "
 					+ "shows each Project's recent versions.") String release,
 			@McpToolParam(required = false,
@@ -124,7 +155,7 @@ public class IssueSearchTool {
 			@McpToolParam(required = false,
 					description = "End of the window as an ISO-8601 instant. Defaults to now.") String to,
 			@McpToolParam(required = false,
-					description = "last_seen (the default) or events_received.") String sort,
+					description = "last_seen (the default) or events_received.") Sort sort,
 			@McpToolParam(required = false, description = "Issues to return. Defaults to " + DEFAULT_LIMIT
 					+ ", at most " + MAX_LIMIT + ".") Integer limit,
 			@McpToolParam(required = false, description = "next_cursor from a previous call.") String cursor) {
@@ -201,18 +232,18 @@ public class IssueSearchTool {
 		return SORTS.get(sort);
 	}
 
-	private static String status(String requested, List<String> caveats) {
-		if (requested == null || requested.isBlank()) {
+	private static String status(@Nullable Status requested, List<String> caveats) {
+		if (requested == null) {
 			caveats.add("status was not supplied, so the default of '" + DEFAULT_STATUS
 					+ "' was applied — resolved Issues are not in this result. Call again with status=resolved "
 					+ "to see those.");
 			return DEFAULT_STATUS;
 		}
-		return ToolSupport.choose(requested, Set.copyOf(STATUSES), DEFAULT_STATUS, "status");
+		return requested.name();
 	}
 
-	private static String sort(String requested) {
-		return ToolSupport.choose(requested, SORTS.keySet(), DEFAULT_SORT, "sort");
+	private static String sort(@Nullable Sort requested) {
+		return requested == null ? DEFAULT_SORT : requested.name();
 	}
 
 }
