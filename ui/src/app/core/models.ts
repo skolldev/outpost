@@ -163,6 +163,9 @@ export interface LogFilters {
   environment?: string[];
   level?: string[];
   traceId?: string;
+  release?: string;
+  /** Attribute equality filters as `key=value`, at most one per key (ADR-0018). */
+  attr?: string[];
   query?: string;
   from?: string;
   to?: string;

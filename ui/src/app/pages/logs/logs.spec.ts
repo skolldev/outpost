@@ -325,4 +325,216 @@ describe('LogsPage', () => {
     await waitFor(() => expect(windows.at(-1)?.to).toBeNull());
     expect(screen.queryByTitle('Clear the selected time window')).not.toBeInTheDocument();
   });
+
+  describe('attribute filters', () => {
+    /** Records the attribute-shaped params of every log-list request. */
+    function captureFilterParams(): {
+      attr: string[];
+      traceId: string | null;
+      release: string | null;
+    }[] {
+      const seen: { attr: string[]; traceId: string | null; release: string | null }[] = [];
+      server.use(
+        http.get(`${BASE}/logs`, ({ request }) => {
+          const params = new URL(request.url).searchParams;
+          seen.push({
+            attr: params.getAll('attr'),
+            traceId: params.get('trace_id'),
+            release: params.get('release'),
+          });
+          return HttpResponse.json(page([LOG]));
+        }),
+      );
+      return seen;
+    }
+
+    async function addFilter(key: string, value: string): Promise<void> {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Add filter' }));
+      await user.type(screen.getByRole('combobox', { name: 'Filter key' }), key);
+      await user.type(screen.getByRole('combobox', { name: 'Filter value' }), `${value}{Enter}`);
+    }
+
+    it('reloads with an attribute filter built from a key and a value', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      await screen.findByText('checkout failed for user');
+
+      await addFilter('user.id', '42');
+
+      await waitFor(() => expect(seen.at(-1)?.attr).toEqual(['user.id=42']));
+      expect(screen.getByRole('button', { name: 'Remove user.id filter' })).toHaveTextContent(
+        'user.id = 42',
+      );
+    });
+
+    it('filters by an attribute clicked in an expanded row', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      const user = userEvent.setup();
+      await user.click(await screen.findByText('checkout failed for user'));
+
+      await user.click(await screen.findByTitle('Filter logs by cart.size'));
+
+      await waitFor(() => expect(seen.at(-1)?.attr).toEqual(['cart.size=3']));
+      expect(screen.getByRole('button', { name: 'Remove cart.size filter' })).toBeInTheDocument();
+    });
+
+    it('sends trace_id and release as their own params, not as attributes', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      const user = userEvent.setup();
+      await user.click(await screen.findByText('checkout failed for user'));
+
+      await user.click(await screen.findByTitle('Filter logs by release'));
+      await addFilter('trace_id', 'trace-abc');
+
+      await waitFor(() =>
+        expect(seen.at(-1)).toEqual({ attr: [], traceId: 'trace-abc', release: 'shop@1.0.0' }),
+      );
+      expect(screen.getByRole('button', { name: 'Remove release filter' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove trace_id filter' })).toBeInTheDocument();
+    });
+
+    it('replaces the value when a second filter names the same key', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      await screen.findByText('checkout failed for user');
+
+      await addFilter('user.id', '42');
+      await waitFor(() => expect(seen.at(-1)?.attr).toEqual(['user.id=42']));
+      await addFilter('user.id', '43');
+
+      await waitFor(() => expect(seen.at(-1)?.attr).toEqual(['user.id=43']));
+      expect(screen.getAllByRole('button', { name: 'Remove user.id filter' })).toHaveLength(1);
+    });
+
+    it('keeps other filters when one chip is removed', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      const user = userEvent.setup();
+      await screen.findByText('checkout failed for user');
+      await addFilter('user.id', '42');
+      await addFilter('server.address', 'api-1');
+      await waitFor(() => expect(seen.at(-1)?.attr).toHaveLength(2));
+
+      await user.click(screen.getByRole('button', { name: 'Remove user.id filter' }));
+
+      await waitFor(() => expect(seen.at(-1)?.attr).toEqual(['server.address=api-1']));
+      expect(
+        screen.queryByRole('button', { name: 'Remove user.id filter' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('carries the filters into the live tail', async () => {
+      captureFilterParams();
+      await renderLogs();
+      const user = userEvent.setup();
+      await screen.findByText('checkout failed for user');
+      await addFilter('user.id', '42');
+      await screen.findByRole('button', { name: 'Remove user.id filter' });
+
+      await user.click(screen.getByRole('switch', { name: 'Live tail' }));
+
+      await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+      const params = new URL(FakeEventSource.instances[0].url, 'http://localhost').searchParams;
+      expect(params.getAll('attr')).toEqual(['user.id=42']);
+    });
+
+    /**
+     * Suggestions are read off the records on screen: first-class fields first, the
+     * Project's own keys by how many records carry them, SDK bookkeeping last — and
+     * never an attribute that only restates a first-class field.
+     */
+    it('suggests keys and values from the loaded records', async () => {
+      server.use(
+        http.get(`${BASE}/logs`, () =>
+          HttpResponse.json(
+            page([
+              {
+                ...LOG,
+                id: 'a',
+                attributes: {
+                  'user.id': 'u-1',
+                  'server.address': 'api-1',
+                  'sentry.sdk.name': 'sentry.javascript.angular',
+                  'sentry.release': 'shop@1.0.0',
+                },
+              },
+              {
+                ...LOG,
+                id: 'b',
+                attributes: {
+                  'server.address': 'api-2',
+                  'sentry.environment': 'prod',
+                  ctx: { nested: true },
+                },
+              },
+            ]),
+          ),
+        ),
+      );
+      const { container } = await renderLogs();
+      const user = userEvent.setup();
+      await screen.findAllByText('checkout failed for user');
+      const options = (list: string) =>
+        [...container.querySelectorAll(`#${list} option`)].map(
+          (option) => (option as HTMLOptionElement).value,
+        );
+
+      await user.click(screen.getByRole('button', { name: 'Add filter' }));
+      expect(options('log-filter-keys')).toEqual([
+        'trace_id',
+        'release',
+        'server.address',
+        'user.id',
+        'sentry.sdk.name',
+      ]);
+
+      await user.type(screen.getByRole('combobox', { name: 'Filter key' }), 'server.address');
+      expect(options('log-filter-values')).toEqual(['api-1', 'api-2']);
+    });
+
+    it('says how values are matched when attribute filters leave nothing', async () => {
+      server.use(http.get(`${BASE}/logs`, () => HttpResponse.json(page([]))));
+      await renderLogs();
+      await screen.findByText(/No log records match the current filters/);
+
+      await addFilter('user.id', '42');
+
+      expect(
+        await screen.findByText('Attribute values are matched exactly and case-sensitively.'),
+      ).toBeInTheDocument();
+    });
+
+    /** Equality is exact, so a value the page offered as clickable must reach the API as it was. */
+    it('keeps the surrounding whitespace of a clicked value', async () => {
+      const attrs: string[][] = [];
+      server.use(
+        http.get(`${BASE}/logs`, ({ request }) => {
+          attrs.push(new URL(request.url).searchParams.getAll('attr'));
+          return HttpResponse.json(page([{ ...LOG, attributes: { note: ' padded ' } }]));
+        }),
+      );
+      await renderLogs();
+      const user = userEvent.setup();
+      await user.click(await screen.findByText('checkout failed for user'));
+
+      await user.click(await screen.findByTitle('Filter logs by note'));
+
+      await waitFor(() => expect(attrs.at(-1)).toEqual(['note= padded ']));
+    });
+
+    /** `attr=a=b=c` would read back as key `a`, so the chip would name a filter nobody built. */
+    it('refuses a key containing "="', async () => {
+      const seen = captureFilterParams();
+      await renderLogs();
+      await screen.findByText('checkout failed for user');
+
+      await addFilter('a=b', 'c');
+
+      expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+      expect(seen.every((request) => request.attr.length === 0)).toBe(true);
+    });
+  });
 });

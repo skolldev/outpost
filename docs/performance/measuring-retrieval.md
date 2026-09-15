@@ -211,7 +211,9 @@ since #185 — see trap 8; the rows below predate it except where noted.
 | …scoped to one environment | 1 006 | 3 of 10 | walks the global index and filters; see finding 4 |
 | Log deep page (p3) | 375 | 3 of 10 | O(page) holds |
 | Logs by `trace_id` | 89 | indexed | healthy |
-| Logs, 14-day bound + a 0.1 %-selective `attr=` | **3 992** | 5 of 10 | #132 — 11x the unfiltered page |
+| Logs, 14-day bound + a 0.1 %-selective `attr=` | 404 | 5 of 10 | reads `idx_log_attributes`, sorts the matches; was 3 992 (#132) |
+| …a common string `attr=` (50 % of rows) | 644 | 3 of 10 | walks the global index and filters — recorded, not guarded |
+| …a common number `attr=` (20 % of rows) | 1 555 | 3 of 10 | walks the global index and filters — recorded, not guarded |
 | Release list | 83 | none | healthy — counted from the rollup; was 240 299 (#130) |
 | Release list, a full 200-release page | 344 | none | O(page) holds — 2.6x the 1-release page |
 | Trace detail (four tables) | 943 | indexed | healthy |
@@ -235,6 +237,28 @@ The log rows move by a few percent between runs (page 1 at All time was seen at 
 and at 725 on the same dataset) because they now read few enough blocks that cache
 state is a material share of the total. That is why the guards assert plan shape,
 and why the one buffer ceiling they keep sits at 2 500.
+
+**The attribute-filter rows were measured on 2026-09-15, after ADR-0018 turned
+equality into containment** — three runs, identical to the block but for the first
+run's cold unfiltered page. The selective filter now costs about what the unfiltered
+page does rather than a quarter of it, which is why #132's original ratio guard was
+replaced rather than re-enabled: a bitmap lookup reads every match in its window and
+cannot stop at 100 rows the way the ordered walk beside it does. The two common-value
+rows are the shape ADR-0018 calls out as not made cheaper, and the planner handles them
+the right way — it keeps the ordered walk and pays `page / selectivity`. The same four
+shapes on the **log timeline** (14 days) are where an attribute filter costs most,
+because `V14`'s covering index cannot answer an attribute predicate and every match is
+read from the heap:
+
+| Timeline, 14-day bound | Blocks | Plan |
+| --- | --: | --- |
+| no attribute filter | 675 | index-only scan of `idx_log_timeline` |
+| a 0.1 %-selective `attr=` | 325 | bitmap scan of `idx_log_attributes` |
+| a common string `attr=` (50 %) | 3 158 | bitmap scan of `idx_log_attributes` |
+| a common number `attr=` (20 %) | 3 282 | bitmap scan of `idx_log_attributes` |
+
+Recorded, not guarded: ~4.7x the unfiltered chart on a guard-scale dataset, bounded by
+the window the way every timeline shape is.
 
 **The log timeline rows were re-measured on 2026-08-29 after #185 pinned
 `random_page_cost`** (trap 8). They roughly halved, and — the point of the change —
@@ -277,7 +301,7 @@ not for an unfiltered one.
 | Log page 50, All time | **11 ms** | 21 ms | **419** | 0 |
 | Log page 50, 14d, `project=` | **12 ms** | 24 ms | **358** | 0 |
 | Logs, `query=` (0.1 % selective) | 109 ms | 212 ms | 92 119 | 0 |
-| Logs, `attr=` (0.1 % selective) | 66 ms | 80 ms | 282 516 | 0 |
+| Logs, `attr=` (0.1 % selective)¹ | 66 ms | 80 ms | 282 516 | 0 |
 | Logs by `trace_id` | 11 ms | 17 ms | 175 | 0 |
 | Trace search, page 1 | 2 097 ms | 2 134 ms | 900 534 | **224 130** |
 | Trace search, page 20 | 2 098 ms | 2 122 ms | 900 382 | **224 130** |
@@ -286,6 +310,9 @@ not for an unfiltered one.
 | Releases list | **16 ms** | 26 ms | **429** | 0 |
 | Uptime overview | 30 ms | 37 ms | — | — |
 | Event detail + neighbours | 15 ms | 26 ms | 298 | 0 |
+
+¹ Measured before ADR-0018 made attribute equality a containment the GIN index
+serves, and not re-run since; the guard tier's rows are the current ones.
 
 Issue-list saturation ladder, same dataset:
 
@@ -502,6 +529,13 @@ Issue-list saturation ladder, same dataset:
    correct GIN lookup plus its heap fetches may not clear. The ratio was left
    unchanged rather than retuned to a number nobody has measured against a working
    implementation, with the reasoning recorded on the test.
+
+   **Fixed on 2026-09-15 by ADR-0018**, and the flag was right: once equality became
+   containment the healthy plan measured 404 blocks against the unfiltered page's
+   339 — a GIN lookup reads every match in its window and sorts them, so it cannot
+   undercut an ordered walk that stops at 100 rows. The ratio guard was replaced by
+   `selectiveAttributeEqualityIsServedByTheAttributesIndex`, which names the index and
+   sets a ceiling the unindexable 3 992-block plan fails. See the guard-tier table.
 
 6. **Neither issue-list sort order had an index — fixed in #126.** `(last_seen, id)`
    and `(event_count, id)` both fell back to a full sort of `issue` on every page,

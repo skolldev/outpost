@@ -4,10 +4,12 @@ import {
   computed,
   debounced,
   effect,
+  ElementRef,
   inject,
   linkedSignal,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
@@ -35,6 +37,16 @@ import { LogFilters, LogPage, LogRecord, LogTimeline } from '../../core/models';
 import { logParams } from '../../core/query-params';
 import { LevelBadge } from '../../shared/level-badge';
 import { LogTimelineChart, TimelineWindow } from '../../shared/log-timeline';
+import {
+  FieldFilter,
+  formatAttr,
+  isFilterable,
+  isFilterableKey,
+  isRecordField,
+  keySuggestions,
+  parseAttr,
+  valueSuggestions,
+} from './attribute-filters';
 
 const BASE = API_BASE;
 const LIVE_BUFFER = 500;
@@ -83,6 +95,17 @@ export class LogsPage {
   // Page-local filter state lives in the URL (shareable), like everywhere else.
   readonly selectedLevels = computed<string[]>(() => this.multi(this.queryParams()['level']));
   readonly traceId = computed<string>(() => this.queryParams()['trace_id'] ?? '');
+  readonly release = computed<string>(() => this.queryParams()['release'] ?? '');
+  readonly attributeFilters = computed<FieldFilter[]>(() =>
+    parseAttr(this.multi(this.queryParams()['attr'])),
+  );
+
+  /** Every active field filter as one chip each — columns and Attributes alike. */
+  readonly filterChips = computed<FieldFilter[]>(() => [
+    ...(this.traceId() ? [{ key: 'trace_id', value: this.traceId() }] : []),
+    ...(this.release() ? [{ key: 'release', value: this.release() }] : []),
+    ...this.attributeFilters(),
+  ]);
 
   /**
    * The brush selection, as `window=<fromISO>..<toISO>`. Page-local and deliberately
@@ -115,6 +138,16 @@ export class LogsPage {
   readonly expanded = signal<ReadonlySet<string>>(new Set());
   readonly copiedId = signal<string | null>(null);
 
+  // The "Add filter" builder. Suggestions come from the records already loaded, so
+  // they cost nothing and cannot offer a key no loaded record carries.
+  readonly builderOpen = signal(false);
+  readonly draftKey = signal('');
+  readonly draftValue = signal('');
+  readonly keySuggestions = computed(() => keySuggestions(this.logs()));
+  readonly valueSuggestions = computed(() => valueSuggestions(this.logs(), this.draftKey().trim()));
+  readonly canSubmitDraft = computed(() => isFilterableKey(this.draftKey().trim()));
+  private readonly keyInput = viewChild<ElementRef<HTMLInputElement>>('keyInput');
+
   /**
    * Everything that narrows the stream except time. The three consumers below differ
    * only in which time bounds they add, so they share this rather than each rebuilding
@@ -135,6 +168,8 @@ export class LogsPage {
       level: this.selectedLevels(),
       query: this.debouncedQuery.value() || undefined,
       traceId: this.traceId() || undefined,
+      release: this.release() || undefined,
+      attr: formatAttr(this.attributeFilters()),
     }),
     { equal: sameFilters },
   );
@@ -188,6 +223,8 @@ export class LogsPage {
   readonly nextCursor = computed(() => this.page.value()?.next_cursor ?? null);
 
   constructor() {
+    effect(() => this.keyInput()?.nativeElement.focus());
+
     effect(() => {
       const page = this.page.value();
       if (!page) return;
@@ -292,12 +329,46 @@ export class LogsPage {
     this.syncUrl({ level: levels.length ? levels : null });
   }
 
-  filterByTrace(traceId: string): void {
-    this.syncUrl({ trace_id: traceId });
+  openBuilder(): void {
+    this.builderOpen.set(true);
   }
 
-  clearTrace(): void {
-    this.syncUrl({ trace_id: null });
+  closeBuilder(): void {
+    this.builderOpen.set(false);
+    this.draftKey.set('');
+    this.draftValue.set('');
+  }
+
+  /** Typed text is trimmed here, not in `addFilter`: a clicked value is already exactly what a record holds. */
+  submitDraft(): void {
+    if (!this.canSubmitDraft()) return;
+    this.addFilter(this.draftKey().trim(), this.draftValue().trim());
+  }
+
+  /**
+   * Narrows the stream to records whose field equals `value` — exactly, since equality
+   * is textual (ADR-0018). One chip per key: a second value for a key replaces the first
+   * rather than ANDing into a filter that could match nothing.
+   */
+  addFilter(key: string, value: string): void {
+    if (!isFilterableKey(key)) return;
+    this.closeBuilder();
+    if (isRecordField(key)) {
+      this.syncUrl({ [key]: value || null });
+      return;
+    }
+    const others = this.attributeFilters().filter((filter) => filter.key !== key);
+    this.syncUrl({ attr: this.attrParam([...others, { key, value }]) });
+  }
+
+  removeFilter(key: string): void {
+    if (isRecordField(key)) {
+      this.syncUrl({ [key]: null });
+      return;
+    }
+    this.syncUrl({
+      attr: this.attrParam(this.attributeFilters().filter((filter) => filter.key !== key)),
+    });
   }
 
   toggleExpanded(id: string): void {
@@ -308,11 +379,12 @@ export class LogsPage {
     this.expanded.set(expanded);
   }
 
-  attrEntries(record: LogRecord): [string, string][] {
-    return Object.entries(record.attributes).map(([key, value]) => [
+  attrEntries(record: LogRecord): { key: string; text: string; filterable: boolean }[] {
+    return Object.entries(record.attributes).map(([key, value]) => ({
       key,
-      typeof value === 'object' ? JSON.stringify(value) : String(value),
-    ]);
+      text: typeof value === 'object' ? JSON.stringify(value) : String(value),
+      filterable: isFilterable(value) && isFilterableKey(key),
+    }));
   }
 
   copyJson(record: LogRecord): void {
@@ -320,6 +392,10 @@ export class LogsPage {
       this.copiedId.set(record.id);
       setTimeout(() => this.copiedId.set(null), 1500);
     });
+  }
+
+  private attrParam(filters: FieldFilter[]): string[] | null {
+    return filters.length ? formatAttr(filters) : null;
   }
 
   private multi(raw: unknown): string[] {

@@ -10,7 +10,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -78,8 +77,14 @@ class LogQueryPerformanceTest {
 	 */
 	private static final long MAX_PAGE_ONE_BLOCKS = 2_500;
 
-	/** A filter that removes 99.9 % of rows should remove most of the work; 4x is the modest floor. */
-	private static final int SELECTIVE_FILTER_SAVING = 4;
+	/**
+	 * A 0.1 %-selective attribute equality served by {@code idx_log_attributes}:
+	 * 404–410 blocks, measured 2026-09-15 over three runs. Not the standard 10x, which
+	 * at ~4 100 would pass the 3 992-block plan the unindexable {@code ->>} predicate
+	 * cost (#132) — the plan this guard exists to reject. 1 500 is ~3.7x the healthy
+	 * plan and well under that one.
+	 */
+	private static final long MAX_SELECTIVE_ATTRIBUTE_BLOCKS = 1_500;
 
 	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
 	private static final int DEEP_PAGE_TOLERANCE = 2;
@@ -264,13 +269,14 @@ class LogQueryPerformanceTest {
 	 * identically with the bound removed. That is the "ceiling that cannot fail"
 	 * mistake in a different costume, and it is what this guard had become.
 	 *
-	 * <p>A filter the index cannot serve restores the property: the plan has to
-	 * traverse its whole window to know there is nothing further, so the window is
-	 * what decides how many partitions it reads — five of ten here, and all ten if
-	 * the bound stops pruning. It uses the attribute-equality filter for that, which
-	 * is unindexable for #132's separate reasons; the two are orthogonal, and if
-	 * #132 is ever fixed this needs a different unindexable predicate rather than a
-	 * quiet pass.
+	 * <p>A filter the ordered walk cannot satisfy within a page restores the property:
+	 * the plan has to traverse its whole window to know there is nothing further, so
+	 * the window is what decides how many partitions it reads — five of ten here, and
+	 * all ten if the bound stops pruning. It uses a selective attribute equality for
+	 * that. Since #132 that predicate is answered by {@code idx_log_attributes} rather
+	 * than applied after the read, and it still qualifies: a bitmap lookup cannot stop
+	 * early either, so it reads the index of every partition in its window. A
+	 * predicate that stops qualifying is one the ordered walk fills a page with.
 	 */
 	@Test
 	void timeBoundedQueryPrunesToItsWindow() {
@@ -285,35 +291,40 @@ class LogQueryPerformanceTest {
 	// ---------------------------------------------------------------- filters
 
 	/**
-	 * {@code attributes->>? = ?} cannot use {@code idx_log_attributes}: the key is a
-	 * bind parameter, and {@code jsonb_ops} indexes containment rather than text
-	 * extraction. Adding a filter that matches one row in a thousand therefore costs
-	 * exactly as much as not adding it.
+	 * An attribute equality filter is answered by {@code idx_log_attributes}: its text
+	 * is expanded into one {@code @>} containment per JSON value it could denote
+	 * (ADR-0018), and each is a lookup in the generic {@code jsonb_ops} GIN index. The
+	 * second shape adds a second key, so a fixture-specific expression index on
+	 * {@code order.id} could not pass in its place.
 	 *
-	 * <p><b>#128 made the defect far more visible and this spec less usable, and
-	 * whoever picks up #132 needs to know both.</b> The comparator is the same query
-	 * without the filter, which used to cost 4 570 blocks because it scanned and
-	 * sorted; it now costs ~342 because it walks {@code idx_log_ts_id}. The filtered
-	 * query did <em>not</em> follow it down — measured at 3 992 blocks, still a
-	 * sequential scan and sort, because the planner will not walk the ordered index
-	 * for a predicate it believes is this selective. So the filter now costs 11x the
-	 * unfiltered page rather than exactly as much as it, which is a sharper
-	 * diagnostic than the equality this guard was written against.
+	 * <p><b>Why this is not the ratio #132 first asked for.</b> That was "a 0.1 %
+	 * filter costs a quarter of the unfiltered page", written when the unfiltered page
+	 * scanned and sorted. {@code V11} made that page an ordered walk that stops at 100
+	 * rows (~340 blocks), and a bitmap lookup cannot stop early — it reads every match
+	 * in the window and sorts them. Measured, the healthy plan costs about what the
+	 * unfiltered page does, so the ratio would reject it. What the fix changed is which
+	 * index is read and how far the cost fell from the 3 992 blocks the unindexable
+	 * predicate cost, and that is what is asserted.
 	 *
-	 * <p>What it does not survive is the assertion. A
-	 * {@value #SELECTIVE_FILTER_SAVING}x saving against 342 is under 90 blocks, and a
-	 * correct GIN lookup plus its heap fetches may well not beat that — so this ratio
-	 * can now reject a healthy plan, or reward a fixture-specific combined index. It
-	 * is left {@code @Disabled} and unchanged rather than retuned to a number nobody
-	 * has measured against a working implementation.
+	 * <p>A <em>common</em> value is deliberately not guarded: the planner walks
+	 * {@code idx_log_ts_id} for it, as it should, and its cost is recorded in
+	 * {@code docs/performance/measuring-retrieval.md} rather than bounded here.
 	 */
 	@Test
-	@Disabled("#132 — attributes->>? = ? cannot use the attributes GIN index; ratio needs re-deriving, see javadoc")
-	void attributeFilterMakesTheQueryCheaper() {
+	void selectiveAttributeEqualityIsServedByTheAttributesIndex() {
 		Instant since = windowStart();
-		assertSelectiveFilterPaysForItself(since,
-				boundedLogs(since, null, List.of(seeded.attributeKey() + "=" + seeded.attributeValue())),
-				"the attribute-equality filter");
+		String selective = seeded.attributeKey() + "=" + seeded.attributeValue();
+		for (List<String> attr : List.of(List.of(selective),
+				List.of(selective, "logger.name=dev.outpost.OrderService"))) {
+			String what = "a 14-day log query filtered by " + attr;
+			PlanFacts facts = boundedLogs(since, null, attr).explain(jdbc);
+
+			QueryGuard.assertReadsOnlyIndex(jdbc, facts, "log_record", List.of("idx_log_attributes"), what);
+			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
+			QueryGuard.assertUnderCeiling(facts, MAX_SELECTIVE_ATTRIBUTE_BLOCKS, what);
+			QueryGuard.assertNoTempFiles(facts, what);
+		}
+		QueryGuard.assertCeilingCanFail(jdbc, MAX_SELECTIVE_ATTRIBUTE_BLOCKS, "log_record");
 	}
 
 	/** Presence filtering goes through {@code jsonb_exists}, which the GIN index does serve. */
@@ -330,21 +341,6 @@ class LogQueryPerformanceTest {
 	}
 
 	// ----------------------------------------------------------------- helpers
-
-	/**
-	 * Both queries are time-bounded so partition pruning is held constant and the
-	 * only difference between them is the predicate under test.
-	 */
-	private void assertSelectiveFilterPaysForItself(Instant since, QueryPlans.Built filtered, String what) {
-		long unfiltered = boundedLogs(since, null, null).explain(jdbc).logicalIo();
-		PlanFacts facts = filtered.explain(jdbc);
-
-		assertThat(facts.logicalIo())
-			.as("%s matches ~0.1%% of rows but costs %d blocks against the %d an unfiltered page costs — "
-					+ "the predicate is being applied after the read, not by an index%n%s", what, facts.logicalIo(),
-					unfiltered, facts.plan())
-			.isLessThan(unfiltered / SELECTIVE_FILTER_SAVING);
-	}
 
 	private static Instant windowStart() {
 		return Instant.now().minus(WINDOW_DAYS, ChronoUnit.DAYS);
