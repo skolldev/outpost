@@ -22,7 +22,7 @@
   @if (loading()) {
     <hlm-spinner class="size-4 text-muted-foreground" aria-label="Loading" />
   }
-  @if (traceId()) {
+  @for (chip of filterChips(); track chip.key) {
     <button
       hlmBadge
       type="button"
@@ -31,10 +31,61 @@
       [style.background-color]="'var(--level-info-bg)'"
       [style.color]="'var(--level-info)'"
       [style.border-color]="'color-mix(in oklch, var(--level-info) 40%, transparent)'"
-      (click)="clearTrace()"
-      title="Remove trace filter"
+      (click)="removeFilter(chip.key)"
+      [attr.aria-label]="'Remove ' + chip.key + ' filter'"
+      [title]="'Remove ' + chip.key + ' filter'"
     >
-      trace:{{ traceId() }} <span aria-hidden="true">✕</span>
+      {{ chip.key }} = {{ chip.value }} <span aria-hidden="true">✕</span>
+    </button>
+  }
+  @if (builderOpen()) {
+    <form
+      class="flex items-center gap-2"
+      (ngSubmit)="submitDraft()"
+      (keydown.escape)="closeBuilder()"
+    >
+      <input
+        #keyInput
+        hlmInput
+        name="filterKey"
+        class="h-8 w-44 font-mono"
+        list="log-filter-keys"
+        autocomplete="off"
+        placeholder="key"
+        aria-label="Filter key"
+        [ngModel]="draftKey()"
+        (ngModelChange)="draftKey.set($event)"
+      />
+      <span class="text-sm text-muted-foreground" aria-hidden="true">=</span>
+      <input
+        hlmInput
+        name="filterValue"
+        class="h-8 w-44 font-mono"
+        list="log-filter-values"
+        autocomplete="off"
+        placeholder="value"
+        aria-label="Filter value"
+        [ngModel]="draftValue()"
+        (ngModelChange)="draftValue.set($event)"
+      />
+      <button hlmBtn size="sm" type="submit" [disabled]="!canSubmitDraft()">Add</button>
+      <button hlmBtn size="sm" variant="ghost" type="button" (click)="closeBuilder()">
+        Cancel
+      </button>
+      <datalist id="log-filter-keys">
+        @for (key of keySuggestions(); track key) {
+          <option [value]="key"></option>
+        }
+      </datalist>
+      <datalist id="log-filter-values">
+        @for (value of valueSuggestions(); track value) {
+          <option [value]="value"></option>
+        }
+      </datalist>
+    </form>
+  } @else {
+    <button hlmBtn size="sm" variant="ghost" type="button" (click)="openBuilder()">
+      <span aria-hidden="true">+</span> Add filter
     </button>
   }
   <span class="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
@@ -75,6 +126,9 @@
   <div hlmEmpty class="rounded-lg border border-border">
     <div hlmEmptyHeader>
       <h3 hlmEmptyTitle>No log records match the current filters.</h3>
+      @if (attributeFilters().length) {
+        <p hlmEmptyDescription>Attribute values are matched exactly and case-sensitively.</p>
+      }
       <p hlmEmptyDescription>
         Enable logs in the SDK (<code class="rounded bg-muted px-1">enableLogs: true</code> /
         <code class="rounded bg-muted px-1">logs.enabled: true</code>) — snippets under Settings →
@@ -127,7 +181,8 @@
                     <span class="text-muted-foreground">trace_id</span>
                     <span>
                       <button
-                        (click)="filterByTrace(record.trace_id); $event.stopPropagation()"
+                        type="button"
+                        (click)="addFilter('trace_id', record.trace_id); $event.stopPropagation()"
                         class="underline decoration-dotted underline-offset-2"
                         [style.color]="'var(--level-info)'"
                         title="Filter logs by this trace"
@@ -142,15 +197,37 @@
                   }
                   @if (record.release) {
                     <span class="text-muted-foreground">release</span>
-                    <span class="text-foreground">{{ record.release }}</span>
+                    <span>
+                      <button
+                        type="button"
+                        class="text-foreground underline decoration-dotted underline-offset-2"
+                        title="Filter logs by release"
+                        (click)="addFilter('release', record.release); $event.stopPropagation()"
+                      >
+                        {{ record.release }}
+                      </button>
+                    </span>
                   }
                   @if (record.severity_number !== null) {
                     <span class="text-muted-foreground">severity</span>
                     <span class="text-foreground">{{ record.severity_number }}</span>
                   }
-                  @for (attr of attrEntries(record); track attr[0]) {
-                    <span class="text-muted-foreground">{{ attr[0] }}</span>
-                    <span class="break-all text-foreground">{{ attr[1] }}</span>
+                  @for (attr of attrEntries(record); track attr.key) {
+                    <span class="text-muted-foreground">{{ attr.key }}</span>
+                    @if (attr.filterable) {
+                      <span>
+                        <button
+                          type="button"
+                          class="break-all text-left text-foreground underline decoration-dotted underline-offset-2"
+                          [title]="'Filter logs by ' + attr.key"
+                          (click)="addFilter(attr.key, attr.text); $event.stopPropagation()"
+                        >
+                          {{ attr.text }}
+                        </button>
+                      </span>
+                    } @else {
+                      <span class="break-all text-foreground">{{ attr.text }}</span>
+                    }
                   }
                 </div>
                 <button

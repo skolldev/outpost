@@ -163,6 +163,23 @@ final class QueryGuard {
 	 * query — both cost zero and it chooses arbitrarily between them.
 	 */
 	static void assertWalksIndex(JdbcClient jdbc, PlanFacts facts, String table, List<String> indexes, String what) {
+		assertReadsOnlyIndex(jdbc, facts, table, indexes, what);
+		assertThat(facts.ran("Sort")).as("%s sorts rather than walking %s in order%n%s", what, indexes, facts.plan())
+			.isFalse();
+	}
+
+	/**
+	 * Every index this plan read on a populated partition of {@code table} belongs to
+	 * one of {@code indexes} — {@link #assertWalksIndex} without its ban on a
+	 * {@code Sort}.
+	 *
+	 * <p>For a selective lookup, which is <em>expected</em> to fetch its few matches
+	 * through a bitmap and sort them: an ordered walk would read its whole window to
+	 * find them, so for that shape the sort is the healthy plan and the index it read
+	 * is the thing to name.
+	 */
+	static void assertReadsOnlyIndex(JdbcClient jdbc, PlanFacts facts, String table, List<String> indexes,
+			String what) {
 		Set<String> family = new LinkedHashSet<>();
 		for (String index : indexes) {
 			assertThat(exists(jdbc, index))
@@ -177,10 +194,8 @@ final class QueryGuard {
 				used.add(name);
 			}
 		});
-		assertThat(used).as("indexes of populated %s partitions read by %s — it must walk %s and nothing else%n%s",
+		assertThat(used).as("indexes of populated %s partitions read by %s — it must read %s and nothing else%n%s",
 				table, what, indexes, facts.plan()).isNotEmpty().isSubsetOf(family);
-		assertThat(facts.ran("Sort")).as("%s sorts rather than walking %s in order%n%s", what, indexes, facts.plan())
-			.isFalse();
 	}
 
 	/**

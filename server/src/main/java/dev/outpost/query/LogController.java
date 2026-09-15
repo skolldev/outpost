@@ -1,6 +1,5 @@
 package dev.outpost.query;
 
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import dev.outpost.db.PartitionManager;
 import dev.outpost.pipeline.LogTail;
@@ -147,16 +146,8 @@ public class LogController {
 			sql.append(" AND body ILIKE ?");
 			params.add("%" + query + "%");
 		}
-		for (AttrFilter filter : parseAttrFilters(attr)) {
-			if (filter.value() == null) {
-				sql.append(" AND jsonb_exists(attributes, ?)");
-				params.add(filter.key());
-			}
-			else {
-				sql.append(" AND attributes->>? = ?");
-				params.add(filter.key());
-				params.add(filter.value());
-			}
+		for (LogAttributeFilter filter : LogAttributeFilter.parse(attr)) {
+			filter.appendSql(sql, params);
 		}
 		if (from != null) {
 			sql.append(" AND \"timestamp\" >= ?");
@@ -274,7 +265,7 @@ public class LogController {
 			@RequestParam(required = false) String query,
 			@RequestParam(required = false) List<String> attr) {
 
-		List<AttrFilter> attrFilters = parseAttrFilters(attr);
+		List<LogAttributeFilter> attrFilters = LogAttributeFilter.parse(attr);
 		String bodyNeedle = query != null && !query.isBlank() ? query.toLowerCase(Locale.ROOT) : null;
 		Predicate<ProcessedLog> filter = record -> (project == null || project.isEmpty()
 				|| project.contains(record.projectId()))
@@ -283,28 +274,7 @@ public class LogController {
 				&& (traceId == null || traceId.isBlank() || traceId.equals(record.traceId()))
 				&& (release == null || release.isBlank() || release.equals(record.release()))
 				&& (bodyNeedle == null || record.body().toLowerCase(Locale.ROOT).contains(bodyNeedle))
-				&& attrFilters.stream().allMatch(f -> matchesAttr(record, f));
+				&& attrFilters.stream().allMatch(f -> f.matches(record));
 		return tail.subscribe(filter);
-	}
-
-	private static boolean matchesAttr(ProcessedLog record, AttrFilter filter) {
-		JsonNode value = record.attributes().get(filter.key());
-		if (filter.value() == null) {
-			return value != null && !value.isNull();
-		}
-		return value != null && value.asText().equals(filter.value());
-	}
-
-	private static List<AttrFilter> parseAttrFilters(List<String> attr) {
-		if (attr == null) {
-			return List.of();
-		}
-		return attr.stream().filter(a -> a != null && !a.isBlank()).map(a -> {
-			int eq = a.indexOf('=');
-			return eq < 0 ? new AttrFilter(a, null) : new AttrFilter(a.substring(0, eq), a.substring(eq + 1));
-		}).toList();
-	}
-
-	private record AttrFilter(String key, String value) {
 	}
 }

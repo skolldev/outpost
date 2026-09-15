@@ -35,6 +35,8 @@ export function logParams(filters: LogFilters & { cursor?: string }): QueryParam
   if (filters.environment?.length) params['environment'] = filters.environment;
   if (filters.level?.length) params['level'] = filters.level;
   if (filters.traceId) params['trace_id'] = filters.traceId;
+  if (filters.release) params['release'] = filters.release;
+  if (filters.attr?.length) params['attr'] = filters.attr;
   if (filters.query) params['query'] = filters.query;
   if (filters.from) params['from'] = filters.from;
   if (filters.to) params['to'] = filters.to;
