@@ -13,47 +13,23 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * The MCP Surface's {@code find_issues} Tool: the Issue list, filtered the way
- * the Issues page filters it and paged by the same keyset.
- *
- * <p>Every statement here is {@link IssueController#buildIssueQuery} — the
- * reuse ADR-0016 is about. It buys the SQL, the {@code (status, sort, id)}
- * indexes #126 added, and {@code IssueQueryPerformanceTest}'s guards over them,
- * but only for requests shaped the way the UI shapes them. That is the whole
- * reason {@link #DEFAULT_STATUS} and {@link ToolSupport#DEFAULT_WINDOW_DAYS} are
- * applied server-side rather than left to the caller: a user never picks either,
- * so no index was ever tuned for their absence, and an agent omits both
- * routinely.
- *
- * <p><b>{@code status} has no "either" value, deliberately.</b> Dropping the
- * predicate is exactly the shape that made the Resolved tab cost fifteen times a
- * full table scan before #126, and the honest way to ask for both is two calls
- * whose plans are each the one that was measured.
- *
- * <p>ADR-0014 shows up in one field name: {@code events_received}, never
- * {@code event_count}. The number counts Events this installation received since
- * the Issue was opened, not occurrences in the world and not what is still in
- * retention.
+ * The MCP Surface's {@code find_issues} Tool: the Issue list, filtered the way the Issues page
+ * filters it and paged by the same keyset ({@link IssueController#buildIssueQuery}, ADR-0016).
+ * {@code status} has no "either" value on purpose — dropping the predicate defeats the index
+ * this Tool relies on — so querying both statuses means two calls.
  */
 @Component
 public class IssueSearchTool {
 
-	// next_cursor is absent rather than null when the page is the last one: the MCP
-	// transport validates results against the advertised output schema, and a null
-	// where a string is declared fails it.
+	// next_cursor must be absent, not null, on the last page — schema validation rejects null where a string is declared.
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record IssueSearchResult(ToolSupport.Window window, String applied_status, String applied_sort,
 			List<IssuePayload> issues, @Nullable String next_cursor, List<String> caveats) {
 	}
 
 	/**
-	 * One Issue.
-	 *
-	 * <p>No {@code status}: {@code status} is an exact-match filter with no value
-	 * for "either", so every Issue here has the status the result already echoes as
-	 * {@code applied_status}, and repeating it per row states a constant as though
-	 * it varied. The {@code id} does stay — unlike a Log Record's, it is what
-	 * {@code get_issue_context} is called with.
+	 * One Issue. No {@code status} — every row already has {@code applied_status} — but {@code id}
+	 * stays, since {@code get_issue_context} is called with it.
 	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record IssuePayload(long id, @Nullable String project_slug, String title, @Nullable String culprit,
@@ -64,11 +40,8 @@ public class IssueSearchTool {
 	static final String DEFAULT_STATUS = "unresolved";
 
 	/**
-	 * Issues returned when the caller names no limit. Under the page size the
-	 * statement fetches: the leaderboard shape an agent asks for is the worst
-	 * handful, and a caller that wants the rest has {@code next_cursor}. The
-	 * statement reads the same index either way, so the limit trims the payload,
-	 * not the work.
+	 * Issues returned when the caller names no limit — well below the page size the statement
+	 * fetches, since the limit trims the payload, not the query.
 	 */
 	static final int DEFAULT_LIMIT = 25;
 
@@ -78,19 +51,9 @@ public class IssueSearchTool {
 	static final List<String> STATUSES = List.of("unresolved", "resolved");
 
 	/**
-	 * The statuses this Tool accepts, as the JSON Schema advertises them.
-	 *
-	 * <p>Declaring the closed set as a type rather than prose is what makes the
-	 * refusal happen before dispatch: the schema carries an {@code enum}, so an
-	 * unrecognised value is rejected against the advertised contract and named back
-	 * to the caller with the values that would have worked. <b>It is never coerced
-	 * to the default</b> — a caller handed a different status than it asked for
-	 * reads the result as the one it asked for, and nothing in the payload
-	 * contradicts it, which is the single failure on this surface that produces a
-	 * confident wrong answer rather than an error.
-	 *
-	 * <p>Constants are named in payload spelling so the schema's {@code enum}, the
-	 * value a caller sends and {@link #STATUSES} are all the same string.
+	 * The statuses this Tool accepts, named in payload spelling so the schema's {@code enum} and
+	 * {@link #STATUSES} agree. Never coerced to the default on an unrecognised value — that would
+	 * silently answer a different status than the one asked for.
 	 */
 	public enum Status {
 
@@ -99,19 +62,16 @@ public class IssueSearchTool {
 	}
 
 	/**
-	 * The orderings the list offers, under the names this surface reports the
-	 * underlying numbers by. {@code events_received} rather than the controller's
-	 * {@code count}, because a caller sorting by a column it can see in the payload
-	 * should not have to learn a second name for it (ADR-0014).
+	 * Sort keys, named in payload spelling ({@code events_received}, not the controller's {@code
+	 * count} — ADR-0014).
 	 */
 	private static final Map<String, String> SORTS = Map.of("last_seen", "last_seen", "events_received", "count");
 
 	private static final String DEFAULT_SORT = "last_seen";
 
 	/**
-	 * The rankings this Tool accepts, as the JSON Schema advertises them. Named in
-	 * payload spelling, like {@link Status}, so the schema's {@code enum} and
-	 * {@link #SORTS}'s keys are the same strings.
+	 * The rankings this Tool accepts, named in payload spelling so the schema's {@code enum}
+	 * matches {@link #SORTS}'s keys.
 	 */
 	public enum Sort {
 
@@ -163,8 +123,7 @@ public class IssueSearchTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
-		// Refused rather than bound, like an unknown slug: an exact-match filter for a
-		// value nothing carries returns an empty result that reads as "nothing matched".
+		// Refused rather than silently bound — an unknown value would otherwise return an empty result read as "nothing matched".
 		support.requireKnownEnvironments(environments);
 		support.requireKnownRelease(release);
 		ToolSupport.Window window = ToolSupport.window(from, to, caveats);
@@ -175,8 +134,7 @@ public class IssueSearchTool {
 		SearchQuery search = buildIssueSearchQuery(projectIds, environments, appliedStatus, release,
 				window.fromInstant(), window.toInstant(), query, SORTS.get(appliedSort), cursor);
 		List<Map<String, Object>> rows = jdbc.query(search.sql(), (rs, row) -> {
-			// The keys the keyset reads to build the next cursor, so they are the
-			// controller's names rather than this payload's — see KeysetPage.KeyColumn.
+			// Keys must match KeysetPage.KeyColumn's names, not the payload's, since the keyset reads them to build next_cursor.
 			Map<String, Object> mapped = new LinkedHashMap<>();
 			mapped.put("id", rs.getLong("id"));
 			mapped.put("project_id", rs.getLong("project_id"));
@@ -202,8 +160,6 @@ public class IssueSearchTool {
 					row.get("first_seen").toString(), row.get("last_seen").toString(), (Long) row.get("event_count")))
 			.toList();
 		if (issues.isEmpty()) {
-			// An empty list has two readings — "nothing is broken" and "you looked in the
-			// wrong window" — and only one of them is a conclusion worth drawing.
 			caveats.add("No Issue matched. An Issue is in the window when it was last seen after " + window.from()
 					+ " and first seen before " + window.to() + ", so an older Issue that has gone quiet is "
 					+ "outside it rather than absent.");
@@ -212,10 +168,8 @@ public class IssueSearchTool {
 	}
 
 	/**
-	 * The Issue list as this Tool binds it: the controller's own factory, so the
-	 * plan and its guards are the list's own. Named here rather than called inline so
-	 * {@code QueryPlans} can {@code EXPLAIN} the Tool's shape and
-	 * {@code McpToolQueryReuseTest} can assert it is not a copy.
+	 * The Issue list, via the controller's own factory — kept as a named wrapper so {@code
+	 * McpToolQueryReuseTest} can assert this isn't a copy of the SQL.
 	 */
 	static SearchQuery buildIssueSearchQuery(List<Long> project, List<String> environment, String status,
 			String release, Instant from, Instant to, String query, String sort, String cursor) {

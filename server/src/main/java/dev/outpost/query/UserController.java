@@ -66,15 +66,13 @@ public class UserController {
 		if (user == null) {
 			return ResponseEntity.notFound().build();
 		}
-		// Both details are shown to the Admin verbatim by the users settings page,
-		// so they are written as sentences.
+		// Shown to the Admin verbatim by the settings page, so written as sentences.
 		if (user.email().equalsIgnoreCase(authentication.getName())) {
 			return ResponseEntity.status(HttpStatus.CONFLICT)
 				.body(Map.of("detail", "You cannot delete your own account."));
 		}
 		if (!users.delete(id)) {
-			// delete() also returns false for a row that vanished between the two
-			// statements, which is a 404 rather than a guard refusal.
+			// delete() also returns false when the row vanished between the two statements — that's a 404, not the last-admin refusal.
 			if (users.find(id).isEmpty()) {
 				return ResponseEntity.notFound().build();
 			}

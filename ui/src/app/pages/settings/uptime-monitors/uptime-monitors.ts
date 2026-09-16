@@ -31,14 +31,11 @@ export class UptimeMonitorsSettings {
   );
   readonly monitors = this.monitorsResource.value;
 
-  // The detailed probe result stays inline (per-row data, not a transient
-  // confirmation); action outcomes go through the Feedback seam.
+  // testResult stays inline (per-row data); other action outcomes go through the Feedback seam.
   readonly testResult = signal<UptimeTestResult | 'pending' | null>(null);
   readonly editingMonitorId = signal<number | null>(null);
 
-  // Typed form model. The select/text controls yield strings (project id and
-  // interval are coerced to numbers at the DTO boundary); the number input binds
-  // timeout as a number so min/max validators apply.
+  // projectId/interval are strings, coerced to numbers at the DTO boundary; timeout binds as a number so min/max validators apply.
   private readonly model = signal({
     projectId: '',
     environment: '',
@@ -54,8 +51,7 @@ export class UptimeMonitorsSettings {
       required(path.environment, { message: 'Environment is required.' });
       required(path.url, { message: 'URL is required.' });
       pattern(path.url, /^https?:\/\/\S+$/i, { message: 'Enter a valid http(s) URL.' });
-      // interval defaults to '60' and the select has no empty option, so it
-      // never needs a required rule.
+      // interval defaults to '60' and the select has no empty option, so it never needs `required`.
       required(path.timeout, { message: 'Timeout is required.' });
       min(path.timeout, 1, { message: 'Timeout must be between 1 and 30 seconds.' });
       max(path.timeout, 30, { message: 'Timeout must be between 1 and 30 seconds.' });
@@ -89,9 +85,7 @@ export class UptimeMonitorsSettings {
     },
   );
 
-  // Environments for the selected project. Re-fetches when projectId changes;
-  // empty while loading so switching projects never leaves the prior project's
-  // options selectable (httpResource retains its last value across a re-fetch).
+  // Empty while loading, since httpResource keeps its last value across a re-fetch — otherwise the prior project's options stay selectable.
   private readonly envsResource = httpResource<string[]>(
     () => {
       const id = Number(this.model().projectId);
@@ -103,8 +97,7 @@ export class UptimeMonitorsSettings {
     this.envsResource.isLoading() ? [] : this.envsResource.value(),
   );
 
-  // Project picker options; string values match the model field so the select
-  // binds and the trigger label resolves without per-render conversions.
+  // Values are strings to match the model field, so the select binds without per-render conversions.
   readonly projectOptions = computed(() =>
     this.projectsStore.projects().map((project) => ({
       value: String(project.id),
@@ -114,9 +107,7 @@ export class UptimeMonitorsSettings {
   readonly projectLabel = (value: string): string =>
     this.projectOptions().find((project) => project.value === value)?.name ?? value;
 
-  // Interval choices; values are the string form of the seconds stored on the
-  // DTO, labels precomputed from intervalLabel so the template loop and the
-  // select trigger both read them off the option (no per-render conversion).
+  // Values are the string form of the DTO's seconds; labels precomputed so the loop and trigger read them off the option.
   readonly intervals = [30, 60, 300, 900, 3600].map((seconds) => ({
     value: String(seconds),
     label: this.intervalLabel(seconds),
@@ -124,13 +115,11 @@ export class UptimeMonitorsSettings {
   readonly intervalLabelFor = (value: string): string =>
     this.intervals.find((option) => option.value === value)?.label ?? value;
 
-  // Environment select shows the raw environment string as its own label.
   readonly envLabel = (value: string): string => value;
 
   editMonitor(monitor: UptimeMonitor): void {
     this.editingMonitorId.set(monitor.id);
-    // Setting the project id triggers the environments resource; the env value
-    // applies once the list arrives.
+    // Setting projectId triggers the environments resource; environment applies once that list arrives.
     this.monitorForm().reset({
       projectId: String(monitor.project_id),
       environment: monitor.environment,

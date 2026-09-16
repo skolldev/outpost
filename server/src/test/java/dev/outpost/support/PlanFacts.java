@@ -10,45 +10,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * The machine-independent facts of one {@code EXPLAIN (ANALYZE, BUFFERS, FORMAT
- * JSON)}: logical I/O, which relations were actually read and how, and whether
- * anything spilled to disk.
- *
- * <p>Latency alone cannot tell four different problems apart — an O(rows) plan, a
- * partition-pruning failure, a sort spilling to a temp file, and plain cold I/O
- * all read as "slow". These four fields do, and none of them move when the host
- * is loaded, so they can be asserted in CI without flaking.
- *
- * <p>Two parsing decisions worth knowing:
- *
- * <ul>
- * <li><b>Buffers are summed across every node, plus planning.</b> Postgres reports
- * buffer counts cumulatively up the tree, so this total double-counts a child's
- * blocks in each ancestor. That is deliberate: it is exactly what the text-format
- * {@code shared hit=} regex this class replaced produced, so {@code
- * TraceSearchPerformanceTest}'s ceiling — calibrated against a real 350x
- * regression — keeps its meaning. The number is a comparable index of logical
- * I/O, not a block count.
- * <li><b>Only executed nodes count as scanned.</b> A partition eliminated by
- * runtime pruning still appears in the plan with {@code "Actual Loops": 0}.
- * Counting it would make the pruning assertion vacuous, and it read nothing.
- * </ul>
- *
- * <p>{@link #indexesUsed} names the indexes rather than only recording that some
- * index was read, because "an index was used" and "<em>this</em> index was used"
- * are different assertions and only the second one can fail when a redundant
- * index is added. It covers ordered, index-only, and bitmap index scans alike —
- * pair it with {@link #ran} when the distinction matters.
- *
- * <p>{@link #correlatedSubplans} is the one fact here that is about a query's
- * <em>shape</em> rather than its cost, and it exists because cost cannot express
- * what it says. A subquery evaluated once per output row is the defect behind both
- * #130 and the trace-search regression before it, and the right index makes a
- * page's worth of those probes cheap enough to sit under any ceiling a guard
- * fixture can honestly set — so a guard that only counts blocks certifies the
- * shape it was written to reject. Postgres marks such a node
- * {@code "Subplan Name": "SubPlan N"}; a {@code CTE} scan carries a
- * {@code "CTE …"} name instead and is not counted, because a CTE is evaluated
- * once no matter how many rows read it.
+ * JSON)}: logical I/O, which relations were read and how, and whether anything
+ * spilled to disk. Buffer counts are summed across the whole plan tree, so the
+ * total is a comparable index of I/O rather than a literal block count, and a
+ * partition pruned at runtime ({@code "Actual Loops": 0}) does not count as scanned.
  */
 public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, long tempWrittenBlocks,
 		Set<String> relationsScanned, Set<String> sequentiallyScanned, Set<String> indexesUsed, Set<String> nodeTypes,
@@ -79,11 +44,7 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 		return accumulator.toFacts();
 	}
 
-	/**
-	 * Combines the facts of several statements into one row's worth — the trace
-	 * detail endpoint issues four queries, and reporting them separately would hide
-	 * that the page's cost is their sum.
-	 */
+	/** Combines the facts of several statements into one row's worth of cost. */
 	public PlanFacts merge(PlanFacts other) {
 		Set<String> relations = new TreeSet<>(relationsScanned);
 		relations.addAll(other.relationsScanned());
@@ -106,9 +67,8 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 	}
 
 	/**
-	 * The quantity the buffer ceilings are set against: every shared block the query
-	 * touched, whether it was already in cache or had to be read. Counting only the
-	 * hits would let a cold cache turn a runaway plan into a passing guard.
+	 * Every shared block the query touched, whether cached or read from disk.
+	 * Counting only the hits would let a cold cache pass a runaway plan.
 	 */
 	public long logicalIo() {
 		return sharedHits + sharedReads;
@@ -120,10 +80,9 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 	}
 
 	/**
-	 * The weekly partitions of {@code table} this plan actually read. Empty when the
-	 * table was not touched at all — which is a different fact from "pruned to
-	 * nothing", so callers asserting pruning should also assert the query returned
-	 * rows.
+	 * The weekly partitions of {@code table} this plan actually read. Empty means the
+	 * table was untouched, which is not the same as "pruned to nothing" — assert the
+	 * query returned rows too.
 	 */
 	public Set<String> partitionsScanned(String table) {
 		Set<String> partitions = new TreeSet<>();
@@ -194,8 +153,7 @@ public record PlanFacts(long sharedHits, long sharedReads, long tempReadBlocks, 
 					indexes.add(index.asString());
 				}
 				String subplan = text(node, "Subplan Name");
-				// "SubPlan 1" is a subquery the executor re-runs per outer row; "CTE page"
-				// is a name for something evaluated once. Only the first is the defect.
+				// A CTE scan is evaluated once and isn't counted; only "SubPlan N" re-runs per row.
 				if (subplan != null && subplan.startsWith("SubPlan")) {
 					subplans.add(subplan);
 				}

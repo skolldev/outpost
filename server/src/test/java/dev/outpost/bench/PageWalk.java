@@ -5,14 +5,11 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * The two ways a "next page" can fail to be one, as a pure function so it can be
- * tested without a server.
- *
- * <p>This is the check that decides whether a deep-pagination measurement means
- * anything. A benchmark whose cursor silently stops advancing measures page 1
- * fifty times, reports the fastest numbers in the table, and says nothing — the
- * failure looks exactly like a fast result. Neither problem is visible in a
- * latency figure, and both are trivially visible in the ids.
+ * The two ways a "next page" can fail to be one — repeating rows within itself,
+ * or overlapping the page before it — as a pure function so it can be tested
+ * without a server. A benchmark whose cursor silently stops advancing would
+ * measure page 1 fifty times and report it as a fast result; neither failure
+ * shows up in a latency figure.
  */
 record PageWalk(Set<String> repeatedWithinPage, Set<String> sharedWithPreviousPage) {
 

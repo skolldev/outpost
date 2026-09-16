@@ -87,10 +87,6 @@ public class LogController {
 		return body;
 	}
 
-	/**
-	 * The keyset the log stream is paged by. Package-visible so a guard can walk
-	 * real cursors to a deep page rather than synthesize one.
-	 */
 	static KeysetPage logPage() {
 		return PAGE;
 	}
@@ -115,17 +111,8 @@ public class LogController {
 	}
 
 	/**
-	 * Every filter the log stream understands, shared by the list and the timeline.
-	 *
-	 * <p>Shared rather than duplicated because the timeline's only claim is that it
-	 * counts <em>the rows the list would return</em>. Two copies of this that drifted
-	 * by one predicate would draw a chart of a different query than the one below
-	 * it, and nothing in either result would say so.
-	 *
-	 * <p>The window is half-open — {@code from <= t < to}. The upper bound used to be
-	 * inclusive, which no caller could observe until the timeline made {@code to} a
-	 * bucket boundary: a record landing exactly on one would be returned by both of
-	 * the selections either side of it.
+	 * Filters shared by the log list and timeline so both count the same rows.
+	 * Window is half-open (from <= t < to) so a record on a bucket boundary isn't counted twice.
 	 */
 	private static void appendFilters(StringBuilder sql, List<Object> params, List<Long> project,
 			List<String> environment, List<String> level, String traceId, String release, String query,
@@ -175,15 +162,9 @@ public class LogController {
 
 	/**
 	 * Log counts per bucket per level, under the same filters as {@code GET /logs}.
-	 *
-	 * <p>Separate from the list rather than folded into its response because the two
-	 * have different lifecycles: the list re-runs on every {@code cursor}, and
-	 * recomputing a full-window aggregate to fetch 100 more rows is the one shape
-	 * this endpoint must never take.
-	 *
-	 * <p>It deliberately does <b>not</b> accept the logs page's brush selection. The
-	 * chart spans the range so a selection can be seen in context; feeding the
-	 * selection back in would collapse it onto itself on every drag (ADR 0011).
+	 * Kept as a separate endpoint — not accepting the list's cursor or brush
+	 * selection — so it isn't recomputed on every page scroll and a selection can't
+	 * collapse onto itself on every drag (ADR 0011).
 	 */
 	@GetMapping("/logs/timeline")
 	public Timeline timeline(@RequestParam(required = false) List<Long> project,
@@ -195,17 +176,13 @@ public class LogController {
 			@RequestParam(required = false) Instant to) {
 
 		Instant upper = to != null ? to : Instant.now();
-		// No `from` is the range picker's "All time". The left edge is then the oldest
-		// week still retained — a catalogue read, where min("timestamp") would scan
-		// every partition of the largest table in the product.
+		// No `from` means "All time": use the oldest retained week, not min("timestamp") (a full scan).
 		Instant lower = from != null ? from
 				: partitions.earliestPartitionStart(PartitionManager.LOG_RECORD).orElse(upper);
 		if (lower.isAfter(upper)) {
 			lower = upper;
 		}
-		// Snapped onto the bucket grid before anything else sees it, so the window the
-		// response reports is the window its buckets actually start on. The first bar
-		// therefore covers a whole bucket, reaching slightly further back than asked.
+		// Snapped onto the bucket grid first, so the first bar may start slightly earlier than the requested window.
 		Duration bucket = TimeBuckets.width(lower, upper);
 		lower = TimeBuckets.alignDown(lower, bucket);
 
@@ -217,25 +194,16 @@ public class LogController {
 				.put(rs.getString("level"), rs.getLong("n"));
 		}, search.params().toArray());
 
-		// The same width the query binned on: recomputing it here would be correct today
-		// only because `alignDown` can't push the window onto a finer rung, which is not
-		// an argument a later change to the ladder would keep true.
+		// Reuses the width the query binned on; do not recompute it separately.
 		return new Timeline(lower, upper, bucket.toSeconds(),
 				buckets.entrySet().stream().map(entry -> new TimelineBucket(entry.getKey(), entry.getValue())).toList());
 	}
 
 	/**
 	 * Counts per bucket per level over {@code [from, to)}, under the same filters
-	 * the list runs.
-	 *
-	 * <p><b>This is the first query in the log feature whose cost is O(matching
-	 * rows) rather than O(page), and no index changes that</b> — {@code V11} bought
-	 * an ordered walk that stops once 100 rows are in hand, and an aggregate cannot
-	 * stop early. What bounds it is the window, which is why {@code from} and
-	 * {@code to} are required here while the list treats both as optional.
-	 *
-	 * <p>Deliberately unordered: the client places sparse buckets by index arithmetic
-	 * on {@code from} and the bucket width, so an {@code ORDER BY} would buy a sort
+	 * the list runs; required here (unlike the list) since an aggregate can't stop
+	 * early. Deliberately unordered — the client places buckets by index arithmetic
+	 * on {@code from} and the bucket width, so an {@code ORDER BY} would sort rows
 	 * nothing reads.
 	 */
 	static SearchQuery buildTimelineQuery(List<Long> project, List<String> environment, List<String> level,

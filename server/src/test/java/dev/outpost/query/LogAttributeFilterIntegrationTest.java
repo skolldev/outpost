@@ -37,14 +37,11 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 /**
- * What an attribute equality filter matches (ADR-0018): the text of the filter
- * against the value an SDK sent, whatever JSON type it sent it as — and the same
- * answer from the history query and from the live tail.
- *
- * <p>Records go in through a real envelope rather than an INSERT, because the
- * contract is about the types an SDK's typed attributes arrive as after the
- * pipeline flattens them — a hand-written jsonb literal would test the shape the
- * test author imagined.
+ * What an attribute equality filter matches (ADR-0018): the filter text against
+ * the value an SDK sent, whatever JSON type it arrived as, with the same answer
+ * from the history query and the live tail. Records are ingested through a real
+ * envelope rather than inserted directly, since the type is what the pipeline's
+ * flattening produces, not what a hand-written jsonb literal would assume.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -101,8 +98,7 @@ class LogAttributeFilterIntegrationTest {
 				new Case(List.of("amount=03"), List.of()), new Case(List.of("http.route=/health"), List.of("integer")),
 				new Case(List.of("ctx={\"a\":1}"), List.of()), new Case(List.of("ctx={\"a\": 1}"), List.of()),
 				new Case(List.of("tags=[\"x\"]"), List.of()), new Case(List.of("nothing=null"), List.of()),
-				// Spelled like JSON numbers, but beyond what Postgres numeric (and BigDecimal) can
-				// hold — no stored number can have these values, so they match as text or not at all.
+				// Beyond what Postgres numeric/BigDecimal can hold, so these never match as numbers.
 				new Case(List.of("amount=1e200000"), List.of()), new Case(List.of("amount=1e9999999999"), List.of()),
 				new Case(List.of("amount=3", "enabled=true"), List.of("integer", "double")),
 				new Case(List.of("amount=3", "enabled=true", "user.id=42"), List.of("integer", "double")));
@@ -147,9 +143,8 @@ class LogAttributeFilterIntegrationTest {
 	}
 
 	/**
-	 * Every case at once against a tail per case, because a record streamed now and the
-	 * same record read back later must be matched by the same rule — which is the
-	 * divergence #132's first proposed fix would have introduced.
+	 * Runs every case at once, each against its own tail, because a record streamed
+	 * now and the same record read back later must be matched by the same rule (#132).
 	 */
 	@Test
 	void theLiveTailMatchesWhatTheHistoryQueryReturns() throws Exception {
@@ -212,8 +207,7 @@ class LogAttributeFilterIntegrationTest {
 				subscribed.completeExceptionally(e);
 			}
 		});
-		// The tail commits a "connected" comment on subscribe; waiting for it means the
-		// subscription is registered before anything is ingested.
+		// Waits for the tail's "connected" comment so the subscription is registered before ingest.
 		subscribed.get(10, TimeUnit.SECONDS);
 	}
 

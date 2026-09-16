@@ -27,9 +27,9 @@ const PROJECTS: Project[] = [
   },
 ];
 
-// A cross-service trace: browser pageload (project 1) with a fetch span whose
-// child is the backend request transaction (project 2), which has a JDBC span.
-// An error is pinned to the backend transaction span, and one log rides along.
+// A cross-service trace: browser pageload (project 1) → fetch span → backend
+// transaction (project 2) with a JDBC span; an error is pinned to the backend
+// txn, with one log riding along.
 const TRACE: TraceDetail = {
   trace_id: 'trace-abc',
   transactions: [
@@ -170,8 +170,7 @@ describe('TraceDetailPage', () => {
     await renderTrace();
     const user = userEvent.setup();
 
-    // 'GET /api/checkout' names both the fetch span and the backend txn; the
-    // pinned error rides on the backend txn row, marked by its 'txn' badge.
+    // The pinned error rides on the backend txn row, marked by its 'txn' badge.
     await screen.findByText('SELECT * FROM orders');
     const txnRow = screen
       .getAllByText('GET /api/checkout')
@@ -179,7 +178,6 @@ describe('TraceDetailPage', () => {
       .find((row) => within(row).queryByText('txn'));
     await user.click(txnRow!);
 
-    // The side panel surfaces the pinned error linking to its issue.
     const issueLink = await screen.findByRole('link', { name: /IllegalStateException/ });
     expect(issueLink).toHaveAttribute('href', expect.stringContaining('/issues/7'));
     // The panel shows the project name, not the raw id.
@@ -208,7 +206,6 @@ describe('TraceDetailPage', () => {
     await renderTrace(trace);
     const user = userEvent.setup();
 
-    // Non-resource spans render; the resource span is filtered out by default.
     await screen.findByText('SELECT * FROM orders');
     expect(screen.queryByText('/assets/main.js')).not.toBeInTheDocument();
     expect(screen.getByText('Hide resource spans (1)')).toBeInTheDocument();
@@ -225,9 +222,8 @@ describe('TraceDetailPage', () => {
   });
 
   it('places log markers on the timeline for a trace with no transactions or spans', async () => {
-    // A trace can arrive as just an error plus its logs (no transaction). The
-    // timeline window must still span those, or every marker collapses to the
-    // 1970 fallback window and renders off the right edge.
+    // No transaction here, so the timeline window must still span the error/logs, or
+    // markers collapse to the 1970 fallback and render off-edge.
     const trace: TraceDetail = {
       trace_id: 'trace-abc',
       transactions: [],

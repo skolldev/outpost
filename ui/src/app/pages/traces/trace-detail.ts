@@ -55,8 +55,7 @@ interface LogMarker {
 /**
  * Trace waterfall: spans color-coded by project, ordered by start_ts and nested
  * by parent_span_id, with error events pinned on their spans, a collapsible log
- * lane, and a span detail side panel — browser pageload → fetch span → backend
- * txn → JDBC spans in one view.
+ * lane, and a span detail side panel.
  */
 @Component({
   selector: 'app-trace-detail',
@@ -87,8 +86,7 @@ export class TraceDetailPage {
   readonly notFound = signal(false);
   readonly selected = signal<WaterfallRow | null>(null);
   readonly showLogs = signal(true);
-  // Browser SDKs attach a span per resource load (op resource.script, …) to the
-  // pageload transaction; they drown the waterfall, so they're hidden by default.
+  // Browser SDKs attach a span per resource load (resource.script, …) that drowns the waterfall, so these are hidden by default.
   readonly showResources = signal(false);
 
   readonly resourceSpanCount = computed(
@@ -117,10 +115,9 @@ export class TraceDetailPage {
   }
 
   /**
-   * Trace window [start, end] in epoch ms. Spanned across transactions and spans
-   * — but also errors and logs, because a trace can arrive with only those (an
-   * error + its logs, no transaction). Without them the window would collapse to
-   * the 1970 fallback and every log marker would pile up off the right edge.
+   * Trace window [start, end] in epoch ms. Includes errors and logs, not just
+   * transactions and spans, since a trace can arrive with only those — otherwise
+   * the window collapses to the 1970 fallback and log markers pile up at the edge.
    */
   private readonly window = computed(() => {
     const t = this.trace();
@@ -160,9 +157,7 @@ export class TraceDetailPage {
     const { start } = this.window();
     const total = this.totalMs();
 
-    // Every node keyed by its span_id: a transaction is the root span of its
-    // service, its spans are children, and a downstream transaction hangs off an
-    // upstream span via parent_span_id.
+    // Nodes are keyed by span_id: a transaction is its service's root span, and a downstream transaction hangs off an upstream span via parent_span_id.
     interface Node {
       kind: 'transaction' | 'span';
       spanId: string;
@@ -199,8 +194,7 @@ export class TraceDetailPage {
     }
     for (const span of t.spans) {
       if (!this.showResources() && isResourceOp(span.op)) continue;
-      // A span_id collision with a transaction's root span shouldn't happen, but
-      // if it does, keep the transaction as the canonical node.
+      // If a span's span_id collides with a transaction's root span (shouldn't happen), keep the transaction as canonical.
       if (byId.has(span.span_id)) continue;
       const node: Node = {
         kind: 'span',
@@ -332,9 +326,7 @@ export class TraceDetailPage {
 
   dataEntries(row: WaterfallRow): [string, string][] {
     const raw = (row.span?.data ?? row.transaction?.data ?? {}) as Record<string, unknown>;
-    // Spans carry their useful facts in a nested OTel attribute bag (`data`);
-    // flatten it up so the panel shows `http.method`, `url.full`, … directly
-    // instead of one giant JSON blob. Top-level keys (e.g. `origin`) come along too.
+    // Spans nest their useful facts in an OTel attribute bag (`data`); flatten it so the panel shows keys like `http.method` directly instead of raw JSON.
     const flat: Record<string, unknown> = { ...raw };
     if (raw['data'] && typeof raw['data'] === 'object' && !Array.isArray(raw['data'])) {
       delete flat['data'];
@@ -350,8 +342,7 @@ export class TraceDetailPage {
   }
 }
 
-// Keys not worth a row in the side panel: redundant with columns already shown,
-// or absolute-epoch resource-timing fields that read as meaningless numbers.
+// Keys redundant with columns already shown, or absolute-epoch resource-timing fields that read as meaningless numbers.
 const HIDDEN_DATA_KEYS = new Set<string>([
   'sentry.op',
   'sentry.origin',

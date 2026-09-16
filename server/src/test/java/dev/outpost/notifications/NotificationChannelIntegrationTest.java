@@ -22,7 +22,7 @@ import org.springframework.web.client.RestTemplate;
 /**
  * Notification Channel management end to end: CRUD with validation and
  * admin-only gating, and the empty-filter-means-all default. Configuration
- * only — no delivery is exercised (that arrives in a later slice of #41).
+ * only — no delivery is exercised.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -73,11 +73,9 @@ class NotificationChannelIntegrationTest {
 		assertThat(post(CHANNELS, body(Map.of("name", "n", "type", "teams", "url", "ftp://example.com/x",
 				"triggers", List.of("new_issue"))), adminCookie).getStatusCode())
 			.isEqualTo(HttpStatus.BAD_REQUEST);
-		// No triggers selected.
 		assertThat(post(CHANNELS, body(Map.of("name", "n", "type", "teams", "url", "https://example.com",
 				"triggers", List.of())), adminCookie).getStatusCode())
 			.isEqualTo(HttpStatus.BAD_REQUEST);
-		// Unknown trigger.
 		assertThat(post(CHANNELS, body(Map.of("name", "n", "type", "teams", "url", "https://example.com",
 				"triggers", List.of("deploy_started"))), adminCookie).getStatusCode())
 			.isEqualTo(HttpStatus.BAD_REQUEST);
@@ -88,7 +86,7 @@ class NotificationChannelIntegrationTest {
 	@Test
 	@SuppressWarnings("unchecked")
 	void crudRoundTrip() {
-		// Create: localhost URL is accepted (ADR 0006 — no egress filtering).
+		// localhost URL is accepted (ADR 0006 — no egress filtering).
 		ResponseEntity<Map> created = post(CHANNELS, body(Map.of("name", "Team alerts", "type", "teams",
 				"url", "http://localhost:8080/hook", "triggers", List.of("new_issue", "incident_started"),
 				"project_filter", List.of(projectId), "environment_filter", List.of("prod"))), adminCookie);
@@ -104,14 +102,12 @@ class NotificationChannelIntegrationTest {
 			.containsExactly(projectId);
 		assertThat((List<String>) body.get("environment_filter")).containsExactly("prod");
 
-		// List returns it.
 		Map<String, Object>[] listed = rest
 			.exchange(url(CHANNELS), HttpMethod.GET, new HttpEntity<>(authHeaders(adminCookie)), Map[].class)
 			.getBody();
 		assertThat(listed).hasSize(1);
 		assertThat(listed[0].get("name")).isEqualTo("Team alerts");
 
-		// Update: change everything, including flipping enabled off (the toggle path).
 		ResponseEntity<Map> updated = exchange(HttpMethod.PATCH, CHANNELS + "/" + id, body(Map.of(
 				"name", "Ops JSON", "type", "generic_json", "url", "https://hooks.example.com/x", "enabled", false,
 				"triggers", List.of("incident_resolved"), "project_filter", List.of(),
@@ -126,12 +122,10 @@ class NotificationChannelIntegrationTest {
 		assertThat((List<Object>) u.get("project_filter")).isEmpty();
 		assertThat((List<Object>) u.get("environment_filter")).isEmpty();
 
-		// Update of a missing channel is a 404.
 		assertThat(exchange(HttpMethod.PATCH, CHANNELS + "/999999", body(Map.of("name", "x", "type", "teams",
 				"url", "https://example.com", "triggers", List.of("new_issue"))), adminCookie).getStatusCode())
 			.isEqualTo(HttpStatus.NOT_FOUND);
 
-		// Delete.
 		assertThat(exchange(HttpMethod.DELETE, CHANNELS + "/" + id, null, adminCookie).getStatusCode())
 			.isEqualTo(HttpStatus.NO_CONTENT);
 		assertThat(count()).isZero();

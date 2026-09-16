@@ -11,16 +11,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
 
 /**
- * Serves the Angular bundle, which the image build stages into
- * {@code src/main/resources/static/} before {@code bootJar} so that one jar is
- * the whole product. This replaces the nginx container that used to sit in
- * front of this process; the caching and SPA-fallback rules below are the ones
- * that config expressed.
- *
- * <p>The app is served at the host root only. Sub-path deployments are not
- * supported: {@code <base href>} is baked into the bundle at build time and
- * would have to agree with a run-time context path, with nothing to check that
- * it does.
+ * Serves the Angular bundle, staged into {@code src/main/resources/static/} by
+ * the image build so one jar is the whole product; served at the host root only.
+ * Sub-path deployments aren't supported — {@code <base href>} is baked into the
+ * bundle at build time, with nothing to check it matches the deployed path.
  */
 @Configuration
 class WebConfig implements WebMvcConfigurer {
@@ -35,15 +29,12 @@ class WebConfig implements WebMvcConfigurer {
 
 	@Override
 	public void addResourceHandlers(ResourceHandlerRegistry registry) {
-		// Hashed build artifacts (outputHashing: all) — safe to cache forever.
-		// Deliberately excludes unhashed public/ assets like favicon.ico, which
-		// fall through to the catch-all below.
+		// Hashed build artifacts (outputHashing: all) are safe to cache forever; unhashed assets like favicon.ico fall through to the catch-all below.
 		registry.addResourceHandler("/*.js", "/*.css", "/media/**")
 			.addResourceLocations(BUNDLE)
 			.setCacheControl(CacheControl.maxAge(Duration.ofDays(365)).immutable());
 
-		// index.html references those hashed bundles by name, so it must always
-		// revalidate — as must anything else unhashed.
+		// index.html references the hashed bundles by name, so it (and anything else unhashed) must always revalidate.
 		registry.addResourceHandler("/**")
 			.addResourceLocations(BUNDLE)
 			.setCacheControl(CacheControl.noCache())
@@ -52,15 +43,9 @@ class WebConfig implements WebMvcConfigurer {
 	}
 
 	/**
-	 * Answers unknown paths with {@code index.html} so Angular's client-side
-	 * routes survive a cold load. Two kinds of path must <em>not</em> fall back:
-	 * <ul>
-	 * <li>server-owned prefixes — an unmapped {@code /api/...} has to stay a 404
-	 * rather than become a 200 carrying the app shell;</li>
-	 * <li>anything that looks like a file — a bundle that failed to build must
-	 * 404 rather than return HTML the browser then rejects on content type,
-	 * which is a far more confusing failure to debug.</li>
-	 * </ul>
+	 * Falls back to {@code index.html} for unknown paths so Angular's client-side routes
+	 * survive a cold load, except server-owned prefixes (kept a 404) and paths that look
+	 * like a file (a failed build must 404, not serve HTML with the wrong content type).
 	 */
 	private static final class SpaFallbackResolver extends PathResourceResolver {
 

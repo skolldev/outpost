@@ -21,48 +21,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * The MCP Surface's {@code get_issue_context} Tool: one call that returns an
- * Issue, its latest Event, that Event's stack and breadcrumbs, the Log Records
- * around it and a summary of its Trace.
- *
- * <p>It lives in {@code dev.outpost.query} rather than a feature package of its
- * own so it can call the controllers' package-private {@code build…Query}
- * factories — see ADR-0016. The surrounding Log Records are
- * {@link LogController#buildLogQuery} with a window bound, which is a question
- * the log stream already asks and therefore arrives with its guard written; the
- * two statements below are genuinely new and are guarded by
- * {@code IssueContextPerformanceTest}.
- *
- * <p><b>ADR-0014 binds this payload.</b> Nothing here is summarized, ranked or
- * diagnosed: the Tool reports what was received and the calling agent draws the
- * conclusions. Three consequences visible in the code:
- *
- * <ul>
- * <li><b>The Event is named, not chosen.</b> The key is {@code latest_event}, not
- * {@code representative_event}, because "most representative" is a judgement no
- * stored column supports. The selection rule travels in the field name, which
- * survives truncation and re-summarization in a way a footnote does not.
- * <li><b>Counts carry their units.</b> {@code events_received} rather than the
- * {@code event_count} the UI wire contract uses, {@code transactions_received}
- * rather than {@code count}: the name has to say that these are signals
- * received, not requests served.
- * <li><b>{@code event.data} is never returned whole</b> — only the primary
- * exception's frames and the breadcrumbs are projected out of it, and
- * {@link #caveats} names every top-level key that was dropped so the caller
- * knows what it is not being shown.
- * </ul>
- *
- * <p>The payload is a tree of records whose component names are literal
- * {@code snake_case}. Besides keeping the existing wire contract, the concrete
- * types let Spring AI advertise an MCP {@code outputSchema} and return the value
- * as {@code structuredContent}. The MCP transport serializes Tool results through
- * its <em>own</em> {@code JsonMapper}, so the application's global
- * {@code SNAKE_CASE} strategy does not apply here.
- *
- * <p>{@link #caveats} entries are sentences rather than codes, deliberately. The
- * consumer is a language model with no access to a lookup table, and the ADR-0014
- * argument for field names applies equally here: a sentence carries its own
- * meaning wherever it ends up, a code carries none.
+ * The MCP Surface's {@code get_issue_context} Tool: an Issue, its latest Event, that Event's
+ * stack and breadcrumbs, surrounding Log Records and a Trace summary, in one call. Record
+ * fields are literal {@code snake_case} — the MCP transport serializes results through its own
+ * {@code JsonMapper}, not the application's global {@code SNAKE_CASE} strategy, so camelCase
+ * names would ship wrong.
  */
 @Component
 public class IssueContextTool {
@@ -106,11 +69,9 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * One Log Record from the window before the Event.
-	 *
-	 * <p>No {@code id}, for the reason {@code search_logs} omits it: a Log Record's
-	 * id is not a parameter of any Tool on this surface. The {@code trace_id} is
-	 * what leads anywhere from a row here, via {@code get_trace}.
+	 * One Log Record from the window before the Event. Has no {@code id}, since a Log Record's id
+	 * is not a parameter of any Tool on this surface; follow {@code trace_id} via {@code
+	 * get_trace} instead.
 	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record LogRecordPayload(String timestamp, String environment, String level, String body,
@@ -124,10 +85,8 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * Minutes <em>before</em> the Event that Log Records are read over when the
-	 * caller names no window. Small on purpose: these Log Records are context for
-	 * one Event, and a wide window returns the busy minutes of an unrelated request
-	 * instead of the ones leading to the failure.
+	 * Minutes before the Event that Log Records are read over when the caller names no window;
+	 * kept small so a wide window doesn't pull in an unrelated request's traffic.
 	 */
 	static final int DEFAULT_LOG_WINDOW_MINUTES = 5;
 
@@ -141,30 +100,21 @@ public class IssueContextTool {
 	static final int MAX_BREADCRUMBS = 20;
 
 	/**
-	 * Log Records kept, counted back from the Event.
-	 *
-	 * <p>A cap of this Tool's own rather than the log page's. These records are one
-	 * section of a result that also carries a stack, breadcrumbs and a Trace
-	 * summary, and the log page's size would let that one section run to a hundred
-	 * records of up to {@link LogSearchTool#MAX_BODY_CHARS} each — a context window
-	 * spent on the context around the Event rather than on the Event. The knob for
-	 * reaching further is {@code log_window_minutes}, which narrows what is read
-	 * rather than widening what is returned.
+	 * Log Records kept, counted back from the Event. Capped well below the log page's own page
+	 * size, since these records are just one section of a larger result; use {@code
+	 * log_window_minutes} to reach further back instead.
 	 */
 	static final int MAX_LOG_RECORDS = 25;
 
 	/**
-	 * Keys of {@code event.data} the payload projects. Everything else is dropped
-	 * and named in a caveat, so "what was omitted" is a fact the caller is told
-	 * rather than one it has to infer from what arrived.
+	 * Keys of {@code event.data} this payload projects; everything else is dropped and named in a
+	 * caveat.
 	 */
 	private static final List<String> PROJECTED_EVENT_DATA_KEYS = List.of("exception", "breadcrumbs");
 
 	/**
-	 * Keys of {@code event.data} the {@code latest_event} columns already carry.
-	 * Excluded from the omission caveat because naming them would be false: the
-	 * caller has the value, it just did not arrive under this key. The caveat is
-	 * only worth reading if everything in it is genuinely missing.
+	 * Keys of {@code event.data} already carried by the {@code latest_event} columns, so excluded
+	 * from the omission caveat — the caller has the value, just not under this key.
 	 */
 	private static final List<String> MIRRORED_EVENT_DATA_KEYS = List.of("event_id", "timestamp", "level",
 			"environment", "release", "message", "logentry");
@@ -185,17 +135,12 @@ public class IssueContextTool {
 		this.mapper = mapper;
 	}
 
-	// ------------------------------------------------------------------- tool
-
 	/**
-	 * Parameter names are the wire contract — the MCP input schema takes its
-	 * property names straight from them — so they are {@code snake_case} like every
-	 * other JSON field this server produces, rather than Java's usual camelCase.
+	 * Parameter names are the wire contract — the MCP schema takes them straight from these — so
+	 * they stay {@code snake_case} rather than Java's usual camelCase.
 	 */
 	@McpTool(name = "get_issue_context", title = "Get Issue context", generateOutputSchema = true,
-			// Read-only and non-destructive, which is the whole v1 posture: a client that
-			// gates writes behind a confirmation must not gate this. The defaults are the
-			// opposite of every one of these, so stating them is not decoration.
+			// Defaults for these annotations are the opposite of what's declared here, so this is not decoration.
 			annotations = @McpTool.McpAnnotations(title = "Get Issue context", readOnlyHint = true,
 					destructiveHint = false, idempotentHint = true, openWorldHint = false),
 			description = """
@@ -227,10 +172,7 @@ public class IssueContextTool {
 
 		List<String> caveats = new ArrayList<>();
 		if (context.eventId() == null) {
-			// An Issue outlives its Events: the counters on `issue` are cumulative while
-			// `event` is bounded by retention. Saying so beats returning empty arrays —
-			// and when an Environment was asked for, the two reasons for the absence
-			// point in different directions, so both are named.
+			// Issue counters are cumulative; Events are bounded by retention, so an Issue can outlive all its Events.
 			caveats.add(scopedEnvironment == null
 					? "This Issue has no Event left in retention, so no Event, stack, breadcrumbs, Log Records or "
 							+ "Trace are returned. The Issue's own counters are cumulative and still stand."
@@ -256,26 +198,11 @@ public class IssueContextTool {
 				trace, caveats);
 	}
 
-	// ------------------------------------------------------------------ query
-
 	/**
-	 * The Issue, its Project and its latest Event, in one statement. This is the
-	 * join ADR-0016 warns about: no controller performs it, so it does not inherit
-	 * a guard from the reuse rule and gets its own in
-	 * {@code IssueContextPerformanceTest}.
-	 *
-	 * <p>The Event is reached through a {@code LATERAL} rather than a second round
-	 * trip so the guard can {@code EXPLAIN} the whole lookup as the one thing it is.
-	 * {@code LEFT JOIN} because {@code event} is bounded by retention and
-	 * {@code issue} is not: an Issue whose Events have aged out still answers.
-	 *
-	 * <p>{@code ORDER BY "timestamp" DESC, id DESC} rather than by timestamp alone,
-	 * so two Events arriving in the same microsecond do not make the payload depend
-	 * on which partition the planner reached first.
-	 *
-	 * <p>An {@code environment} narrows the {@code LATERAL} rather than adding a
-	 * second statement: the walk down {@code idx_event_issue_ts} is the same walk,
-	 * filtering as it goes, and it still stops at the first row that matches.
+	 * The Issue, its Project and its latest Event, in one statement. {@code LEFT JOIN} because
+	 * {@code event} is bounded by retention while {@code issue} is not — an Issue whose Events
+	 * have aged out still answers — and the tie-break on {@code id DESC} keeps the result
+	 * deterministic when two Events land in the same microsecond.
 	 */
 	static SearchQuery buildIssueContextQuery(long issueId, @Nullable String environment) {
 		String environmentPredicate = environment == null ? "" : " AND environment = ?";
@@ -301,15 +228,9 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * One Trace reduced to its root and three counts, which is what an agent needs
-	 * to decide whether the Trace is worth a second call. Also new SQL: the trace
-	 * detail endpoint fans out into four statements returning every row, and a
-	 * summary is a different question with a different plan.
-	 *
-	 * <p>The three counts are uncorrelated, so Postgres evaluates each once as an
-	 * {@code InitPlan} rather than per row — the distinction {@link
-	 * dev.outpost.support.PlanFacts#correlatedSubplans()} exists to police, and the
-	 * reason they are not written as a join.
+	 * One Trace reduced to its root and three counts. The three counts are uncorrelated
+	 * subqueries, evaluated once each as an {@code InitPlan} rather than per row — rewriting them
+	 * as a join or correlated subquery changes that.
 	 */
 	static SearchQuery buildTraceSummaryQuery(String traceId) {
 		return new SearchQuery("""
@@ -325,24 +246,16 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * The Log Records around the Event: {@link LogController#buildLogQuery} bound to
-	 * the Event's Project and window. Reused rather than rewritten precisely because
-	 * it is a question the log stream already asks, so it arrives with V11's ordering
-	 * index and {@code LogQueryPerformanceTest}'s guard behind it — the reuse rule in
-	 * ADR-0016.
+	 * The Log Records around the Event: {@link LogController#buildLogQuery} bound to the Event's
+	 * Project and window (ADR-0016).
 	 */
 	static SearchQuery buildSurroundingLogQuery(long projectId, Instant from, Instant to) {
 		return LogController.buildLogQuery(List.of(projectId), null, null, null, null, null, null, from, to, null);
 	}
 
-	// ------------------------------------------------------------- projections
-
 	/** The primary exception's identity and the frames nearest the throw site. */
 	private static ExceptionPayload exception(Context context, List<String> caveats) {
-		// Only these two statuses warrant a caveat. `none` means there was nothing to
-		// symbolicate — a JVM stack, say — and is not a gap; and there is no pending
-		// state to disclose, because Symbolicator runs synchronously in the ingest
-		// worker, so a stored Event has already been through it.
+		// "none" isn't a gap (nothing to symbolicate) and there's no pending state — Symbolicator runs synchronously during ingest.
 		String status = context.symbolicationStatus();
 		if (Symbolicator.STATUS_PARTIAL.equals(status) || Symbolicator.STATUS_MISSING_SOURCEMAP.equals(status)) {
 			caveats.add("The stack is not symbolicated (symbolication_status=" + status
@@ -356,8 +269,7 @@ public class IssueContextTool {
 		if (!values.isArray() || values.isEmpty()) {
 			return null;
 		}
-		// The last entry of the chain is the exception that was thrown; the earlier
-		// ones are its causes. Same choice the pipeline's fingerprinter makes.
+		// Last entry in the chain is what was thrown; earlier entries are its causes.
 		JsonNode primary = values.get(values.size() - 1);
 		JsonNode frames = primary.path("stacktrace").path("frames");
 
@@ -366,9 +278,7 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * Frames newest first — the throw site, then its callers — because that is the
-	 * end a reader starts from. Truncation therefore drops the outermost frames,
-	 * which are the ones least likely to name the defect.
+	 * Frames newest first (throw site, then callers); truncation drops the outermost frames first.
 	 */
 	private static List<FramePayload> frames(JsonNode frames, List<String> caveats) {
 		if (!frames.isArray() || frames.isEmpty()) {
@@ -401,8 +311,7 @@ public class IssueContextTool {
 		List<BreadcrumbPayload> kept = new ArrayList<>();
 		for (int i = from; i < values.size(); i++) {
 			JsonNode crumb = values.get(i);
-			// Passed through as received: SDKs send either epoch seconds or ISO-8601 here,
-			// and normalizing one into the other would be this Tool inventing a fact.
+			// Passed through as received (epoch seconds or ISO-8601) — normalizing would be inventing a fact.
 			kept.add(new BreadcrumbPayload(text(crumb, "timestamp"), text(crumb, "type"), text(crumb, "category"),
 					text(crumb, "level"), text(crumb, "message")));
 		}
@@ -414,11 +323,10 @@ public class IssueContextTool {
 	}
 
 	/**
-	 * Log Records from the Event's Project over the window, oldest first. The
-	 * underlying log page reads newest-first and caps at its own page size, so a
-	 * window busier than that page loses its earliest records — the ones furthest
-	 * from the Event. See {@link Window} for why the window ends at the Event rather
-	 * than straddling it, which is what makes that the right end to lose.
+	 * Log Records from the Event's Project over the window, oldest first. The underlying page
+	 * reads newest-first and caps at its own size, so in a busy window the earliest records —
+	 * furthest from the Event — are the ones lost; see {@link Window} for why that's the right end
+	 * to lose.
 	 */
 	private List<LogRecordPayload> logRecords(Context context, Window window, List<String> caveats) {
 		SearchQuery search = buildSurroundingLogQuery(context.projectId(), window.start(), window.end());
@@ -472,8 +380,7 @@ public class IssueContextTool {
 				rs.getDouble("duration_ms"), rs.getLong("transactions_received"), rs.getLong("spans_received"),
 				rs.getLong("error_events_received")), search.params().toArray());
 		if (rows.isEmpty()) {
-			// Same rule the trace detail endpoint applies: a Trace is only known once a
-			// Transaction has arrived for it. Errors and logs may reference one that has not.
+			// A Trace exists only once a Transaction has arrived for it; errors/logs may reference one that hasn't.
 			caveats.add("The Event carries trace_id " + traceId
 					+ " but no Transaction has arrived for it, so no Trace summary is available.");
 			return null;
@@ -497,24 +404,11 @@ public class IssueContextTool {
 				+ "projected; these keys were present and are not included: " + String.join(", ", omitted) + ".");
 	}
 
-	// ------------------------------------------------------------------ window
-
 	/**
-	 * The Log Record window, plus the width actually used after defaulting and
-	 * clamping.
-	 *
-	 * <p><b>It ends at the Event and does not straddle it,</b> which is the one
-	 * decision here worth arguing. The window is answered by the log list's own
-	 * keyset — newest first, capped at its page size — so whatever the window is,
-	 * overflow discards its <em>earliest</em> records. A window ending at the Event
-	 * therefore drops the records furthest from the failure, which is the same rule
-	 * {@link #frames} applies to a long stack. A straddling window would keep the
-	 * records after the Event and drop the ones leading to it, and no caveat can
-	 * repair a selection that threw away the useful half.
-	 *
-	 * <p>The aftermath is not lost, it is reached differently: everything on the
-	 * Event's Trace is one {@code trace_id} away, and {@code trace.trace_id} is in
-	 * this same payload.
+	 * The Log Record window, plus the width actually used after defaulting and clamping. Ends at
+	 * the Event rather than straddling it — the underlying page reads newest-first, so a
+	 * straddling window would drop the earliest records (those leading to the failure) instead of
+	 * the least useful ones.
 	 */
 	private record Window(Instant start, Instant end, int minutes) {
 	}
@@ -538,13 +432,9 @@ public class IssueContextTool {
 		else {
 			minutes = requested;
 		}
-		// The upper bound is half-open in the log query, so a Log Record written in the
-		// same instant as the Event would fall outside it; a second of slack keeps the
-		// line that reports the failure in the window that is meant to explain it.
+		// Half-open upper bound would exclude a record at the same instant as the Event; the extra second keeps it in.
 		return new Window(eventTimestamp.minus(Duration.ofMinutes(minutes)), eventTimestamp.plusSeconds(1), minutes);
 	}
-
-	// ------------------------------------------------------------------ shared
 
 	/**
 	 * One row of {@link #buildIssueContextQuery}, split into the two payload objects
@@ -555,8 +445,7 @@ public class IssueContextTool {
 	}
 
 	private Context mapContext(ResultSet rs, int rowNum) throws SQLException {
-		// Not `event_count`: the number counts Events received since the Issue was
-		// opened, and retention may since have deleted some of them.
+		// events_received counts Events received since the Issue opened; retention may since have deleted some.
 		IssuePayload issue = new IssuePayload(rs.getLong("id"), rs.getLong("project_id"),
 				rs.getString("project_slug"), rs.getString("project_name"), rs.getString("platform"),
 				rs.getString("fingerprint"), rs.getString("title"), rs.getString("culprit"), rs.getString("level"),

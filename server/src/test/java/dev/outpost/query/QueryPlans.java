@@ -15,16 +15,10 @@ import java.util.stream.Stream;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * The one place outside {@code dev.outpost.query} that can reach the controllers'
- * query builders. {@link SearchQuery} and {@link KeysetPage} stay package-private
- * in production — widening them so a benchmark in another package could see them
- * would trade a real encapsulation boundary for test convenience — so this
- * test-side class does the widening instead, and only for the harness.
- *
- * <p>It also owns cursor <em>walking</em>. Nothing here synthesizes a cursor:
- * {@code KeysetPage.encode} is private, and reaching a deep page the way a user
- * does is both the honest measurement and the one that needs no production
- * change. At guard scale that is a handful of cheap round-trips.
+ * Test-side access to the controllers' package-private query builders, so
+ * production does not widen {@link SearchQuery} or {@link KeysetPage} for test
+ * convenience. Also walks cursors by paginating for real rather than
+ * synthesizing one, since {@code KeysetPage.encode} is private.
  */
 public final class QueryPlans {
 
@@ -39,9 +33,9 @@ public final class QueryPlans {
 		}
 
 		/**
-		 * Every column, mapped generically — the caller wants the keyset columns for
-		 * {@link KeysetPage#paginate}, and a per-endpoint mapper here would be a second
-		 * copy of code the controllers already have.
+		 * Every column, mapped generically, since the caller wants the keyset columns
+		 * for {@link KeysetPage#paginate} and a per-endpoint mapper here would duplicate
+		 * code the controllers already have.
 		 */
 		public List<Map<String, Object>> rows(JdbcClient jdbc) {
 			return jdbc.sql(sql).params(params).query((rs, i) -> {
@@ -82,10 +76,10 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The window the sparkline is bound by, from the controller that owns it. Read
-	 * rather than recomputed: it is the bind parameter that decides which partitions
-	 * the aggregate reads, so a caller with its own copy would {@code EXPLAIN} a
-	 * plan the controller never runs.
+	 * The window the sparkline is bound by, read from the controller that owns it
+	 * rather than recomputed. It is a bind parameter that decides which partitions
+	 * the aggregate reads, so a caller's own copy would {@code EXPLAIN} a plan the
+	 * controller never runs.
 	 */
 	public static Instant sparklineSince() {
 		return IssueController.sparklineSince();
@@ -93,8 +87,8 @@ public final class QueryPlans {
 
 	/**
 	 * The ids the aggregates would be handed for a page of {@code list} — the same
-	 * query, not an unfiltered stand-in. A filtered list returns different issues,
-	 * and its aggregates are only comparable to its own page.
+	 * query, not an unfiltered stand-in, since a filtered list's aggregates are only
+	 * comparable to its own page.
 	 */
 	public static List<Long> issueIdsOnPage(JdbcClient jdbc, Built list) {
 		return list.rows(jdbc).stream().map(row -> (Long) row.get("id")).limit(IssueController.pageSize()).toList();
@@ -122,9 +116,8 @@ public final class QueryPlans {
 
 	/**
 	 * The bucket width a window is binned at, from the shared ladder both the log
-	 * timeline and the Transaction Group trend bind. Read rather than recomputed, for
-	 * the reason {@link #sparklineSince()} is: it is a bind parameter, and a guard
-	 * with its own copy would {@code EXPLAIN} a grouping no endpoint runs.
+	 * timeline and the Transaction Group trend bind. It is a bind parameter, so a
+	 * guard with its own copy would {@code EXPLAIN} a grouping no endpoint runs.
 	 */
 	public static Duration timelineBucket(Instant from, Instant to) {
 		return TimeBuckets.width(from, to);
@@ -136,10 +129,9 @@ public final class QueryPlans {
 
 	/**
 	 * Walks to page {@code pages} of the log list <em>as {@code build} shapes it</em>.
-	 * A deep page reached through an unfiltered walk is not the deep page a filtered
-	 * request reaches: the cursor it ends on is a different row, over a different
-	 * span of time, and explaining a filtered query at it measures a request nobody
-	 * makes.
+	 * A deep page reached through an unfiltered walk ends on a different row over a
+	 * different span of time, so explaining a filtered query at it would measure a
+	 * request nobody makes.
 	 */
 	public static String logCursorAtPage(JdbcClient jdbc, int pages, Function<String, Built> build) {
 		return walk(jdbc, LogController.logPage(), build, pages);
@@ -170,10 +162,10 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The statistics behind one Transaction Group's detail view (#162). It reads the
-	 * same window as the leaderboard it is opened from, so it is guarded alongside it —
-	 * a detail view is one row of that list, and nothing about the aggregate underneath
-	 * is cheaper for having its key bound unless the index says so.
+	 * The statistics behind one Transaction Group's detail view (#162), guarded
+	 * alongside the leaderboard it is opened from. A detail view is one row of that
+	 * list, and nothing about the aggregate underneath is cheaper for having its key
+	 * bound unless the index says so.
 	 */
 	public static Built transactionGroupDetail(long project, String name, String op, List<String> environment,
 			String release, Instant from, Instant to) {
@@ -181,10 +173,9 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The bucketed series the detail view returns alongside those statistics (#163).
-	 * A second aggregate over the same rows under the same predicates, so the page's
-	 * cost is the two together — and it is the one of the pair that groups, which is
-	 * where a spill would come from.
+	 * The bucketed series the detail view returns alongside those statistics (#163) —
+	 * a second aggregate over the same rows, so the page's cost is the two together.
+	 * It is the one of the pair that groups, which is where a spill would come from.
 	 */
 	public static Built transactionGroupTrend(long project, String name, String op, List<String> environment,
 			String release, Instant from, Instant to) {
@@ -193,8 +184,7 @@ public final class QueryPlans {
 
 	/**
 	 * The window the leaderboard would answer this request over, from the controller
-	 * that owns the 30-day cap. Read rather than recomputed, for the reason
-	 * {@link #sparklineSince()} is: it decides the bind parameters that prune the
+	 * that owns the 30-day cap. It decides the bind parameters that prune the
 	 * partitions, so a guard computing its own would {@code EXPLAIN} a window the
 	 * controller never runs.
 	 */
@@ -205,10 +195,10 @@ public final class QueryPlans {
 	// --------------------------------------------------------------- mcp tools
 
 	/**
-	 * The Issue + Project + latest-Event join behind {@code get_issue_context}. The
-	 * MCP Surface's Tools reuse the controllers' factories wherever the question is
-	 * one the UI already asks (ADR-0016), which leaves exactly the statements below
-	 * needing guards of their own — the reuse rule is not an exemption from guarding.
+	 * The Issue + Project + latest-Event join behind {@code get_issue_context}. Per
+	 * ADR-0016 the MCP Tools reuse controller factories wherever the UI already asks
+	 * the same question, which leaves only the statements below needing guards of
+	 * their own.
 	 */
 	public static Built issueContext(long issueId) {
 		return Built.of(IssueContextTool.buildIssueContextQuery(issueId, null));
@@ -236,10 +226,9 @@ public final class QueryPlans {
 
 	/**
 	 * The surrounding Log Records, as the Tool binds them — the log list's own
-	 * factory with a Project and a window and no cursor. Guarded here as well as in
-	 * {@code LogQueryPerformanceTest} because the Tool's window is minutes wide
-	 * rather than the UI's fourteen days, and that is a different shape arriving at
-	 * the same index.
+	 * factory with a Project and a window and no cursor. Guarded separately because
+	 * the Tool's window is minutes wide rather than the UI's fourteen days, a
+	 * different shape arriving at the same index.
 	 */
 	public static Built surroundingLogs(long projectId, Instant from, Instant to) {
 		return Built.of(IssueContextTool.buildSurroundingLogQuery(projectId, from, to));
@@ -248,8 +237,7 @@ public final class QueryPlans {
 	/**
 	 * The two widths the Tool can read Log Records over, from the Tool that owns
 	 * them: the default it applies when an agent names none, and the maximum it
-	 * clamps to. Read rather than recomputed, for the reason {@link #sparklineSince()}
-	 * is — they are the bind parameters that decide which partitions are pruned.
+	 * clamps to. They are bind parameters that decide which partitions are pruned.
 	 */
 	public static List<Duration> surroundingLogWindows() {
 		return List.of(Duration.ofMinutes(IssueContextTool.DEFAULT_LOG_WINDOW_MINUTES),
@@ -258,12 +246,9 @@ public final class QueryPlans {
 
 	/**
 	 * The window every list Tool applies when the caller supplies no {@code from},
-	 * from the class that owns it. Read rather than restated, for the reason
-	 * {@link #sparklineSince()} is read: it is the bind parameter that decides which
-	 * partitions are pruned, and it is the whole subject of ADR-0016's warning that
-	 * an agent omits what a user never picks. A guard with its own copy would
-	 * {@code EXPLAIN} a window no Tool binds and would keep passing after the default
-	 * widened.
+	 * read from the class that owns it — ADR-0016 warns that an agent omits what a
+	 * user never picks. A copy here would {@code EXPLAIN} a window no Tool binds and
+	 * would keep passing after the default widened.
 	 */
 	public static Duration toolWindow() {
 		return Duration.ofDays(ToolSupport.DEFAULT_WINDOW_DAYS);
@@ -293,7 +278,7 @@ public final class QueryPlans {
 		return IssueSearchTool.DEFAULT_STATUS;
 	}
 
-	/** Both statuses the Tool answers, so a guard covers the tab #126 originally missed. */
+	/** Both statuses the Tool answers, so a guard covers each one (#126). */
 	public static List<String> toolIssueStatuses() {
 		return IssueSearchTool.STATUSES;
 	}
@@ -306,10 +291,9 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The one statement {@code get_event_raw} issues. It is the event detail page's
-	 * own row lookup <em>without</em> the two neighbour probes that page also runs —
-	 * a different shape from {@link #eventDetail}, and the only one this Tool pays
-	 * for.
+	 * The one statement {@code get_event_raw} issues: the event detail page's own row
+	 * lookup <em>without</em> the two neighbour probes that page also runs — a
+	 * different shape from {@link #eventDetail}, and the only one this Tool pays for.
 	 */
 	public static Built eventRaw(UUID id) {
 		return new Built(IssueController.EVENT_BY_ID, List.of(id));
@@ -345,10 +329,9 @@ public final class QueryPlans {
 
 	/**
 	 * The one statement {@code find_transactions} issues: a Transaction Group's
-	 * members over a window. The Tool's own SQL — the UI's drill-down aggregates
-	 * the group and never lists its rows, so there was no factory to reuse — which
-	 * is exactly why it is guarded here (ADR-0016: the reuse rule is not an
-	 * exemption from guarding, and new SQL gets a guard of its own).
+	 * members over a window. It is the Tool's own SQL, since the UI's drill-down
+	 * aggregates the group and never lists its rows, so there was no factory to
+	 * reuse — new SQL gets a guard of its own (ADR-0016).
 	 */
 	public static Built findTransactions(long project, String name, String op, List<String> environment,
 			String release, String sort, Instant from, Instant to, int limit) {
@@ -367,15 +350,11 @@ public final class QueryPlans {
 	}
 
 	/**
-	 * The four statements {@code uptime_status} issues, as the Tool binds them —
-	 * scoped to the Projects asked for and to the days of history asked for, which
-	 * on this path are predicates rather than post-filters. Returned as a list
-	 * because one Tool call is their sum.
-	 *
-	 * <p>{@code uptime_check} is a plain table rather than one of the partitioned
-	 * telemetry tables, so {@link QueryGuard#assertCeilingCanFail} has no full-scan
-	 * cost to validate a ceiling against — see the guard for what is asserted
-	 * instead.
+	 * The four statements {@code uptime_status} issues, as the Tool binds them,
+	 * scoped to the Projects and days of history asked for as predicates rather than
+	 * post-filters. Returned as a list because one Tool call is their sum, and
+	 * {@code uptime_check} is a plain table so {@link QueryGuard#assertCeilingCanFail}
+	 * has no full-scan cost to validate a ceiling against.
 	 */
 	public static List<Built> uptimeStatus(List<Long> project, int days) {
 		return Stream

@@ -28,13 +28,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * The publisher-seam tracer bullet end to end (issue #43): a real Sentry
- * envelope through the ingest HTTP boundary → a new Issue → an HTTP POST to a
- * matching Generic JSON channel, plus the persisted history row. Asserts
- * external behavior only (POST arrives, row recorded), never notify internals.
- *
- * <p>The webhook receiver is a local {@link HttpServer} stub — the one new test
- * fixture (prior art: {@code UptimeIntegrationTest}).
+ * The publisher seam end to end (issue #43): a real Sentry envelope through the
+ * ingest HTTP boundary produces a new Issue and an HTTP POST to a matching
+ * Generic JSON channel, plus the persisted history row. Asserts external
+ * behavior only (POST arrives, row recorded), never notify internals.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -77,14 +74,13 @@ class NotificationDeliveryIntegrationTest {
 			.update();
 
 		stub = HttpServer.create(new InetSocketAddress(0), 0);
-		// A receiver that records what it got and 200s.
 		stub.createContext("/hook", exchange -> {
 			String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
 			received.add(new Received(exchange.getRequestURI().getPath(), body));
 			exchange.sendResponseHeaders(200, -1);
 			exchange.close();
 		});
-		// A receiver that always fails, to exercise retries → failed row.
+		// Always fails, to exercise retries into a failed row.
 		stub.createContext("/dead", exchange -> {
 			received.add(new Received(exchange.getRequestURI().getPath(), ""));
 			exchange.sendResponseHeaders(500, -1);
@@ -211,7 +207,6 @@ class NotificationDeliveryIntegrationTest {
 		assertThat(statusCount(channelId, "pending")).isZero();
 		assertThat(received.stream().filter(r -> r.path().equals("/hook")).count()).isEqualTo(10);
 
-		// Suppressed rows carry a reason and never hit the network.
 		String reason = jdbc.sql(
 				"SELECT error_detail FROM notification_history WHERE channel_id = ? AND status = 'suppressed' LIMIT 1")
 			.param(channelId)
@@ -231,7 +226,6 @@ class NotificationDeliveryIntegrationTest {
 			postEnvelope(jsEventEnvelope("prod", "flood.fn" + i));
 		}
 
-		// Both channels independently deliver 10 and suppress 5 — neither starves the other.
 		for (long channelId : new long[] { channelA, channelB }) {
 			awaitStatusCount(channelId, "sent", 10);
 			awaitStatusCount(channelId, "suppressed", flood - 10);

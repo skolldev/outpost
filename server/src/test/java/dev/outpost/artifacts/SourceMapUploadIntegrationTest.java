@@ -102,7 +102,6 @@ class SourceMapUploadIntegrationTest {
 		byte[] bundle = buildBundle(DEBUG_ID, "chunk-X.js");
 		String checksum = sha1(bundle);
 
-		// Assemble before uploading: the server must list the missing chunk.
 		Map<String, Object> notFound = assemble(checksum, RELEASE);
 		assertThat(notFound.get("state")).isEqualTo("not_found");
 		assertThat(this.<List<String>>cast(notFound.get("missingChunks"))).containsExactly(checksum);
@@ -113,7 +112,6 @@ class SourceMapUploadIntegrationTest {
 		// Idempotent re-assemble (CLI retries, re-runs of the same CI job).
 		assertThat(assemble(checksum, RELEASE).get("state")).isEqualTo("ok");
 
-		// A minified error event now comes out with original TS source.
 		JsonNode probe = namedProbe();
 		postEnvelope(jsEventEnvelope(DEBUG_ID, probe.get("generatedLine").asInt() + 1,
 				probe.get("generatedColumn").asInt() + 1));
@@ -128,13 +126,11 @@ class SourceMapUploadIntegrationTest {
 		assertThat(frame.get("context_line")).isNotNull();
 		assertThat((List<?>) frame.get("pre_context")).isNotEmpty();
 
-		// The pre-symbolication frames stay available.
 		Map<String, Object> exception = primaryException(event);
 		Map<String, Object> raw = cast(exception.get("raw_stacktrace"));
 		List<Map<String, Object>> rawFrames = cast(raw.get("frames"));
 		assertThat(rawFrames.get(rawFrames.size() - 1).get("abs_path")).isEqualTo(MINIFIED_URL);
 
-		// Releases API reflects the uploaded bundle.
 		List<Map<String, Object>> releases = cast(getJson("/api/internal/releases?project=" + projectId));
 		assertThat(releases).anySatisfy(release -> {
 			assertThat(release.get("version")).isEqualTo(RELEASE);
@@ -152,7 +148,7 @@ class SourceMapUploadIntegrationTest {
 		String debugId = "11111111-2222-3333-4444-555555555555";
 		JsonNode probe = namedProbe();
 
-		// Event arrives before its source map: flagged, with banner data.
+		// Event arrives before its source map, so it comes back flagged with warning data.
 		postEnvelope(jsEventEnvelope(debugId, probe.get("generatedLine").asInt() + 1,
 				probe.get("generatedColumn").asInt() + 1));
 		Map<String, Object> flagged = awaitEvent("missing_sourcemap");
@@ -163,7 +159,6 @@ class SourceMapUploadIntegrationTest {
 		Map<String, Object> minifiedFrame = topFrame(flagged);
 		assertThat(minifiedFrame.get("abs_path")).isEqualTo(MINIFIED_URL);
 
-		// The late bundle upload re-processes the flagged event in place.
 		byte[] bundle = buildBundle(debugId, "chunk-X.js");
 		uploadChunk(bundle);
 		assertThat(assemble(sha1(bundle), RELEASE).get("state")).isEqualTo("ok");

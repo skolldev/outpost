@@ -128,7 +128,7 @@ describe('NotificationChannelsSettings', () => {
 
     await user.type(screen.getByLabelText('Name'), 'Team alerts');
     await user.type(screen.getByLabelText('Webhook URL'), 'https://example.webhook.office.com/x');
-    expect(submit).toBeDisabled(); // no trigger selected yet
+    expect(submit).toBeDisabled();
 
     await user.click(screen.getByLabelText('New issue'));
     expect(submit).toBeEnabled();

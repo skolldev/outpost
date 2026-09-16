@@ -15,21 +15,16 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
- * The same load driver pointed at a real deployment, for when an absolute
- * capacity number is wanted rather than a before/after comparison. Boots no
- * Spring context and starts no container.
+ * The same load driver pointed at a real deployment, for an absolute capacity
+ * number rather than a before/after comparison. Boots no Spring context; with no
+ * JDBC handle or {@code MeterRegistry} for a remote server, it reports only
+ * client-side figures — scrape {@code /actuator/prometheus} on the management
+ * port during the run to pair queue depth and wait with the table below.
  *
  * <pre>
  * ./gradlew ingestBenchmark -Pbench.target=http://host:8080 \
  *     -Pbench.projectId=1 -Pbench.key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
  * </pre>
- *
- * <p>Deliberately thinner than {@link IngestBenchmark}: with the server on
- * another host there is no JDBC handle for stored-row counts and no {@code
- * MeterRegistry} to read, so this reports client-side figures plus whatever the
- * instance's own {@code outpost_ingest_*} meters say — scrape
- * {@code /actuator/prometheus} on the management port during the run to pair
- * queue depth and queue wait with the table below.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @EnabledIfSystemProperty(named = "outpost.bench.target", matches = ".+")

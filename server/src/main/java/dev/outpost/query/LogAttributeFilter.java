@@ -10,21 +10,15 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 
 /**
- * One {@code attr=} filter on the Log Record stream: {@code key=value} for
- * equality, a bare {@code key} for presence.
- *
- * <p>The one place equality is defined, because it is defined twice over — once
- * as SQL for the list, the timeline and {@code search_logs}, once in-process for
- * the live tail — and the two must agree on every record (ADR-0018). The filter
- * is text; an attribute holds whatever JSON type the SDK sent. Equality is
- * therefore textual, and served by containment: the text is expanded into each
- * scalar JSON value it could denote, and a record matches when its attribute
- * equals any of them. Containment, unlike {@code attributes->>key}, is what
- * {@code idx_log_attributes} indexes (#132).
+ * One {@code attr=} filter on the Log Record stream: {@code key=value} for equality, a bare
+ * {@code key} for presence. The one place equality is defined — used both as SQL and in-process
+ * for the live tail, which must agree on every record (ADR-0018) — and served by jsonb
+ * containment rather than {@code attributes->>key}, which is what {@code idx_log_attributes}
+ * indexes (#132).
  *
  * @param value null for a presence filter
- * @param candidates the scalar JSON values {@code value} could denote, derived once
- * rather than per record because the live tail tests every streamed record against them
+ * @param candidates the scalar JSON values {@code value} could denote, derived once rather than
+ * per record because the live tail tests every streamed record against them
  */
 record LogAttributeFilter(String key, @Nullable String value, List<JsonNode> candidates) {
 
@@ -87,10 +81,9 @@ record LogAttributeFilter(String key, @Nullable String value, List<JsonNode> can
 	}
 
 	/**
-	 * The number {@code value} spells, if a jsonb attribute could hold it. {@code 1e200000}
-	 * is spelled like a number, but no stored attribute can have that value — binding it
-	 * would fail the whole query on {@code numeric} overflow, and {@code 1e9999999999}
-	 * fails {@link BigDecimal} before that — so it is matched as the text it is.
+	 * The number {@code value} spells, if a jsonb attribute could hold it. {@code 1e200000} parses
+	 * as a number but would overflow Postgres {@code numeric} if bound, so out-of-range values are
+	 * matched as text instead.
 	 */
 	private static @Nullable BigDecimal storableNumber(String value) {
 		if (!JSON_NUMBER.matcher(value).matches()) {

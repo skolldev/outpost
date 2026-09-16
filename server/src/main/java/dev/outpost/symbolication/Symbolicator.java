@@ -12,10 +12,9 @@ import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /**
- * Ingest-time JS symbolication, synchronous within the worker. Mutates the
- * event's exception stacktraces in place, preserving the originals as
- * {@code raw_stacktrace} the way Sentry does. Lookup misses are recorded under
- * {@code _outpost_symbolication.missing} for the UI warning banner.
+ * Ingest-time JS symbolication, synchronous within the worker: mutates the
+ * event's exception stacktraces in place, preserving the originals as {@code raw_stacktrace}.
+ * Lookup misses are recorded under {@code _outpost_symbolication.missing} for the UI warning banner.
  */
 @Component
 public class Symbolicator {

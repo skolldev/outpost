@@ -12,11 +12,9 @@ import { MIN_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH_MESSAGE } from '../../core/pas
 import { Session } from '../../core/session';
 
 /**
- * The signed-in user's own account: the one authenticated surface that is not
- * Admin-only (see the route comment in app.routes.ts). Changing a password
- * leaves the Session untouched — neither the email nor the role in the cookie
- * changes, so per ADR 0012 there is nothing to re-issue and the user stays
- * signed in.
+ * The signed-in user's own account — the one authenticated surface that isn't
+ * Admin-only. Changing a password leaves the Session untouched (ADR 0012): no
+ * re-issue needed, and the user stays signed in.
  */
 @Component({
   selector: 'app-account',
@@ -40,9 +38,8 @@ export class AccountPage {
       required(path.newPassword, { message: 'New password is required.' });
       minLength(path.newPassword, MIN_PASSWORD_LENGTH, { message: MIN_PASSWORD_LENGTH_MESSAGE });
       required(path.confirmPassword, { message: 'Confirm the new password.' });
-      // Cross-field: reported on the confirmation, which is the field the user
-      // can fix. The server has no equivalent check — the confirmation exists
-      // only to catch a typo before it becomes an unrecoverable password.
+      // Cross-field check reported on confirmPassword; the server has no
+      // equivalent — this exists only to catch a typo before submit.
       validate(path.confirmPassword, ({ value, valueOf }) =>
         value() === valueOf(path.newPassword)
           ? null
@@ -56,9 +53,8 @@ export class AccountPage {
           try {
             await firstValueFrom(this.api.changePassword(currentPassword, newPassword));
           } catch (error) {
-            // 401 is the one outcome validation cannot catch: the current
-            // password was wrong. Anything else is a genuine failure and must
-            // not be reported as a bad password.
+            // 401 is the only outcome validation can't catch — other errors
+            // must not be reported as a bad password.
             const status = (error as HttpErrorResponse | undefined)?.status;
             this.feedback.error(
               status === 401 ? 'Current password is incorrect.' : 'Could not change password.',

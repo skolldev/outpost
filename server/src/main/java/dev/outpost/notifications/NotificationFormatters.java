@@ -23,9 +23,9 @@ public class NotificationFormatters {
 	}
 
 	/**
-	 * @throws IllegalArgumentException if no formatter is registered for the type — a
-	 * programming error, since the CHECK constraint and controller validation keep
-	 * only known types in the table. Surfaced rather than silently dropped.
+	 * @throws IllegalArgumentException if no formatter is registered for the type — a programming
+	 * error, since the CHECK constraint and controller validation keep only known types in the
+	 * table.
 	 */
 	public String format(String channelType, NotificationOccurrence occurrence, NotificationContext context) {
 		NotificationFormatter formatter = byType.get(channelType);

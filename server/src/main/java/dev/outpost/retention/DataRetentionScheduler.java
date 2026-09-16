@@ -26,9 +26,9 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	private static final LocalTime RUN_TIME = LocalTime.of(2, 0);
 
 	/**
-	 * Fixed window for notification-history pruning (#47). Independent of the Data
-	 * Retention Policy — that policy is telemetry-only; notification history is
-	 * always capped so it never grows unbounded.
+	 * Fixed window for notification-history pruning (#47), independent of the
+	 * Data Retention Policy — that policy is telemetry-only, so history
+	 * pruning always runs regardless of it.
 	 */
 	private static final Duration NOTIFICATION_HISTORY_RETENTION = Duration.ofDays(30);
 
@@ -74,8 +74,7 @@ public class DataRetentionScheduler implements SmartLifecycle {
 	}
 
 	void runOnce(Instant runInstant) {
-		// Notification history is capped unconditionally (#47), independent of the
-		// opt-in telemetry policy, so it runs on every sweep before either branch.
+		// Notification-history pruning (#47) runs unconditionally, before either branch.
 		pruneNotificationHistory(runInstant);
 		DataRetentionSettings.Policy policy = settings.get();
 		if (!policy.enabled()) {

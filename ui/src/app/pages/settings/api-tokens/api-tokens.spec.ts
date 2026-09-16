@@ -53,9 +53,8 @@ async function pickOption(
 }
 
 /**
- * Captures the create request body so ownership and scopes can be asserted.
- * `onCreated` lets a test feed the new token back into the list handler, which is
- * how the reload after a successful create is observed.
+ * Captures the create request body. `onCreated` feeds the new token back into the
+ * list handler so a test can observe the reload after a successful create.
  */
 function captureCreate(
   created: Partial<ApiToken> & { onCreated?: (token: ApiToken) => void } = {},

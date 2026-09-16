@@ -33,7 +33,7 @@ export class ScenarioPanelComponent {
       hint: 'TypeError caught by Sentry.createErrorHandler → Issues (symbolicated after sourcemap upload)',
       run: () => {
         const cart = undefined as unknown as { total: number };
-        // Throws "Cannot read properties of undefined" through Angular's ErrorHandler.
+        // Intentional: triggers a TypeError for the demo scenario.
         this.status.set(`total: ${cart.total}`);
       },
     },

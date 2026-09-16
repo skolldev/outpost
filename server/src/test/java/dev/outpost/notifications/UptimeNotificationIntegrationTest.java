@@ -23,16 +23,12 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Uptime incident notifications end to end (issue #45): driving
- * {@link UptimeCheckService} directly (prior art: {@code UptimeIntegrationTest}),
- * three consecutive failures produce exactly one {@code incident_started}
- * delivery and a recovery produces exactly one {@code incident_resolved}
- * delivery carrying the downtime. Asserts external behavior only — the POST that
- * arrives at a stub webhook receiver and the persisted history rows — never the
- * notify module's internals.
- *
- * <p>Monitors are seeded with a future {@code next_check_at} so the live uptime
- * scheduler never probes them; every check here is issued by the test.
+ * Uptime incident notifications end to end (issue #45), driving
+ * {@link UptimeCheckService} directly: three consecutive failures produce
+ * exactly one {@code incident_started} delivery, and a recovery produces
+ * exactly one {@code incident_resolved} delivery carrying the downtime.
+ * Monitors are seeded with a future {@code next_check_at} so the live scheduler
+ * never probes them — every check here is issued by the test.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -91,7 +87,6 @@ class UptimeNotificationIntegrationTest {
 		sleep(300);
 		assertThat(received).isEmpty();
 
-		// Third failure opens the incident and fires exactly one started delivery.
 		checkService.recordResult(monitorId, 3600, failure("HTTP 503"));
 		Received started = awaitDelivery("incident_started");
 		Map<String, Object> startedPayload = json(started.body());
@@ -108,7 +103,6 @@ class UptimeNotificationIntegrationTest {
 		sleep(300);
 		assertThat(deliveries("incident_started")).isEqualTo(1);
 
-		// Recovery closes the incident and fires exactly one resolved delivery.
 		checkService.recordResult(monitorId, 3600, success());
 		Received resolved = awaitDelivery("incident_resolved");
 		Map<String, Object> incident = cast(json(resolved.body()).get("incident"));
@@ -140,7 +134,6 @@ class UptimeNotificationIntegrationTest {
 
 	@Test
 	void channelNotSubscribedToStartedDoesNotFire() {
-		// Subscribed only to resolved: the open transition must not reach it.
 		createChannel(hookUrl("/hook"), true, "{incident_resolved}", "{}", "{}");
 		long monitorId = insertMonitor("https://shop.example/health", "prod");
 

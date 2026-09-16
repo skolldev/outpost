@@ -17,51 +17,25 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * What every Tool on the MCP Surface shares: the bounded {@link JdbcTemplate}
- * they all query through, the Project slug the caller names a Project by, and
- * the time window applied when the caller names none.
- *
- * <p>The window default and the slug translation are here for the same reason —
- * <b>an agent omits what a user never has to pick</b>. ADR-0016 states it as a
- * performance rule: the query factories these Tools reuse arrive with their
- * guards written for the shapes the UI sends, and every real page load carries a
- * time range because the range picker has a default. A Tool that passed an
- * agent's silence straight through would run the unbounded shape nobody
- * measured, which is #126's failure mode on a new surface. So the default is
- * applied here, once, and disclosed by every Tool that applies it.
- *
- * <p>The {@code JdbcTemplate} is here for a different reason, and it is worth
- * being clear that it is a different one: the statement timeout below belongs to
- * the MCP path and to nothing else, so it needs exactly one owner that the
- * controllers do not share.
- *
- * <p>Package-private, and deliberately not a bean any controller can reach: the
- * timeout below belongs to the MCP path and putting it on the shared
- * {@code JdbcTemplate} would put it on the UI's queries too.
+ * What every Tool on the MCP Surface shares: Project slug resolution, the
+ * default time window applied when a caller supplies none, and a bounded
+ * {@link JdbcTemplate}. The template owns its own statement timeout,
+ * deliberately separate from the shared bean the UI's controllers use, so a
+ * runaway agent query can't queue behind ingest writes indefinitely.
  */
 @Component
 class ToolSupport {
 
 	/**
-	 * How far back a Tool reads when the caller supplies no {@code from}. Fourteen
-	 * days because that is the range picker's default in
-	 * {@code ui/src/app/core/filters.ts}, and therefore the shape the list indexes
-	 * were tuned against — matching it is the whole point of having a default at
-	 * all.
+	 * Default lookback applied when {@code from} is omitted. Must match the range
+	 * picker's default in {@code ui/src/app/core/filters.ts} — the list indexes
+	 * are tuned for that window.
 	 */
 	static final int DEFAULT_WINDOW_DAYS = 14;
 
 	private final JdbcTemplate jdbc;
 
-	/**
-	 * A statement timeout bounds this path, per the MCP Surface's performance rules.
-	 * It is a backstop for the unexpected rather than the plan for the expected —
-	 * ADR-0001 and ADR-0003 put these queries on the same single Postgres the ingest
-	 * pipeline is writing to, so a runaway agent query is a runaway ingest queue.
-	 *
-	 * <p>Its own {@code JdbcTemplate} rather than the shared one, because the timeout
-	 * is the point: setting it on the injected bean would put it on every controller.
-	 */
+	// Own JdbcTemplate, not the shared bean (ADR-0001, ADR-0003) — the timeout must not apply to the UI's queries.
 	ToolSupport(DataSource dataSource, @Value("${outpost.mcp.query-timeout-seconds:15}") int queryTimeoutSeconds) {
 		this.jdbc = new JdbcTemplate(dataSource);
 		this.jdbc.setQueryTimeout(queryTimeoutSeconds);
@@ -72,10 +46,8 @@ class ToolSupport {
 	}
 
 	/**
-	 * The same bounded template as a {@link JdbcClient}, for the statements outside
-	 * this package that are written against that API — {@code UptimeStatusService}'s.
-	 * Its callers choose the client so the timeout can be the Tool's without becoming
-	 * the UI's.
+	 * The same bounded template as a {@link JdbcClient}, for callers outside this
+	 * package (e.g. {@code UptimeStatusService}) written against that API.
 	 */
 	JdbcClient jdbcClient() {
 		return JdbcClient.create(jdbc);
@@ -84,25 +56,17 @@ class ToolSupport {
 	// --------------------------------------------------------------- projects
 
 	/**
-	 * The Projects this installation holds, both ways round.
-	 *
-	 * <p><b>Tools name a Project by its slug, never by its id.</b> The slug is what a
-	 * developer types, what the DSN carries and what {@code list_projects} returns
-	 * first; an id is an implementation detail an agent can only have learned from a
-	 * URL it was pasted. Ids stay out of Tool parameters entirely and the translation
-	 * happens here — which also means an unknown slug is caught before it reaches a
-	 * statement, rather than silently matching nothing.
+	 * The Projects this installation holds, both ways round. Tools take a slug,
+	 * never an id, so an unknown slug is caught here before it reaches a statement
+	 * instead of silently matching nothing.
 	 */
 	record Projects(Map<String, Long> idBySlug, Map<Long, String> slugById, Map<Long, String> nameById) {
 
 		/**
-		 * The ids behind {@code slugs}, or an empty list for "every Project" — which is
-		 * how {@link QuerySupport#appendInClause} reads an absent filter.
-		 *
-		 * <p>An unknown slug throws rather than being dropped. A dropped filter widens
-		 * the answer silently, and the caller would read a result spanning every Project
-		 * as one scoped to the Project it asked for — the one failure here that produces
-		 * a confidently wrong conclusion rather than an error.
+		 * The ids behind {@code slugs}, or an empty list for "every Project" (how
+		 * {@link QuerySupport#appendInClause} reads an absent filter). An unknown slug
+		 * throws rather than being silently dropped, which would otherwise widen the
+		 * result to every Project without saying so.
 		 */
 		List<Long> resolve(@Nullable List<String> slugs) {
 			if (slugs == null || slugs.isEmpty()) {
@@ -129,16 +93,10 @@ class ToolSupport {
 
 	/**
 	 * Rejects an Environment Name no telemetry has ever arrived under, before it
-	 * reaches a statement. The same reasoning as {@link Projects#resolve}: an
-	 * unknown value bound into an equality predicate matches nothing, and an empty
-	 * result scoped to a typo reads exactly like "nothing happened there" — the one
-	 * failure on this surface that produces a confidently wrong conclusion rather
-	 * than an error.
-	 *
-	 * <p>Known installation-wide rather than per filtered Project, deliberately: an
-	 * Environment that exists on another Project but not the one asked about is a
-	 * legitimate empty answer ("shop has sent nothing from staging"), where a name
-	 * that exists nowhere is a typo. Only the typo is refused.
+	 * reaches a statement — an unknown value in an equality predicate would
+	 * otherwise match nothing and look like a legitimate empty answer. Checked
+	 * installation-wide rather than per filtered Project, since "exists elsewhere
+	 * but not here" is a valid empty answer and only a global unknown is a typo.
 	 */
 	void requireKnownEnvironments(@Nullable List<String> environments) {
 		if (environments == null || environments.isEmpty()) {
@@ -159,12 +117,8 @@ class ToolSupport {
 	}
 
 	/**
-	 * Rejects a release version no telemetry has ever carried, for the reason
-	 * {@link #requireKnownEnvironments} rejects an unknown Environment Name: the
-	 * filter is an exact string match, and {@code shop-1.4.2} for {@code shop@1.4.2}
-	 * would otherwise return an empty result indistinguishable from "this release is
-	 * clean". Releases are auto-created on ingest, so every version any signal has
-	 * carried has a row to be found in.
+	 * Rejects a release version no telemetry has ever carried, for the same reason
+	 * {@link #requireKnownEnvironments} rejects an unknown name.
 	 */
 	void requireKnownRelease(@Nullable String release) {
 		if (release == null || release.isBlank()) {
@@ -181,9 +135,8 @@ class ToolSupport {
 
 	/**
 	 * A snapshot of the Project catalogue, read through the controller's own
-	 * statement (ADR-0016). One extra round trip per Tool call, over a table holding
-	 * one row per Project — cheaper than joining {@code project} into every
-	 * statement below just to carry a slug through it.
+	 * statement (ADR-0016). One extra round trip per Tool call is cheaper than
+	 * joining {@code project} into every statement below just to carry a slug.
 	 */
 	Projects projects() {
 		SearchQuery search = ProjectController.buildProjectListQuery();
@@ -203,18 +156,11 @@ class ToolSupport {
 	// ----------------------------------------------------------------- window
 
 	/**
-	 * The window a Tool answered over, echoed in the payload of every Tool that
-	 * takes one.
+	 * The window a Tool answered over, echoed in every payload that takes one so
+	 * it survives truncation and re-summarization better than a caveat sentence
+	 * would.
 	 *
-	 * <p>Echoed as a field rather than left to a caveat because ADR-0014's argument
-	 * about field names applies to values too: a window in the response is attached
-	 * to the numbers it produced and survives every truncation those numbers do,
-	 * whereas a sentence at the bottom of a caveats array is the first thing a
-	 * re-summarization drops.
-	 *
-	 * @param defaulted whether the caller named the start of it, so a reader can tell
-	 * "the last fourteen days because you asked" from "the last fourteen days because
-	 * you did not"
+	 * @param defaulted whether the caller supplied {@code from}
 	 */
 	record Window(String from, String to, boolean defaulted) {
 
@@ -228,16 +174,9 @@ class ToolSupport {
 	}
 
 	/**
-	 * Resolves the {@code from}/{@code to} pair a Tool was called with, applying the
-	 * default and disclosing it.
-	 *
-	 * <p>{@code from} also accepts an ISO-8601 <em>duration</em> — {@code PT1H},
-	 * {@code P2D} — meaning that far back from {@code to}. A relative window is what
-	 * an agent usually means and a model has no reliable clock, so "the last hour"
-	 * as an absolute instant is an instant the caller has to invent; a duration is
-	 * the version of that request it can state without one. The resolved window is
-	 * echoed absolute in the payload, so the caller can still narrow further from a
-	 * previous result.
+	 * Resolves the {@code from}/{@code to} pair a Tool was called with, applying
+	 * the default window and disclosing it. {@code from} also accepts an ISO-8601
+	 * duration (e.g. {@code PT1H}) meaning that far back from {@code to}.
 	 */
 	static Window window(@Nullable String from, @Nullable String to, List<String> caveats) {
 		Instant upper = blank(to) ? Instant.now() : parse(to, "to");
@@ -256,9 +195,8 @@ class ToolSupport {
 
 	/**
 	 * The start of the window: an instant, or a duration counted back from
-	 * {@code upper}. The two are distinguishable by the first character — an
-	 * ISO-8601 duration starts with {@code P} and an instant with a digit — so
-	 * nothing valid is ambiguous.
+	 * {@code upper}, disambiguated by the first character (ISO-8601 durations
+	 * start with {@code P}, instants with a digit).
 	 */
 	private static Instant lower(String from, Instant upper) {
 		String value = from.trim();
@@ -302,12 +240,8 @@ class ToolSupport {
 	}
 
 	/**
-	 * Text cut to {@code max} characters, or returned as it arrived.
-	 *
-	 * <p>Shared by the Tools that return a Log Record body, which is frequently a
-	 * stack trace: a page of them is a context window. The kept part is the received
-	 * text verbatim — nothing here summarizes — and the caller is told the cut
-	 * happened by the Tool that made it.
+	 * Text cut to {@code max} characters, or returned as it arrived. The kept part
+	 * is the text verbatim — nothing here summarizes.
 	 */
 	@Nullable
 	static String truncate(@Nullable String text, int max) {
@@ -315,9 +249,8 @@ class ToolSupport {
 	}
 
 	/**
-	 * Rejects a malformed instant by name. The message says which parameter and what
-	 * a good value looks like, because the caller cannot read this source and a
-	 * {@code DateTimeParseException}'s own text names an index in a string.
+	 * Rejects a malformed instant, naming the parameter and an example value — a
+	 * raw {@code DateTimeParseException} only names a string index.
 	 */
 	private static Instant parse(String value, String parameter) {
 		try {

@@ -60,16 +60,14 @@ public class TransactionStore {
 	}
 
 	/**
-	 * Stores a batch in one transaction. On failure, falls back to storing
-	 * transactions one by one so a poison transaction cannot sink its whole batch.
+	 * Stores a batch in one transaction, falling back to storing transactions one by
+	 * one if a poison transaction would otherwise sink the whole batch.
 	 */
 	public void store(List<ProcessedTransaction> batch) {
 		if (batch.isEmpty()) {
 			return;
 		}
-		// Partition DDL runs in its own transaction, before the insert transaction.
-		// txn and span partition on start_ts; spans of a transaction can straddle a
-		// week boundary from the root, so ensure partitions for every span too.
+		// Partition DDL runs first, in its own transaction; spans can straddle a week boundary from their root txn, so partition for every span too.
 		List<Instant> txnStarts = batch.stream().map(ProcessedTransaction::startTs).toList();
 		partitions.ensurePartitions(PartitionManager.TXN, txnStarts);
 		partitions.ensurePartitions(PartitionManager.SPAN,
@@ -80,9 +78,9 @@ public class TransactionStore {
 	}
 
 	/**
-	 * Requires every txn and span partition to exist already — which is why the
-	 * retry recurses here and not into {@link #store}: re-checking per transaction
-	 * would cost two round trips each on the one path that is already degraded.
+	 * Requires every txn and span partition to exist already; retries recurse here
+	 * rather than into {@link #store} to avoid re-checking partitions per transaction
+	 * on the already-degraded path.
 	 */
 	private void storeWithPreparedPartitions(List<ProcessedTransaction> batch) {
 		PoisonIsolation.run(log, batch, txns -> transaction.executeWithoutResult(status -> storeAll(txns)),

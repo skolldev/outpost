@@ -40,10 +40,7 @@ export class DataRetentionSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
 
-  // Retention period choices; the string value matches the select-bound model
-  // field (coerced back to a number at the DTO boundary) and the label is
-  // derived from the same list so the trigger and options never drift. The four
-  // fixed options bound the value, so `required` is the only validator needed.
+  // String values, coerced to a number at the DTO boundary; fixed options need only `required`.
   readonly retentionOptions: { value: RetentionDaysValue; label: string }[] = [
     { value: '30', label: '30 days' },
     { value: '60', label: '60 days' },
@@ -53,20 +50,16 @@ export class DataRetentionSettings {
   readonly retentionDaysLabel = (value: string): string =>
     this.retentionOptions.find((option) => option.value === value)?.label ?? value;
 
-  // Read-into-form: the resource fetches the current setting and a seeding
-  // effect copies it into the form once it arrives.
+  // Fetched here; a seeding effect below copies the value into the form once it arrives.
   private readonly retentionResource = httpResource<DataRetentionSetting>(
     () => `${API_BASE}/settings/data-retention`,
   );
   readonly retentionLoading = this.retentionResource.isLoading;
 
-  // Persistent page-state error for a failed *load*; the alert explains why the
-  // form is empty. Save outcomes go through the Feedback seam instead.
+  // Load-failure state only; save outcomes go through the Feedback seam instead.
   readonly retentionError = signal<string | null>(null);
 
-  // Typed form model. `retentionDays` is the select value as a string; it starts
-  // empty and `required`, so the form is invalid — and submit disabled — until
-  // the saved setting hydrates it (or the user picks a period).
+  // retentionDays starts empty and required, so submit stays disabled until the saved setting hydrates it (or the user picks one).
   private readonly model = signal<{ enabled: boolean; retentionDays: RetentionDaysValue | '' }>({
     enabled: false,
     retentionDays: '',
@@ -101,8 +94,7 @@ export class DataRetentionSettings {
 
   constructor() {
     effect(() => {
-      // value() throws while the resource is loading or errored; only read it
-      // once a value is present, then seed the editable form from it.
+      // value() throws while loading or errored; only read it once hasValue() is true.
       if (this.retentionResource.hasValue()) {
         this.seedForm(this.retentionResource.value());
       }

@@ -5,14 +5,10 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Formats the Generic JSON payload — a public, versioned contract for custom
- * receivers (#41). Keys are written explicitly rather than derived from a naming
- * strategy, so the wire shape is a deliberate contract that survives any change
- * to the app's Jackson configuration.
- *
- * <p>Contract rules: {@code version} is {@code 1}; changes within a version are
- * additive only. Documented in
- * {@code docs/notifications/generic-json-payload.md}.
+ * Formats the Generic JSON payload, a versioned wire contract for custom receivers: keys are
+ * written explicitly rather than derived from Jackson's naming strategy, so the shape stays
+ * stable across app config changes. {@code version} is {@code 1} and changes within a version
+ * are additive only; see {@code docs/notifications/generic-json-payload.md}.
  */
 @Component
 public class GenericJsonFormatter implements NotificationFormatter {

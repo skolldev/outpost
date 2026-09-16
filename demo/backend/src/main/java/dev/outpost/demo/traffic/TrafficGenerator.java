@@ -11,10 +11,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 /**
- * Ambient traffic so Outpost's live tail, trace list, and issue trends always
- * have fresh data. Calls the app's own HTTP endpoints through the shared
- * RestClient, so generated traffic produces real http.server transactions —
- * the same envelopes a genuine client would cause. Disable with DEMO_TRAFFIC=false.
+ * Ambient traffic so Outpost's live tail, trace list, and issue trends stay fresh; disable with DEMO_TRAFFIC=false.
+ * Calls the app's own HTTP endpoints, not the underlying methods, so it produces real http.server transactions.
  */
 @Component
 @ConditionalOnBooleanProperty("demo.traffic.enabled")
@@ -75,8 +73,7 @@ public class TrafficGenerator {
 
 	@Scheduled(initialDelay = 60_000, fixedDelay = 240_000)
 	public void ambientError() {
-		// /api/flaky throws ~30% of the time; a few attempts make an error likely
-		// without guaranteeing one — trends stay organic.
+		// /api/flaky throws ~30% of the time; 4 attempts make an error likely but not certain.
 		for (int i = 0; i < 4; i++) {
 			try {
 				selfClient.get().uri("/api/flaky").retrieve().body(String.class);

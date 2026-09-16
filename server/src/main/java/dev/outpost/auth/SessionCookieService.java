@@ -37,8 +37,7 @@ public class SessionCookieService {
 	private static byte[] loadOrCreateSecret(JdbcClient jdbc) {
 		byte[] fresh = new byte[32];
 		new SecureRandom().nextBytes(fresh);
-		// Single INSERT..ON CONFLICT..RETURNING round trip: first boot stores the
-		// fresh secret, later boots (and concurrent replicas) read the stored one.
+		// INSERT..ON CONFLICT..RETURNING: first boot stores the secret, later boots read it.
 		String stored = jdbc.sql("""
 				INSERT INTO setting (key, value) VALUES (?, ?)
 				ON CONFLICT (key) DO UPDATE SET value = setting.value

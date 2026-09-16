@@ -17,21 +17,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * An MCP client, as far as the tests need one: the streamable-HTTP handshake and
- * one JSON-RPC round trip at a time, over a bearer token.
- *
- * <p>The exchange is what a real client's transport does — {@code initialize},
- * {@code notifications/initialized}, then {@code tools/list} and
- * {@code tools/call}, carrying the {@code Mcp-Session-Id} the server issued — so
- * the tests fail for the reasons a client would rather than for reasons only a
- * test can hit. Responses come back as JSON or as a one-event SSE stream
- * depending on what the transport chooses, which is why {@link #unwrap} handles
- * both.
- *
- * <p>Shared rather than copied because two suites drive the same surface: the one
- * that proves the transport and the auth work at all, and the one that exercises
- * each Tool. A second copy of this handshake would let them disagree about what
- * a client does, which is the one thing neither is testing.
+ * A minimal MCP client for tests: the streamable-HTTP handshake and one
+ * JSON-RPC round trip at a time, over a bearer token. Responses arrive as
+ * plain JSON or as a one-event SSE stream depending on what the transport
+ * chooses, which is why {@link #unwrap} handles both.
  */
 public final class McpTestClient {
 
@@ -39,10 +28,9 @@ public final class McpTestClient {
 	public static final String PROTOCOL_VERSION = "2025-06-18";
 
 	/**
-	 * {@code JdkClientHttpRequestFactory} rather than the default: the streamable
-	 * transport answers a POST with a chunked {@code text/event-stream} body, and
-	 * {@code HttpURLConnection} reports "Premature EOF" reading one. A real client is
-	 * on a modern HTTP stack, so this is the honest one to test against.
+	 * {@code JdkClientHttpRequestFactory} rather than the default: the transport
+	 * answers with a chunked {@code text/event-stream} body, and
+	 * {@code HttpURLConnection} reports "Premature EOF" reading one.
 	 */
 	private final RestTemplate rest = new RestTemplate(new JdkClientHttpRequestFactory());
 
@@ -116,8 +104,7 @@ public final class McpTestClient {
 	public ResponseEntity<String> post(Map<String, Object> body, String token) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-		// Both, exactly as the streamable-HTTP transport requires: the server may answer
-		// a POST with a JSON body or with a single-event SSE stream.
+		// Both: the server may answer a POST with JSON or a single-event SSE stream.
 		headers.set(HttpHeaders.ACCEPT, "application/json, text/event-stream");
 		if (token != null) {
 			headers.setBearerAuth(token);

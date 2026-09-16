@@ -11,10 +11,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Mirrors the frontend's selected demo persona onto backend events and logs:
- * the Angular app sends the username in X-Demo-User, so both projects' events
- * carry the same user. Sentry's Spring filter isolates scopes per request, so
- * no cleanup is needed.
+ * Sets the Sentry user from the X-Demo-User header so backend events match the
+ * frontend's selected persona. No cleanup needed: Sentry's Spring filter isolates scopes per request.
  */
 @Component
 public class DemoUserFilter extends OncePerRequestFilter {

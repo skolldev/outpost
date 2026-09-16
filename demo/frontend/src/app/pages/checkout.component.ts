@@ -74,8 +74,7 @@ export class CheckoutComponent {
     this.error.set(null);
     const email = `${this.users.user() ?? 'guest'}@example.com`;
     const items = this.cart().map((l) => ({ sku: l.product.sku, quantity: l.quantity }));
-    // The distributed-trace showcase: this POST carries sentry-trace/baggage, so
-    // the backend checkout + shipping-quote transactions join this browser trace.
+    // Carries sentry-trace/baggage so the backend checkout + shipping-quote transactions join this trace.
     this.api.checkout(email, '10115', items).subscribe({
       next: (res) => {
         this.busy.set(false);

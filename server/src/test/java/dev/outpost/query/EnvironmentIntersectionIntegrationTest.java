@@ -20,15 +20,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Backend coverage for #82 / ADR 0009: repeated {@code project} params on the
- * telemetry list endpoints ({@code project_id IN (...)}), and the
- * {@code GET /projects/environments} intersection endpoint. The intersection is
- * over Environment <em>Names</em> across the in-scope Projects, ignoring Projects
- * that have no Environments yet (no evidence, not evidence of absence).
- *
- * <p>Seeds {@code environment} and {@code issue} rows directly — this exercises
- * query behavior, not ingest, so direct seeding keeps it deterministic and off
- * the async pipeline (both are plain, non-partitioned tables).
+ * #82 / ADR-0009: repeated {@code project} params on telemetry list endpoints
+ * ({@code project_id IN (...)}), and the {@code GET /projects/environments}
+ * intersection endpoint, which intersects Environment names across Projects
+ * that have at least one.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -59,7 +54,6 @@ class EnvironmentIntersectionIntegrationTest {
 		empty = newProject("empty");
 		addEnvironments(frontend, "local", "dev", "qa");
 		addEnvironments(backend, "dev", "qa");
-		// `empty` intentionally has no environment rows.
 		sessionCookie = login();
 	}
 
@@ -76,8 +70,7 @@ class EnvironmentIntersectionIntegrationTest {
 
 	@Test
 	void envlessProjectIsIgnoredNotBlanking() {
-		// The env-less Project must not empty the bar — it drops out of the denominator,
-		// leaving frontend's own environments.
+		// The env-less Project drops out rather than emptying the intersection.
 		assertThat(environments("?project=" + frontend + "&project=" + empty)).containsExactly("dev", "local", "qa");
 	}
 

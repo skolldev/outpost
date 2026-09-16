@@ -14,18 +14,8 @@ import java.util.function.ToDoubleFunction;
 import org.springframework.stereotype.Component;
 
 /**
- * Every meter on the ingest path, named in one place. The hot-path classes call
- * intention-named methods here rather than carrying {@code registry.counter("…")}
- * string literals, so the naming contract lives in one file and — because every
- * meter is resolved once in the constructor — recording costs a field read and an
- * increment, with no tag list or meter id allocated per event.
- *
- * <p>Read together the meters answer "how much can we ingest": accepted vs
- * rejected envelopes is the accept-side ceiling, {@code queue.depth} shows the
- * buffer filling, and {@code queue.wait} — dequeue time minus the item's
- * {@code receivedAt} — is the honest measure of how far behind the workers are.
- * A climbing queue wait under a flat accept rate means the drain side is the
- * limit, which is the distinction a 429 alone cannot make.
+ * Every meter on the ingest path, named in one place. Meters are resolved once
+ * in the constructor, so recording costs only a field read and an increment.
  */
 @Component
 public class IngestMetrics {
@@ -123,15 +113,11 @@ public class IngestMetrics {
 				.tag("stage", stage.tag)
 				.register(registry));
 		}
-		// Deliberately not a `dropped` stage: a redelivery is a healthy SDK retry,
-		// not a loss, and folding it into the drop counter would poison any alert
-		// on drop rate.
+		// Not a `dropped` stage: a redelivery is a healthy retry, not a loss.
 		this.duplicates = Counter.builder("outpost.ingest.duplicates")
 			.description("Events already stored under their event id, so not stored again")
 			.register(registry);
-		// A steady non-zero reap rate means envelopes are being spooled and then
-		// abandoned — a crash loop or a digest that never completes — not just
-		// disk being reclaimed.
+		// A steady non-zero reap rate signals abandoned envelopes, not just disk reclaim.
 		this.reapedFiles = Counter.builder("outpost.ingest.spool.reaped.files")
 			.description("Orphaned spool files removed by the sweep")
 			.register(registry);
@@ -157,8 +143,7 @@ public class IngestMetrics {
 		return Timer.builder(name)
 			.description(description)
 			.tag("signal", signal.tag)
-			// Percentiles are computed in-process. Single-instance by ADR 0001, so
-			// there is nothing to aggregate across and this stays accurate.
+			// Percentiles computed in-process; accurate because deployment is single-instance (ADR 0001).
 			.publishPercentiles(0.5, 0.95, 0.99)
 			.register(registry);
 	}

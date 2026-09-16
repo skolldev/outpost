@@ -37,32 +37,9 @@ interface Statistic {
 }
 
 /**
- * Transaction Group detail: the statistics of the row that was clicked, and the two
- * links out of them.
- *
- * Aggregate statistics say *that* a Transaction Group is slow. They cannot say *why* —
- * for that the user needs a real request's span waterfall, which the Traces page
- * already renders. This view is the bridge, and it offers **two** ways across on
- * purpose: the slowest Traces alone would send every investigation chasing a single
- * outlier — a GC pause, a cold start — where diffing a slow request against a typical
- * one shows what actually differs.
- *
- * The identity travels in query params rather than a path segment, because transaction
- * names contain slashes. `project` is one of them, and it is the same param the global
- * Project filter uses: a Transaction Group belongs to exactly one Project, so opening
- * one *is* narrowing to that Project, and two params meaning "which Project" could
- * disagree. **An absent `op` means the group whose op is null** — (project, name, op)
- * is the whole key, so "any op" would name a set of groups rather than one.
- *
- * Between the two sits the chart (#163), which is what turns a statistic into a report:
- * a p95 on its own is a ranking, while a p95 that stepped up on Tuesday names the day
- * to look at. It reads the bucketed series the same response carries, so it describes
- * exactly the Transactions the header above it does.
- *
- * The window is the leaderboard's, capped at 30 days and echoed by the server; when it
- * was narrowed to reach that cap this page says so, for the same reason the leaderboard
- * does — a header that quietly covered a different window than the row it was opened
- * from would disagree with the number the user just clicked.
+ * Transaction Group detail: the clicked row's statistics, plus links to its slow and
+ * typical Traces for investigating why. Identity travels in query params, not a path
+ * segment, since transaction names can contain slashes.
  */
 @Component({
   selector: 'app-transaction-group-detail',
@@ -102,12 +79,9 @@ export class TransactionGroupDetailPage {
   readonly op = computed<string | null>(() => this.first(this.queryParams()['op']) || null);
 
   /**
-   * The Project the group belongs to. Read from the URL rather than from
-   * `GlobalFilters.project()`, which is a list: this is an identity, and the first of a
-   * multi-select is a guess. Selecting other Projects in the shell while here therefore
-   * asks for this group in the first of them, which either finds it or says it is not
-   * there — both honest answers, and neither one a page that silently changed which
-   * Transaction Group it is describing.
+   * The Project the group belongs to, read from the URL rather than
+   * `GlobalFilters.project()` — that's a multi-select list, and this is an identity,
+   * not a guess at one.
    */
   readonly project = computed<number | undefined>(() => {
     const raw = this.first(this.queryParams()['project']);
@@ -146,19 +120,17 @@ export class TransactionGroupDetailPage {
   );
 
   /**
-   * The upper edge of the window the server answered over, which is what the chart's
-   * time axis spans. Read from the response rather than from `GlobalFilters`, which
-   * holds a relative range and no upper bound at all — the server resolves "now" once,
-   * and an axis drawn to a second "now" would end somewhere the data does not.
+   * Upper edge of the window the server answered over — the chart's axis span. Read
+   * from the response, not `GlobalFilters` (no upper bound), so the axis matches the
+   * moment the server resolved "now".
    */
   readonly windowTo = computed<string | undefined>(() =>
     this.detail.hasValue() ? this.detail.value().to : undefined,
   );
 
   /**
-   * A key that names no Transaction Group in this window is a 404, and it is the
-   * expected outcome of a shared link to an endpoint that has since gone quiet — not a
-   * failure. Only the rest is an error the user can do nothing about.
+   * A 404 here is expected — a shared link to an endpoint that's gone quiet — not a
+   * failure; only other statuses are shown as an error.
    */
   readonly notFound = computed(() => this.status() === 404);
 
@@ -192,17 +164,10 @@ export class TransactionGroupDetailPage {
   });
 
   /**
-   * The Traces page filtered to this group's slow Traces: everything at or above its
-   * p95, which is the tail the percentiles could only point at.
-   *
-   * `name` and `op` are cleared explicitly. Every other param is merged so the Traces
-   * page opens on the slice the user was just reading — Project, Environment Name and
-   * time range — but those two identify a Transaction Group, which means nothing there,
-   * and merged params outlive the page that set them.
-   *
-   * Known imprecision, accepted in #162: the Traces page matches names by
-   * case-insensitive substring and cannot pin an op, so a link for `GET /orders` also
-   * surfaces `GET /orders/{id}`.
+   * Traces page filtered to this group's slow Traces (at or above its p95); `name`/`op`
+   * are cleared and the rest of the params merge in. Known imprecision (#162): the
+   * Traces page matches names by case-insensitive substring and can't pin an op, so
+   * this also surfaces e.g. `GET /orders/{id}` for a `GET /orders` group.
    */
   readonly slowTracesParams = computed<Params>(() => ({
     ...this.tracesLink(),
@@ -211,12 +176,9 @@ export class TransactionGroupDetailPage {
   }));
 
   /**
-   * And to its typical Traces: the band from the median up to where the tail begins.
-   *
-   * Bounded on both sides because "typical" has to exclude the fast end as well as the
-   * slow one — a cache hit or a 304 diffs against a slow request no more usefully than
-   * another slow request does. The median is the fastest Trace this can return, which
-   * is what makes it the typical one.
+   * Traces page filtered to this group's typical Traces: the band from p50 to p95,
+   * excluding both the slow tail and fast outliers (a cache hit diffs no more usefully
+   * than another slow request).
    */
   readonly typicalTracesParams = computed<Params>(() => ({
     ...this.tracesLink(),
@@ -227,12 +189,8 @@ export class TransactionGroupDetailPage {
   readonly formatDuration = formatDuration;
 
   /**
-   * Back to the list this was opened from, with the key cleared.
-   *
-   * Everything else merges — the leaderboard is meant to reopen on the slice the user
-   * left it in — but `name` and `op` identify one Transaction Group and nothing on that
-   * page reads them, so carrying them back would leave a URL describing a view it is
-   * not showing.
+   * Back to the list this was opened from; `name`/`op` identify this one group and
+   * mean nothing there, so they're cleared while everything else merges.
    */
   readonly backToListParams: Params = { name: null, op: null };
 
@@ -241,9 +199,7 @@ export class TransactionGroupDetailPage {
       query: this.name(),
       name: null,
       op: null,
-      // The server answers an all-time request over its 30-day ceiling. Override the
-      // merged global range so Traces searches the same duration window as the
-      // percentile thresholds were computed from.
+      // Override the merged range to 30d so Traces searches the same window the percentiles were computed from.
       ...(this.rangeClamped() ? { range: '30d' } : {}),
     };
   }

@@ -17,47 +17,13 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the releases page. Its {@code issue_count} column was
- * structurally the same defect trace search had and {@link TraceSearchPerformanceTest}
- * locks out: a correlated aggregate over a partitioned telemetry table, evaluated
- * once per output row, with no time bound. #130 moved it to the
- * {@code issue_release_stats} rollup, where one row per (Issue, Release) makes
- * {@code count(*)} the distinct-Issue count.
- *
- * <p><b>Three different things could pass a naive version of this guard,</b> and
- * each has its own test below because none of them implies the others — and in two
- * of the three, a block count is not what settles it:
- *
- * <ol>
- * <li>A single {@code GROUP BY release} pass over {@code event} removes the
- * per-row multiplier and still reads every retained Event on every page load.
- * {@link #releaseListStaysOffTheEventTable} is the assertion that rejects it, and
- * it is the one that holds at any dataset size.
- * <li>A supporting index makes correlated probes cheap enough to fit under any
- * ceiling this fixture can honestly set, while the endpoint returns up to
- * {@link ReleaseController#pageSize()} rows. Cost cannot reject that, so
- * {@link #noCountRunsOncePerReleaseRow} rejects it on plan shape and
- * {@link #fullPageCostsWhatAOneReleasePageCosts} sits behind as a backstop.
- * <li>Counting rollup rows without scoping them to the Project reads every other
- * Project's Issues for the same version string — release versions are not unique
- * across Projects. Cost cannot reject that either, because such a plan can still
- * filter on the version and read very little;
- * {@link #aOneReleasePageIgnoresOtherProjectsRollupRows} rejects it on the
- * <em>answer</em>, against a fixture where other Projects carry hundreds of Issues
- * on the version this one has once.
- * </ol>
- *
- * <p>Exact {@code issue_count} <em>values</em> — repeated Events on one Issue,
- * Releases with no Issues, redelivery, retention, Projects sharing a version — are
- * {@code ReleaseIssueCountIntegrationTest}'s subject. A guard that only explains
- * SQL cannot tell a fast right answer from a fast wrong one.
- *
- * <p>Baselines measured 2026-08-04 against {@link TelemetrySeeder.Scale#GUARD}:
- * 40 003 events over 10 weekly partitions, 8 releases on the project, plus the two
- * fixture projects below. The seeded project's page costs <b>83 blocks</b>, against
- * 240 299 before the fix and the 15 021 a full scan of {@code event} costs. A
- * one-release page costs 132, a full 200-release page 344, and reading every
- * Project's rollup rows — 21 601 of them — costs 404.
+ * Performance guards for the releases page's {@code issue_count},
+ * {@code bundle_count} and {@code artifact_count} columns, answered from the
+ * {@code issue_release_stats} rollup rather than a correlated aggregate over
+ * {@code event}. Cost alone can't reject every regression shape — a
+ * per-row-cheap-enough correlated count, or an unscoped rollup read across
+ * Projects — so plan shape and answer values are asserted too, with exact
+ * {@code issue_count} correctness left to {@code ReleaseIssueCountIntegrationTest}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -66,48 +32,29 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class ReleaseQueryPerformanceTest {
 
 	/**
-	 * <b>A tripwire on a table this query must not read, not a calibrated ceiling</b>
-	 * — and the distinction is why {@link QueryGuard#assertCeilingCanFail} is not
-	 * called on it. That helper asks whether a ceiling sits below the cost of reading
-	 * the table the query <em>reads</em>, which is the right question for a ceiling
-	 * and the wrong one here: this query reads {@code issue_release_stats} and
-	 * {@code release}, neither of which {@code QueryGuard.FULL_SCAN_COLUMNS}
-	 * registers, and by the rule in {@code docs/performance/measuring-retrieval.md}
-	 * a query in that position gets no ceiling at all. This one has none. What it has
-	 * is a bound against {@code event}, which is the table the fix removed from the
-	 * plan, computed from the dataset so it means the same thing at any scale.
-	 *
-	 * <p>It is #130's named acceptance criterion, and it is kept even though
-	 * {@link #releaseListStaysOffTheEventTable} strictly subsumes it, because the two
-	 * fail differently: that one says the plan touched a table it should not have,
-	 * this one says by how much. A regression to the correlated aggregate costs
-	 * ~240 300 blocks against the ~15 000 a full scan costs, which is the number that
-	 * made the case in the first place.
+	 * A tripwire against {@code event}, not a calibrated ceiling — this query
+	 * reads {@code issue_release_stats} and {@code release} instead, neither of
+	 * which {@link QueryGuard#assertCeilingCanFail} can validate a ceiling
+	 * against. Kept alongside {@link #releaseListStaysOffTheEventTable} because
+	 * the two fail differently: that one says a table was touched at all, this
+	 * one says by how much.
 	 */
 	private static final int FULL_SCANS_ALLOWED = 2;
 
 	/**
-	 * A full page may cost more than a one-Release page — it returns two hundred times
-	 * the rows and counts twenty thousand memberships against one — but not
-	 * <em>per-row</em> more. Measured: 344 blocks against 132, a factor of 2.6 for
-	 * 200x the output.
-	 *
-	 * <p>The shape this rejects pays an index descent per Release instead, and it is
-	 * not hypothetical — both attempts to write this query more neatly produced it.
-	 * Leaving the two artifact counts correlated cost 1 731 blocks against 47 (37x,
-	 * on the fixture before it seeded artifacts), and replacing each branch's bound
-	 * {@code project_id = ?} with a join onto {@code page} cost 3 368 against 132
-	 * (25x). Ten sits between those and the healthy 2.6 with room on both sides, which
-	 * is the point: the assertion has to reject a shape, not fence in a number.
+	 * A full page returns 200x the rows of a one-Release page but must not cost
+	 * 200x more (measured: 344 blocks against 132, a 2.6x factor). Ten leaves
+	 * headroom on both sides of that 2.6x while still rejecting a per-Release
+	 * index descent, which is the shape this exists to catch.
 	 */
 	private static final int FULL_PAGE_COST_MULTIPLE = 10;
 
 	/**
-	 * Issues on the busy project, each seen on every one of its Releases — 20 000
-	 * membership rows, which is what gives {@link #aOneReleasePageIgnoresOtherProjectsRollupRows}
-	 * a comparator worth clearing. On a rollup small enough to sit in a couple of
-	 * blocks, "reads only this Project's rows" and "reads the table" cost the same and
-	 * the assertion could not fail.
+	 * Issues on the busy project, each seen on every Release — 20 000 membership
+	 * rows, big enough that {@link #aOneReleasePageIgnoresOtherProjectsRollupRows}
+	 * has a comparator worth clearing. On a rollup small enough to fit in a couple
+	 * of blocks, "reads only this Project" and "reads the table" cost the same and
+	 * the assertion couldn't fail.
 	 */
 	private static final int BUSY_PROJECT_ISSUES = 100;
 
@@ -133,20 +80,13 @@ class ReleaseQueryPerformanceTest {
 		seeded = new TelemetrySeeder(jdbc, partitions).seed(TelemetrySeeder.Scale.GUARD);
 		soloProjectId = seedRollupOnly("solo", 1, 1);
 		busyProjectId = seedRollupOnly("busy", ReleaseController.pageSize(), BUSY_PROJECT_ISSUES);
-		// The seeder's own lesson: without statistics the planner is blind, and every
-		// plan measured below is one nobody would ever get.
+		// Without ANALYZE the planner is blind and every plan below would be unrealistic.
 		jdbc.sql("""
 				VACUUM ANALYZE issue, issue_release_stats, release,
 				               artifact, artifact_bundle, artifact_bundle_release
 				""").update();
 	}
 
-	// ------------------------------------------------------- the ticket's bound
-
-	/**
-	 * #130's named acceptance criterion, re-enabled. See {@link #FULL_SCANS_ALLOWED}
-	 * for why it is kept now that the query does not read {@code event} at all.
-	 */
 	@Test
 	void releaseListDoesNotOutcostReadingEventTwice() {
 		long fullScan = QueryGuard.fullScanCost(jdbc, "event");
@@ -158,14 +98,10 @@ class ReleaseQueryPerformanceTest {
 			.isLessThan(FULL_SCANS_ALLOWED * fullScan);
 	}
 
-	// ------------------------------------------------------------ what it reads
-
 	/**
-	 * The structural claim, and the only one that survives a change of scale: the
-	 * page's cost cannot grow with retention because the page does not read the
-	 * retained data. A {@code GROUP BY release} over {@code event} computed once per
-	 * request would satisfy every ceiling in this file and fail here, which is the
-	 * distinction #130's comment asked to be made explicit.
+	 * The page's cost cannot grow with retention because it never reads the
+	 * retained data. A {@code GROUP BY release} over {@code event} computed once
+	 * per request would satisfy every buffer ceiling in this file and fail only here.
 	 */
 	@Test
 	void releaseListStaysOffTheEventTable() {
@@ -176,12 +112,10 @@ class ReleaseQueryPerformanceTest {
 	}
 
 	/**
-	 * A page of at most {@link ReleaseController#pageSize()} rows must not spill to a
-	 * temp file. A correlated plan happened not to — it was slow rather than
-	 * memory-hungry — so this was the one assertion here that stayed enabled through
-	 * #130, and it is what keeps the grouped rewrite honest: the aggregate now hashes
-	 * rollup rows, and hashing them all instead of the page's would show up here
-	 * first. Asserted on the full page, where there is something to spill.
+	 * A page of at most {@link ReleaseController#pageSize()} rows must not spill to
+	 * a temp file. The grouped rewrite hashes rollup rows, so hashing all of them
+	 * instead of just the page's would show up here first; asserted on the full
+	 * page, where there's something to spill.
 	 */
 	@Test
 	void releaseListDoesNotSpillToDisk() {
@@ -189,19 +123,11 @@ class ReleaseQueryPerformanceTest {
 		QueryGuard.assertNoTempFiles(QueryPlans.releaseList(busyProjectId).explain(jdbc), "a full page of releases");
 	}
 
-	// -------------------------------------------------------------- what scales
-
 	/**
-	 * <b>No count may be a subquery the executor re-runs per Release row.</b> This is
-	 * the assertion that actually forbids the defect, and it is separate from the
-	 * costs below on purpose: #130's comment warned that "a supporting index could
-	 * make eight correlated probes fit under the ceiling without removing the
-	 * per-output-row structure", and it is right — a page's worth of indexed probes
-	 * is cheap enough to pass any bound this fixture can honestly set. Cost cannot
-	 * express "not once per row"; plan shape can.
-	 *
-	 * <p>Asserted on the full page, since a fixture with eight Releases is where a
-	 * per-row plan hides best.
+	 * No count may be a subquery the executor re-runs per Release row — a
+	 * supporting index could make per-row probes cheap enough to pass any cost
+	 * bound, so this asserts plan shape instead. Asserted on the full page, since
+	 * a fixture with eight Releases is where a per-row plan hides best.
 	 */
 	@Test
 	void noCountRunsOncePerReleaseRow() {
@@ -213,20 +139,10 @@ class ReleaseQueryPerformanceTest {
 	}
 
 	/**
-	 * Work must scale with the page, not with the correlation. The guard dataset has
-	 * eight Releases and the endpoint returns two hundred, so a per-row aggregate
-	 * cheap enough to hide at eight is the fixture-shaped result #130's comment
-	 * warned the old bound would certify.
-	 *
-	 * <p>This is the backstop, not the structural claim —
-	 * {@link #noCountRunsOncePerReleaseRow} is that. The two fixtures differ in
-	 * Releases <em>and</em> in memberships (one against twenty thousand), so the ratio
-	 * confounds the two and is deliberately loose; what it catches is a plan whose
-	 * cost per output row grew, whatever the reason.
-	 *
-	 * <p>The counts are read back, not just explained. {@code EXPLAIN ANALYZE}
-	 * executes the query but asserts nothing about what came out of it, and a plan
-	 * that is fast because it found nothing is the other way to pass this.
+	 * The backstop, not the structural claim ({@link #noCountRunsOncePerReleaseRow}
+	 * is that) — deliberately loose since the two fixtures differ in Releases and
+	 * in memberships. Rows are read back, not just explained, because a plan that
+	 * is fast for finding nothing would otherwise pass.
 	 */
 	@Test
 	void fullPageCostsWhatAOneReleasePageCosts() {
@@ -237,9 +153,7 @@ class ReleaseQueryPerformanceTest {
 		List<Map<String, Object>> rows = page.rows(jdbc);
 		assertThat(rows).as("rows on a full release page — a page that returns nothing is fast and meaningless")
 			.hasSize(ReleaseController.pageSize());
-		// All three counts, because all three were correlated and all three were
-		// rewritten. A plan that returned the right issue_count beside a zeroed
-		// artifact_count would be cheap for the wrong reason and pass the bound below.
+		// All three counts, since a right issue_count beside a zeroed artifact_count would pass wrongly.
 		assertThat(rows).allSatisfy(row -> {
 			assertThat(row.get("issue_count"))
 				.as("issue_count on a full release page, each of whose releases carries every issue")
@@ -255,27 +169,12 @@ class ReleaseQueryPerformanceTest {
 	}
 
 	/**
-	 * Work must scale with the Project, not with the installation. Release versions
-	 * are not unique across Projects — {@code release} is keyed
-	 * {@code (project_id, version)} and every install names its releases the same
-	 * handful of ways — so a count that groups the rollup without scoping it reads
-	 * every other Project's memberships and then discards them.
-	 *
-	 * <p><b>The value is what proves it, not the block count.</b> A cost bound cannot:
-	 * a plan that dropped {@code project_id} but kept matching on the version string
-	 * would read only the rows carrying <em>that one version</em> — a few dozen — and
-	 * sit comfortably under any ceiling while returning a number that belongs to the
-	 * whole installation. So the fixture is built to make that plan wrong rather than
-	 * slow: the solo Project's single Release shares its version with the busy
-	 * Project's, where {@link #BUSY_PROJECT_ISSUES} Issues carry it, and with the
-	 * seeded Projects' hundreds. One Issue is the answer; anything project-blind
-	 * returns three figures.
-	 *
-	 * <p>The block bound stays behind it, against what reading the whole rollup
-	 * costs — the floor a plan that grouped every Project's memberships would pay.
-	 * The busy project's twenty thousand rows are there to make that number worth
-	 * clearing: without them the rollup fits in a couple of blocks and it could not
-	 * fail. Measured 132 blocks against 404.
+	 * Release versions aren't unique across Projects, so a rollup count that drops
+	 * {@code project_id} but matches on the version string would still read few
+	 * rows and sit under any cost ceiling — the returned value is what catches
+	 * that, not the block count. The fixture makes the solo Project's
+	 * Release share its version with the busy Project's {@link #BUSY_PROJECT_ISSUES}
+	 * Issues, so a project-blind count returns three figures instead of one.
 	 */
 	@Test
 	void aOneReleasePageIgnoresOtherProjectsRollupRows() {
@@ -287,11 +186,7 @@ class ReleaseQueryPerformanceTest {
 			.as("issue_count for a version %d other issues carry in another project", BUSY_PROJECT_ISSUES)
 			.isEqualTo(1L);
 
-		// count(event_count), not count(release): `release` is the trailing column of
-		// idx_issue_release_stats_project_release, so counting it can be answered
-		// index-only and would price "read every project's rows" below what reading
-		// them costs. QueryGuard.FULL_SCAN_COLUMNS makes the same choice for the
-		// telemetry tables, and for the same reason.
+		// count(event_count), not count(release) — release is index-only via idx_issue_release_stats_project_release and would underprice this comparison.
 		long wholeRollup = warm(new QueryPlans.Built("SELECT count(event_count) FROM issue_release_stats", List.of()))
 			.logicalIo();
 		PlanFacts facts = warm(page);
@@ -302,40 +197,24 @@ class ReleaseQueryPerformanceTest {
 			.isLessThan(wholeRollup);
 	}
 
-	// ----------------------------------------------------------------- measuring
-
 	/**
-	 * {@code EXPLAIN}s twice and keeps the second, for the same reason the seeder ends
-	 * in {@code VACUUM ANALYZE} rather than {@code ANALYZE}: a number that depends on
-	 * whether its test ran first is not a measurement of the query.
-	 *
-	 * <p>The seeder's problem was hint bits on a freshly loaded heap. This one is the
-	 * planner's own reads — {@code PlanFacts} sums the {@code Planning} node's buffers
-	 * alongside the executed ones, and planning a four-branch statement for the first
-	 * time in a session pulls catalog pages that are cached ever after. The gap is not
-	 * small: this page measured 270 blocks cold and 132 warm, so which of two
-	 * comparisons ran first decided whether a guard passed. Both sides of every
-	 * comparison below are read warm.
+	 * {@code EXPLAIN}s twice and keeps the second: {@link PlanFacts} sums the
+	 * {@code Planning} node's buffers too, and planning a four-branch statement
+	 * cold pulls catalog pages that stay cached afterward (270 blocks cold, 132
+	 * warm here). Both sides of every comparison below must be read warm, or which
+	 * ran first would decide whether the guard passes.
 	 */
 	private PlanFacts warm(QueryPlans.Built built) {
 		built.explain(jdbc);
 		return built.explain(jdbc);
 	}
 
-	// ----------------------------------------------------------------- fixtures
-
 	/**
-	 * A Project whose Releases exist only in the rollup — Issues and memberships, no
-	 * Events. Deliberately: the claim under test is that the page is answered from
-	 * {@code issue_release_stats}, and a fixture that seeded Events could not tell a
-	 * plan reading the rollup from one reading around it.
-	 *
-	 * <p>Uploaded artifacts <em>are</em> seeded, and that is not decoration. The page
-	 * carries three counts and all three were correlated; a fixture with no artifact
-	 * rows leaves the two artifact branches probing an empty index, which costs about
-	 * a block a row and slips under
-	 * {@link #FULL_PAGE_COST_MULTIPLE} even when re-correlated. The scaling guard
-	 * would then fence {@code issue_count} alone and quietly certify the other two.
+	 * A Project whose Releases exist only in the rollup (no Events), so a plan
+	 * reading around {@code issue_release_stats} can't hide behind one reading the
+	 * telemetry it usually pairs with. Artifacts are seeded too, since a fixture
+	 * with no artifact rows would let the artifact-count branches probe an empty
+	 * index cheaply enough to hide a per-row regression there.
 	 *
 	 * @return the new project's id
 	 */
@@ -345,8 +224,7 @@ class ReleaseQueryPerformanceTest {
 			.param(slug)
 			.query(Long.class)
 			.single();
-		// Same version strings the seeded projects use, so a plan that matches on
-		// version alone finds the other projects' rows rather than nothing.
+		// Same version strings the seeded projects use, so a version-only match finds their rows too.
 		jdbc.sql("""
 				INSERT INTO release (project_id, version, created_at)
 				SELECT ?, 'app@1.0.' || g, now() - make_interval(days => g)
@@ -373,8 +251,7 @@ class ReleaseQueryPerformanceTest {
 	 * front-end deploy uploads.
 	 */
 	private void seedArtifacts(long projectId) {
-		// The checksum carries the Release it was uploaded for, so the link below can
-		// join back to it. `checksum` is globally unique, hence the project prefix.
+		// checksum is globally unique, hence the project prefix — the link below joins back on it.
 		jdbc.sql("""
 				INSERT INTO artifact_bundle (checksum, raw)
 				SELECT ? || ':' || r.version, '\\x00'::bytea

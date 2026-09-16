@@ -23,16 +23,11 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Conventional Spring Security chain: the ingest surface is open (it does
- * its own DSN-key auth), the internal query API requires the signed session
- * cookie, the two bearer-token surfaces ({@code /api/0/**} for sentry-cli,
- * {@code /mcp} for the MCP Surface) are gated on the Scope each needs, and
- * admin-only endpoints are guarded by {@code @PreAuthorize}. CSRF is covered by
+ * Security chain: ingest is open (self-authenticates via DSN key), the
+ * internal API requires the session cookie, {@code /api/0/**} and
+ * {@code /mcp} require a bearer token with the matching Scope, and admin
+ * endpoints are guarded by {@code @PreAuthorize}. CSRF is covered by
  * {@code SameSite=Lax} on the session cookie plus a JSON-only API.
- *
- * <p>{@code /mcp} is always mapped and always requires {@code telemetry:read};
- * there is no feature flag, because no token already means no access, which is
- * the posture {@code /api/0/**} has had since it shipped.
  */
 @Configuration
 @EnableWebSecurity
@@ -63,17 +58,10 @@ public class SecurityConfig {
 	}
 
 	/**
-	 * A recognised credential that does not carry the Scope a surface needs is a 403
-	 * everywhere except {@code /mcp}, which answers 401.
-	 *
-	 * <p>The difference is not a taste one. An MCP client treats 401 as "present a
-	 * credential" and 403 as "you are done here", so a token minted before
-	 * {@code telemetry:read} existed would leave a client reporting a permanent
-	 * failure rather than prompting for the token that would work. RFC 6750's
-	 * {@code insufficient_scope} challenge names which Scope is missing, so the 401
-	 * still says what a 403 would have. {@code /api/0/**} keeps its 403: sentry-cli
-	 * has never re-authenticated on one, and changing it would only move the
-	 * confusion.
+	 * A credential missing the required Scope gets 403 everywhere except
+	 * {@code /mcp}, which answers 401 with an RFC 6750 {@code insufficient_scope}
+	 * challenge so an MCP client re-prompts for a token instead of treating the
+	 * failure as permanent.
 	 */
 	private static void denyAccess(HttpServletRequest request, HttpServletResponse response,
 			org.springframework.security.access.AccessDeniedException e) throws IOException {
@@ -101,19 +89,18 @@ public class SecurityConfig {
 	}
 
 	/**
-	 * Populates the security context from a bearer token on the two surfaces that
-	 * take one: {@code /api/0/**} for sentry-cli, and {@code /mcp} for the MCP
-	 * Surface. Everything else is either session-authenticated or open, and a filter
-	 * that ran everywhere would let a token reach {@code /api/internal/**} too.
+	 * Populates the security context from a bearer token on the two surfaces
+	 * that accept one: {@code /api/0/**} and {@code /mcp}. Scoped to those
+	 * paths so a token can't also authenticate {@code /api/internal/**}.
 	 */
 	static final class ApiTokenFilter extends OncePerRequestFilter {
 
 		private static final String MCP = "/mcp";
 
 		/**
-		 * Matched as "this path or a path below it", never as a bare prefix:
-		 * {@code startsWith("/mcp")} would also authenticate {@code /mcp-anything},
-		 * which the SPA fallback happily serves.
+		 * Matched as "this path or a path below it," not a bare prefix — plain
+		 * {@code startsWith("/mcp")} would also match {@code /mcp-anything}, which
+		 * the SPA fallback serves.
 		 */
 		private static final List<String> BEARER_SURFACES = List.of("/api/0", MCP);
 
@@ -146,15 +133,11 @@ public class SecurityConfig {
 		}
 
 		/**
-		 * Re-authenticate on the ASYNC dispatch too, which {@code OncePerRequestFilter}
-		 * skips by default.
-		 *
-		 * <p>{@code /mcp}'s streamable transport answers a POST by committing SSE headers
-		 * and going async; the container then re-dispatches, Spring Security re-runs its
-		 * authorization on that dispatch, and an empty context there is not a clean 401 —
-		 * the response is already committed, so {@code sendError} fails and the client
-		 * sees a torn chunked stream instead. The bearer header is on the same request,
-		 * so reading it again is all this needs.
+		 * Re-authenticates on the async dispatch too, which
+		 * {@code OncePerRequestFilter} skips by default. Needed because
+		 * {@code /mcp}'s SSE transport goes async after committing headers, and an
+		 * empty security context on the re-dispatch fails as a torn stream rather
+		 * than a clean 401.
 		 */
 		@Override
 		protected boolean shouldNotFilterAsyncDispatch() {

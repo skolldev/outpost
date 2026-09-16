@@ -6,14 +6,10 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 
 /**
- * Best-effort batch storage: one item the database will never accept must not
- * cost the rest of the batch. The batch is attempted whole, and only on failure
- * degrades to one attempt per item, so the happy path stays a single round trip.
- *
- * <p>The retry target lives here rather than in each store because that is
- * exactly where the three drifted before (#124): a store whose fallback recursed
- * into its own public entry point re-ran the partition preparation above it,
- * once per item, on the one path already degraded.
+ * Best-effort batch storage: attempts the whole batch, and only on failure
+ * retries one item at a time, so the happy path stays a single round trip.
+ * Keep the retry here rather than recursing into a store's public entry
+ * point — that would re-run per-batch work like partition prep on every item.
  */
 final class PoisonIsolation {
 
@@ -21,12 +17,10 @@ final class PoisonIsolation {
 	}
 
 	/**
-	 * Runs {@code attempt} over the whole batch; if that throws, runs it once per
-	 * item and hands each item that still fails to {@code onPoison}.
-	 *
-	 * <p>{@code attempt} must be safe to re-run on a subset — a batch that failed
-	 * partway is retried from the start, so anything it does outside its
-	 * transaction has to tolerate repetition.
+	 * Runs {@code attempt} over the whole batch; if that throws, retries one item
+	 * at a time and hands each item that still fails to {@code onPoison}.
+	 * {@code attempt} must tolerate re-running on a subset, since a batch that
+	 * fails partway is retried from the start.
 	 */
 	static <T> void run(Logger log, List<T> batch, Consumer<List<T>> attempt,
 			BiConsumer<T, RuntimeException> onPoison) {
@@ -38,8 +32,8 @@ final class PoisonIsolation {
 				onPoison.accept(batch.getFirst(), e);
 				return;
 			}
-			// The logger belongs to the calling store, so its name says which
-			// signal degraded without this needing a noun for each one.
+			// log is the caller's logger, so warnings are attributed to the store
+			// that degraded.
 			log.warn("batch of {} failed ({}), retrying individually", batch.size(), e.toString());
 			for (T item : batch) {
 				run(log, List.of(item), attempt, onPoison);

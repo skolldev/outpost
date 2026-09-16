@@ -26,15 +26,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Admin test-send and delivery visibility end to end (issue #44). Drives the
- * Admin-scoped endpoints over HTTP: {@code POST /{id}/test} runs the full
- * pipeline (a real POST lands at the stub receiver, a history row is recorded)
- * and reports the outcome inline; {@code GET /{id}/history} lists recent
- * Notifications; the channel list carries each channel's last outcome and time.
- *
- * <p>Reuses the two prior fixtures: a local {@link HttpServer} stub receiver
- * ({@code NotificationDeliveryIntegrationTest}) and the admin-login helper
- * ({@code NotificationChannelIntegrationTest}).
+ * Admin test-send and delivery visibility end to end (issue #44): {@code POST
+ * /{id}/test} runs the full pipeline and reports the outcome inline, {@code GET
+ * /{id}/history} lists recent notifications, and the channel list carries each
+ * channel's last outcome and time.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -100,8 +95,6 @@ class TestSendIntegrationTest {
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(response.getBody().get("status")).isEqualTo("sent");
-		// The full pipeline ran: a real POST arrived at the receiver, carrying the
-		// documented test payload.
 		assertThat(received).hasSize(1);
 		Received delivery = received.get(0);
 		assertThat(delivery.path()).isEqualTo("/hook");
@@ -109,7 +102,6 @@ class TestSendIntegrationTest {
 		assertThat(payload.get("version")).isEqualTo(1);
 		assertThat(payload.get("type")).isEqualTo("test");
 		assertThat(((Map<String, Object>) payload.get("channel")).get("id")).isEqualTo((int) channelId);
-		// And the history row landed as 'sent' with the test trigger type.
 		Map<String, Object> row = latestHistory(channelId);
 		assertThat(row.get("status")).isEqualTo("sent");
 		assertThat(row.get("trigger_type")).isEqualTo("test");
@@ -125,7 +117,6 @@ class TestSendIntegrationTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(response.getBody().get("status")).isEqualTo("failed");
 		assertThat((String) response.getBody().get("error_detail")).contains("HTTP 500");
-		// All three configured attempts hit the dead receiver.
 		assertThat(received.stream().filter(r -> r.path().equals("/dead")).count()).isEqualTo(3);
 		assertThat(latestHistory(channelId).get("status")).isEqualTo("failed");
 	}
@@ -164,7 +155,6 @@ class TestSendIntegrationTest {
 		assertThat(rows[0].get("trigger_type")).isEqualTo("test");
 		assertThat(rows[0].get("status")).isEqualTo("sent");
 		assertThat(rows[0].get("summary")).asString().contains("test");
-		// Newest first: the two ids descend.
 		assertThat(((Number) rows[0].get("id")).longValue())
 			.isGreaterThan(((Number) rows[1].get("id")).longValue());
 	}
@@ -181,7 +171,6 @@ class TestSendIntegrationTest {
 	@SuppressWarnings("unchecked")
 	void channelListCarriesLastDeliveryOutcomeAndTime() {
 		long channelId = createChannel(hookUrl("/hook"), true);
-		// Before any delivery: last_status is null.
 		Map<String, Object> before = listChannels()[0];
 		assertThat(before.get("last_status")).isNull();
 		assertThat(before.get("last_delivery_at")).isNull();

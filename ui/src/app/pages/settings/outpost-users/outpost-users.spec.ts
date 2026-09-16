@@ -84,10 +84,10 @@ describe('OutpostUsersSettings', () => {
     expect(submit).toBeDisabled();
 
     await user.type(screen.getByLabelText('Email'), 'new@example.com');
-    expect(submit).toBeDisabled(); // password + role still missing
+    expect(submit).toBeDisabled();
 
     await user.type(screen.getByLabelText('Password'), 'password123');
-    expect(submit).toBeDisabled(); // role still unselected
+    expect(submit).toBeDisabled();
 
     await selectRole(user, 'member');
     expect(submit).toBeEnabled();

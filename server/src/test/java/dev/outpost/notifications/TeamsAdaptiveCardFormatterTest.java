@@ -11,14 +11,12 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Pure shape tests for the Teams Adaptive Card payload (issue #46). Assert the
- * Teams Workflows envelope ({@code type: message} → attachments → an Adaptive
- * Card), that each trigger type presents the same summary facts as the Generic
- * JSON payload, and that every card carries a clickable deep link into Outpost.
- *
- * <p>Card layout is presentation, not a versioned contract, so these assert the
- * facts and the envelope Teams requires — not an exact body ordering. Prior art:
- * {@link GenericJsonFormatterTest}.
+ * Pure shape tests for the Teams Adaptive Card payload (issue #46): the Teams
+ * Workflows envelope ({@code type: message} → attachments → an Adaptive Card),
+ * that each trigger type presents the same summary facts as the Generic JSON
+ * payload, and that every card carries a deep link into Outpost. Card layout is
+ * presentation, not a versioned contract, so these assert facts and envelope
+ * shape, not exact body ordering.
  */
 class TeamsAdaptiveCardFormatterTest {
 

@@ -1,13 +1,9 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 
 /**
- * What the Performance surfaces say when the server narrowed the global range filter
- * to the 30-day cap (ADR-0015).
- *
- * A component rather than the same paragraph in two templates: the leaderboard and the
- * detail view are read in sequence over the same window, and the whole point of the
- * notice is that the figures never quietly disagree with the filter on screen. Two
- * copies of the wording would be two chances to explain the same cap differently.
+ * Notice shown when the server narrowed the global range to the 30-day cap
+ * (ADR-0015). Shared component rather than duplicated markup, so the leaderboard and
+ * detail view never disagree about the cap's wording.
  */
 @Component({
   selector: 'app-range-clamp-notice',

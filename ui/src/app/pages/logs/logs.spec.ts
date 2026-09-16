@@ -30,11 +30,7 @@ function page(logs: LogRecord[], next: string | null = null): LogPage {
   return { logs, next_cursor: next };
 }
 
-/**
- * Minimal EventSource stand-in — MSW can't intercept SSE. Each instance
- * registers itself so a test can push messages and assert on the URL (its
- * query string is where the live filters live).
- */
+/** Minimal EventSource stand-in — MSW can't intercept SSE. Each instance registers itself so a test can push messages and assert on its URL. */
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
@@ -71,11 +67,7 @@ function timeline(): LogTimeline {
   };
 }
 
-/**
- * The rendered chart. Waited for rather than assumed: callers wait on the log list,
- * which tracks the `/logs` response, and the chart is an independent request that
- * can still be in flight.
- */
+/** The rendered chart, waited for since it's an independent request from the log list and may still be in flight. */
 async function timelineSvg(container: Element): Promise<Element> {
   return waitFor(() => {
     const svg = container.querySelector('svg');
@@ -85,10 +77,9 @@ async function timelineSvg(container: Element): Promise<Element> {
 }
 
 /**
- * The chart is pointer-driven and exposes no interactive roles (#141), and jsdom
- * gives every element a zero-sized box — so a test drives it by stubbing the box
- * and firing pointer events at a clientX, then asserts on the request the selection
- * produces rather than on the SVG.
+ * The chart is pointer-driven with no interactive roles (#141), and jsdom gives every
+ * element a zero-sized box. This stubs the box and fires pointer events, asserting on
+ * the resulting request rather than the SVG.
  */
 async function brush(container: Element, clientX: number, toClientX = clientX): Promise<void> {
   const svg = await timelineSvg(container);
@@ -127,8 +118,7 @@ describe('LogsPage', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
     globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
-    // The page loads the chart on init, so every spec needs this handler whether or
-    // not it looks at the chart.
+    // The page loads the chart on init, so every spec needs this handler.
     server.use(http.get(`${BASE}/logs/timeline`, () => HttpResponse.json(timeline())));
   });
 
@@ -187,7 +177,6 @@ describe('LogsPage', () => {
     await user.click(screen.getByRole('switch', { name: 'Live tail' }));
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
-    // Entering live must not wipe the context already on screen.
     expect(screen.getByText('checkout failed for user')).toBeInTheDocument();
 
     FakeEventSource.instances[0].emit({ ...LOG, id: 'log-2', body: 'streamed while live' });
@@ -206,8 +195,6 @@ describe('LogsPage', () => {
     FakeEventSource.instances[0].emit({ ...LOG, id: 'log-3', body: 'streamed under old filter' });
     expect(await screen.findByText('streamed under old filter')).toBeInTheDocument();
 
-    // Changing a filter while live reconnects and drops records that were
-    // streamed under the previous filter.
     await user.click(screen.getByRole('button', { name: 'error' }));
 
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
@@ -267,18 +254,15 @@ describe('LogsPage', () => {
     await brush(container, 100);
 
     await waitFor(() => expect(screen.getByTitle('Clear the selected time window')).toBeVisible());
-    // The brush must not have re-requested the chart, and nothing it did request
-    // may carry the selection's bounds. `before` is asserted non-zero so the two
-    // checks below can't pass over an empty list.
+    // `before` must be nonzero, or the assertions below could pass vacuously.
     expect(before).toBeGreaterThan(0);
     expect(chartRequests).toHaveLength(before);
     expect(chartRequests.every((request) => request.to === null)).toBe(true);
   });
 
   /**
-   * The visible half of ADR 0011: not re-requesting the chart is also what keeps it
-   * on screen. A refetch blanks the resource, which empties `bars()`, which drops the
-   * `@if` — and the chart flickers out and back on every brush.
+   * The visible half of ADR 0011: not re-requesting the chart also keeps it mounted.
+   * A refetch would blank `bars()` and drop the `@if`, flickering the chart on every brush.
    */
   it('keeps the chart mounted when the selection changes', async () => {
     const windows = captureLogWindows();
@@ -288,8 +272,7 @@ describe('LogsPage', () => {
 
     await brush(container, 100);
 
-    // Waiting on the list request the brush causes: the chart's would be issued in
-    // the same cycle, so by the time this lands a refetch would already have blanked it.
+    // Waits on the list request the brush causes — a chart refetch would land in the same cycle.
     await waitFor(() => expect(windows.at(-1)?.to).toBe('2026-07-01T00:11:00.000Z'));
     expect(container.querySelector('svg')).toBe(svg);
   });
@@ -304,8 +287,7 @@ describe('LogsPage', () => {
 
     await user.click(screen.getByRole('switch', { name: 'Live tail' }));
 
-    // A closed past window and a tail of what is arriving now are contradictory, and
-    // the SSE endpoint takes no time bounds at all.
+    // A closed window and a live tail are contradictory, and the SSE endpoint takes no time bounds.
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     expect(FakeEventSource.instances[0].url).not.toContain('to=');
     expect(screen.queryByTitle('Clear the selected time window')).not.toBeInTheDocument();
@@ -442,9 +424,9 @@ describe('LogsPage', () => {
     });
 
     /**
-     * Suggestions are read off the records on screen: first-class fields first, the
-     * Project's own keys by how many records carry them, SDK bookkeeping last — and
-     * never an attribute that only restates a first-class field.
+     * Suggestions are read off the records on screen: first-class fields first, then the
+     * Project's own keys by frequency, then SDK bookkeeping — never an attribute that
+     * only restates a first-class field.
      */
     it('suggests keys and values from the loaded records', async () => {
       server.use(

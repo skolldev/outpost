@@ -60,8 +60,7 @@ public class CheckoutController {
 		}
 		orders.save(order);
 
-		// Outgoing HTTP call inside the same trace: http.client span here, and a
-		// second http.server transaction for /api/shipping/quote in the waterfall.
+		// Self HTTP call so the trace gets a client span plus a shipping-quote server transaction.
 		Map<?, ?> quote = selfClient.get()
 				.uri(uri -> uri.path("/api/shipping/quote").queryParam("zip", request.zip()).build())
 				.retrieve()

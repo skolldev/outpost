@@ -43,9 +43,9 @@ export class Shell {
 
   /**
    * The environment bar shows the intersection of Environment Names across the
-   * in-scope Projects (ADR 0009) — the selected set, or all Projects when the
-   * selection is empty (the `project` param is then omitted). Usually empty on
-   * the default all-Projects view; that is intended.
+   * in-scope Projects (ADR 0009) — selected Projects, or all Projects when the
+   * selection is empty. It's normal for this to come back empty on the default
+   * all-Projects view.
    */
   private readonly environmentsResource = httpResource<string[]>(
     () => ({
@@ -80,14 +80,10 @@ export class Shell {
     this.ranges.find((r) => r.value === value)?.label ?? value;
 
   constructor() {
-    // When the in-scope Projects change, prune the active environment filter to
-    // the names still present in the new intersection rather than clearing it,
-    // preserving intent whenever it stays valid (ADR 0009). Only a *resolved*
-    // intersection prunes — a loading/reloading value is stale and an errored one
-    // falls back to [], either of which would wrongly blank a valid filter.
-    // Pruning is gated on a user selection change rather than on the first
-    // response, so a shared/reloaded URL's environment filter is preserved while
-    // a change made before (or instead of) that first response still prunes.
+    // Prune only once resolved: loading/reloading is stale and errored falls back
+    // to [], either of which would wrongly blank a valid filter.
+    // Gated on a selection change, not the first response, so a shared URL's
+    // filter survives while an in-flight change still prunes.
     effect(() => {
       if (this.environmentsResource.status() !== 'resolved') return;
       const intersection = this.environmentsResource.value();

@@ -36,9 +36,8 @@ function fakeSession(logout = () => Promise.resolve()): Session {
 }
 
 /**
- * GlobalFilters stand-in: the shell reads the signals and calls the setters.
- * `setProjects` writes back to the `project` signal the way the real
- * URL round-trip does, so driving the shell's own handler refetches the bar.
+ * GlobalFilters stand-in. `setProjects` writes back to the `project` signal like the
+ * real URL round-trip, so driving the shell's own handler refetches the bar.
  */
 function fakeFilters(project: number[], environments: string[] = []) {
   const projects = signal<number[]>(project);
@@ -55,8 +54,7 @@ function fakeFilters(project: number[], environments: string[] = []) {
 
 /**
  * Renders the shell against a fake GlobalFilters and an environment-intersection
- * endpoint that echoes an intersection keyed on the in-scope `project` params, so
- * driving `onProjectsChange` triggers a realistic refetch.
+ * endpoint keyed on the in-scope `project` params, so `onProjectsChange` triggers a realistic refetch.
  */
 async function renderShell(
   filters: ReturnType<typeof fakeFilters>,
@@ -76,8 +74,7 @@ async function renderShell(
   return render(Shell, {
     providers: [
       provideHttpClient(),
-      // A stub /account so the account menu's link resolves and navigates; the
-      // real page is exercised in pages/account/account.spec.ts.
+      // Stub /account so the account menu's link resolves and navigates.
       provideRouter([{ path: 'account', children: [] }]),
       { provide: Session, useValue: session },
       { provide: GlobalFilters, useValue: filters as unknown as GlobalFilters },
@@ -146,8 +143,7 @@ describe('Shell environment-intersection bar', () => {
 
 describe('Shell environment pruning', () => {
   it('prunes the active environment filter to the names still in the new intersection', async () => {
-    // Project 1 alone intersects to {local,dev,qa}; adding project 2 narrows it to
-    // {dev,qa}, so an active {local,dev} filter should prune to {dev} — not clear.
+    // Project 1 alone intersects to {local,dev,qa}; adding project 2 narrows to {dev,qa}, so {local,dev} should prune to {dev}.
     const filters = fakeFilters([1], ['local', 'dev']);
     const { fixture } = await renderShell(filters, (ids) =>
       ids.includes('2') ? ['dev', 'qa'] : ['local', 'dev', 'qa'],
@@ -164,10 +160,7 @@ describe('Shell environment pruning', () => {
   });
 
   it('prunes a selection change made before the first intersection lands', async () => {
-    // The initial request is still in flight when the user widens the selection,
-    // so it is superseded and never resolves: the *second* response is the first
-    // to settle. It still reflects a selection change, so it must prune — gating
-    // on "first response" instead of "user changed the selection" would skip it.
+    // The initial request never resolves; the second response settles first but still reflects a selection change, so it must prune.
     const filters = fakeFilters([1], ['local', 'dev']);
     let releaseInitial!: () => void;
     const initialInFlight = new Promise<void>((resolve) => (releaseInitial = resolve));
@@ -185,8 +178,7 @@ describe('Shell environment pruning', () => {
   });
 
   it('prunes a selection change after the initial intersection request failed', async () => {
-    // A failed first load never reaches 'resolved', so the next selection change
-    // brings the first settled intersection — which must still prune.
+    // A failed first load never reaches 'resolved', so the next selection change brings the first settled intersection, which must still prune.
     const filters = fakeFilters([1], ['local', 'dev']);
     const { fixture } = await renderShell(filters, (ids) =>
       ids.includes('2') ? ['dev', 'qa'] : 'error',
@@ -215,9 +207,7 @@ describe('Shell environment pruning', () => {
   });
 
   it('preserves a shared-URL environment filter on the first load, even outside the intersection', async () => {
-    // A reloaded/shared URL carries its own environment filter; the first
-    // intersection to settle reflects that URL, not a selection change, so it
-    // must not prune — 'prod' survives even though it isn't in {dev,qa} (AC3).
+    // A reloaded/shared URL carries its own environment filter, not a selection change, so 'prod' survives even though it isn't in {dev,qa}.
     const filters = fakeFilters([1], ['prod']);
     await renderShell(filters, () => ['dev', 'qa']);
 
@@ -226,9 +216,7 @@ describe('Shell environment pruning', () => {
   });
 
   it('does not prune when the intersection refetch fails', async () => {
-    // On error the resource value falls back to its empty default; treating that
-    // as an intersection would wrongly clear a valid filter, so a failed refetch
-    // must leave the environment filter alone (AC5: prune, never clear).
+    // On error the resource value falls back to its empty default; a failed refetch must not be treated as an intersection and clear a valid filter.
     const filters = fakeFilters([1], ['local', 'dev']);
     const { fixture } = await renderShell(filters, (ids) =>
       ids.includes('2') ? 'error' : ['local', 'dev', 'qa'],

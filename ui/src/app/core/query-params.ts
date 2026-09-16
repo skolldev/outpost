@@ -1,7 +1,6 @@
-// Query-param builders shared by the declarative httpResource list pages and the
-// imperative Api service — one source of truth for how filters map to the wire.
-// Array values become repeated params (environment=a&environment=b); empty /
-// undefined filters are omitted so the resource request stays stable.
+// Query-param builders shared by httpResource pages and the Api service.
+// Arrays become repeated params (environment=a&environment=b); empty/undefined
+// filters are omitted so the resource request stays stable.
 
 import {
   IssueFilters,
@@ -77,10 +76,9 @@ export function transactionGroupParams(filters: TransactionGroupFilters): QueryP
 }
 
 /**
- * The detail view's key and filters. `project` and `name` are always sent — they are
- * the identity, not a narrowing — while **`op` is omitted when the group's op is
- * null**, which is how the server is told to resolve the null-op group rather than
- * matching an op of `""`.
+ * The detail view's key and filters — `project` and `name` are always sent (they're
+ * the identity, not a narrowing). `op` is omitted when the group's op is null,
+ * telling the server to resolve the null-op group rather than match op `""`.
  */
 export function transactionGroupDetailParams(filters: TransactionGroupDetailFilters): QueryParams {
   const params: QueryParams = { project: filters.project, name: filters.name };

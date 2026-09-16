@@ -11,10 +11,9 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The plumbing {@link BenchReport} and {@link RetrievalReport} share. Two of
- * these look pedantic and are not: the ingest report's output is quoted in PR
- * bodies and diffed across runs, so the header layout is a contract, and a
- * comma-decimal default locale silently emits JSON nothing can parse.
+ * The plumbing {@link BenchReport} and {@link RetrievalReport} share. The header
+ * layout is a contract other tooling depends on, and locale-dependent number
+ * formatting would silently emit JSON nothing can parse.
  */
 class ReportWriterTest {
 
@@ -28,7 +27,6 @@ class ReportWriterTest {
 		assertThat(markdown).endsWith("- `queue_capacity`: 50000\n");
 	}
 
-	/** A table detached from the machine it ran on is worse than no table. */
 	@Test
 	void alwaysRecordsTheHostAndRuntimeWithoutBeingAsked() {
 		String markdown = new ReportWriter("t", "d").markdownHeader("").toString();
@@ -46,9 +44,8 @@ class ReportWriterTest {
 	}
 
 	/**
-	 * The reason {@code Locale.ROOT} is pinned rather than left to the default: on a
-	 * German or French machine the default would render {@code 1,5}, and every
-	 * number in the JSON copy would be a syntax error.
+	 * On a German or French machine the default locale renders {@code 1,5},
+	 * making every number in the JSON a syntax error.
 	 */
 	@Test
 	void formatsNumbersLocaleIndependently() {
@@ -77,11 +74,6 @@ class ReportWriterTest {
 		assertThat(ReportWriter.quote("a\"b\\c")).isEqualTo("\"a\\\"b\\\\c\"");
 	}
 
-	/**
-	 * Condition values come from Postgres settings and scenario labels from
-	 * callers. One raw newline in either produces a report no JSON reader can
-	 * open, which is the failure this class exists to prevent.
-	 */
 	@Test
 	void escapesControlCharactersToo() {
 		assertThat(ReportWriter.quote("a\nb\tc\rd")).isEqualTo("\"a\\nb\\tc\\rd\"");

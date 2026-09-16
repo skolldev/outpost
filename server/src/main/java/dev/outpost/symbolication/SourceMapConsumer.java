@@ -5,15 +5,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Source Map v3 consumer: standard and index ("sections") maps, base64-VLQ
- * mappings, {@code sourcesContent}. Own implementation:
- * {@code com.atlassian.sourcemap} lacks index-map support and is only
- * published to Atlassian's own Maven repository.
- *
- * <p>Lookup follows the "greatest mapping at or before the generated
- * position" rule of Chrome DevTools / Node's {@code node:module} SourceMap,
- * which the unit test uses as the reference implementation. All positions
- * are 0-based (Sentry frames are 1-based; callers convert).
+ * Source Map v3 consumer (standard and index/"sections" maps, base64-VLQ
+ * mappings, {@code sourcesContent}) — hand-rolled because {@code com.atlassian.sourcemap}
+ * lacks index-map support. Lookup returns the greatest mapping at or before the
+ * generated position (Chrome DevTools / Node {@code node:module} semantics); positions
+ * are 0-based, though Sentry frames are 1-based and callers must convert.
  */
 public final class SourceMapConsumer {
 
@@ -78,8 +74,7 @@ public final class SourceMapConsumer {
 		srcLines = new int[n];
 		srcCols = new int[n];
 		nameIndexes = new int[n];
-		// Generators emit segments in generated order, but the spec doesn't
-		// guarantee it — sort to make binary search safe.
+		// Sort by generated position — the spec doesn't guarantee segment order, and binary search needs it.
 		builder.segments.sort((a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(a[1], b[1]));
 		for (int i = 0; i < n; i++) {
 			int[] segment = builder.segments.get(i);
@@ -147,8 +142,7 @@ public final class SourceMapConsumer {
 					pos = decodeVlq(mappings, pos, values, count++);
 				}
 				genCol += values[0];
-				// Per the index-map spec, the column offset applies only to the
-				// section's first generated line.
+				// Per the index-map spec, columnOffset applies only to the section's first generated line.
 				int outCol = genLine == 0 ? genCol + columnOffset : genCol;
 				if (count >= 4) {
 					src += values[1];

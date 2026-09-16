@@ -60,10 +60,8 @@ class TelemetryOriginsTest {
 	}
 
 	/**
-	 * {@code "release":""} is not a Release, and the rest of the product already
-	 * agrees — {@code EventStore} keeps no rollup row for it, the issue-list filter
-	 * rejects it, {@code sentry-cli}'s endpoint refuses to create it. A row here
-	 * would be a nameless Release the page lists with no Issues (#130).
+	 * A blank release is not a Release. Upserting one would create a nameless
+	 * Release row that the UI lists with no Issues (#130).
 	 */
 	@Test
 	void skipsBlankReleases() {

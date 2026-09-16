@@ -36,11 +36,7 @@ export class ProjectsSettings {
   readonly expandedProject = signal<number | null>(null);
   readonly copied = signal<string | null>(null);
 
-  // DSN keys for every project, fetched together when the tab opens and after
-  // any rotate/revoke. Installations are small (a handful of projects), so one
-  // request per project up front costs less than re-fetching on each expand and
-  // lets the template render each project's keys inline. Re-runs when the
-  // project list changes (e.g. after a create).
+  // Fetches every project's DSN keys up front (not lazily per expand); re-runs when the project list changes.
   private readonly keysResource = rxResource({
     params: () => this.projectsStore.projects().map((project) => project.id),
     stream: ({ params: ids }) => {
@@ -59,8 +55,7 @@ export class ProjectsSettings {
     return this.keysByProject()[id]?.find((key) => key.is_active)?.dsn ?? null;
   });
 
-  // Create form. The slug doubles as the project name; the 'other' platform
-  // maps to a null platform on the DTO (the backend treats it as generic).
+  // slug doubles as the project name; platform 'other' maps to null on the DTO.
   private readonly model = signal({ slug: '', platform: '' });
 
   readonly projectForm = form(
@@ -91,16 +86,12 @@ export class ProjectsSettings {
     },
   );
 
-  // Single source of truth for the platform picker — the template renders the
-  // options from this and the trigger label is derived from it. 'other' is a UI
-  // sentinel mapped to a null platform on the DTO in the submission action.
   readonly platforms = [
     { value: 'javascript-angular', label: 'Angular' },
     { value: 'java-spring-boot', label: 'Spring Boot' },
     { value: 'other', label: 'Other' },
   ];
 
-  /** Maps a platform value to its display label for the select trigger. */
   readonly platformLabel = (value: string): string =>
     this.platforms.find((platform) => platform.value === value)?.label ?? value;
 

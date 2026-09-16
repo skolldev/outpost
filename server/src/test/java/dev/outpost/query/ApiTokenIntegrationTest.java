@@ -24,10 +24,9 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * The API Token ownership and Scope model of ADR-0017: a Member may mint a
- * Personal Token carrying {@code telemetry:read} and nothing else, sees only
- * their own tokens, and deleting their account revokes those tokens while
- * leaving Installation Tokens working.
+ * The API Token ownership and Scope model of ADR-0017: Personal Tokens are
+ * scoped to their owner and revoked when the owner is deleted; Installation
+ * Tokens have no owner and are unaffected.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -69,9 +68,9 @@ class ApiTokenIntegrationTest {
 	// ------------------------------------------------------------------ lifetime
 
 	/**
-	 * The acceptance criterion of ADR-0017, both halves in one test: the cascade on
-	 * {@code owner_user_id} revokes a departed Member's Personal Token immediately,
-	 * and the Installation Token that has no owner keeps authenticating.
+	 * The acceptance criterion of ADR-0017: deleting a Member cascades to revoke
+	 * their Personal Token immediately, while the ownerless Installation Token
+	 * keeps authenticating.
 	 */
 	@Test
 	void deletingAnOutpostUserRevokesTheirPersonalTokensAndSparesInstallationTokens() {
@@ -131,7 +130,6 @@ class ApiTokenIntegrationTest {
 		assertThat(list(adminCookie)).isEmpty();
 	}
 
-	/** An Admin creating a token for their own agent gets one that is theirs. */
 	@Test
 	void anAdminChoosesBetweenPersonalAndInstallation() {
 		create(adminCookie, Map.of("name", "my-agent", "scopes", List.of(ApiTokenService.SCOPE_TELEMETRY_READ),
@@ -154,7 +152,7 @@ class ApiTokenIntegrationTest {
 
 	/**
 	 * The reveal carries the MCP Surface URL from {@code outpost.public-url},
-	 * sub-path and all — the browser has no way to reconstruct it.
+	 * sub-path included — the browser has no way to reconstruct it.
 	 */
 	@Test
 	void theCreationResponseCarriesTheMcpUrl() {
@@ -169,9 +167,9 @@ class ApiTokenIntegrationTest {
 	// ------------------------------------------------------------- visibility
 
 	/**
-	 * The two tokens a Member must not reach are a second Member's Personal Token —
-	 * which the {@code owner_user_id} predicate is what excludes — and an
-	 * Installation Token, which has no owner at all.
+	 * A Member must not reach a second Member's Personal Token (excluded by the
+	 * {@code owner_user_id} predicate) or an Installation Token (which has no
+	 * owner at all).
 	 */
 	@Test
 	void aMemberSeesAndRevokesOnlyTheirOwnTokens() {
@@ -242,7 +240,6 @@ class ApiTokenIntegrationTest {
 			.getStatusCode();
 	}
 
-	/** Presents a bearer token to a surface that requires one and reports the status. */
 	private HttpStatusCode bearerStatus(String path, String token) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setBearerAuth(token);

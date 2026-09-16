@@ -150,7 +150,6 @@ class DataRetentionIntegrationTest {
 			.param(monitorId).param(timestamp(withinDefault.minusSeconds(10))).param(timestamp(withinDefault)).update();
 		jdbc.sql("INSERT INTO uptime_incident (monitor_id, opened_at) VALUES (?, ?)")
 			.param(monitorId).param(timestamp(beyondDefault)).update();
-		// A 30-day policy that is switched off must not shrink the uptime window.
 		settings.save(false, 30);
 
 		scheduler.runOnce(run);
@@ -173,8 +172,6 @@ class DataRetentionIntegrationTest {
 		insertNotification(channelId, "suppressed", old);
 		insertNotification(channelId, "sent", recent);
 
-		// The Data Retention Policy is telemetry-only; even switched off, notification
-		// history is capped at the fixed 30-day window.
 		settings.save(false, 90);
 		scheduler.runOnce(run);
 
@@ -425,8 +422,7 @@ class DataRetentionIntegrationTest {
 		assertThat(eventCount(busyProject)).isEqualTo(2);
 		assertThat(eventCount(availableProject)).isZero();
 		assertThat(count("log_record")).isZero();
-		// A deferred project may still own rows in expired event weeks, so no
-		// event partition is dropped this run.
+		// A deferred project may still own rows in an expired week, so its partition isn't dropped.
 		assertThat(partitionExists("event_p20260504")).isTrue();
 	}
 
@@ -498,13 +494,11 @@ class DataRetentionIntegrationTest {
 
 		DataRetentionService.CleanupResult result = cleanup.cleanup(cutoff);
 
-		// Whole expired weeks are dropped, not row-deleted. The event week is
-		// emptied by the per-project pass first, then dropped like the others.
+		// Whole expired weeks are dropped, not row-deleted; the event week is emptied by the per-project pass first.
 		assertThat(partitionExists("log_record_p20260504")).isFalse();
 		assertThat(partitionExists("txn_p20260504")).isFalse();
 		assertThat(partitionExists("span_p20260504")).isFalse();
 		assertThat(partitionExists("event_p20260504")).isFalse();
-		// The boundary and future weeks survive as partitions.
 		assertThat(partitionExists("log_record_p20260518")).isTrue();
 		assertThat(partitionExists("log_record_p20260601")).isTrue();
 		assertThat(partitionExists("event_p20260518")).isTrue();
@@ -513,8 +507,8 @@ class DataRetentionIntegrationTest {
 
 		// Boundary rows are pruned at the exact cutoff; retained/future rows stay.
 		assertThat(count("log_record")).isEqualTo(2); // after + future
-		assertThat(count("txn")).isEqualTo(1); // keptTxn
-		assertThat(count("span")).isEqualTo(1); // kept-span
+		assertThat(count("txn")).isEqualTo(1);
+		assertThat(count("span")).isEqualTo(1);
 		assertThat(jdbc.sql("SELECT count(*) FROM span s WHERE NOT EXISTS (SELECT 1 FROM txn t WHERE t.id = s.txn_id)")
 			.query(Long.class).single()).isZero();
 	}
@@ -528,8 +522,7 @@ class DataRetentionIntegrationTest {
 		partitions.ensurePartition(PartitionManager.TXN, old);
 		partitions.ensurePartition(PartitionManager.TXN, after);
 		partitions.ensurePartition(PartitionManager.SPAN, after);
-		// The owning txn lives in a fully-expired week (dropped wholesale); its span
-		// starts after the cutoff, so its own partition survives -> a cross-week orphan.
+		// The owning txn's week is dropped wholesale; the span's own week survives -> a cross-week orphan.
 		UUID droppedTxn = insertTransaction(projectId, old, "dropped");
 		UUID keptTxn = insertTransaction(projectId, after, "kept");
 		insertSpan(projectId, droppedTxn, after, "cross-week-orphan");
@@ -570,8 +563,7 @@ class DataRetentionIntegrationTest {
 		long projectId = insertProject();
 		partitions.ensurePartition(PartitionManager.EVENT, old);
 		long issueId = insertIssue(projectId, "late", "Late arrival", null, "unresolved", old);
-		// A stale-timestamped event committed after the per-project pass: the
-		// partition is expired but not empty, so it must survive the drop.
+		// A stale-timestamped event lands after the per-project pass, so the expired partition isn't empty and survives.
 		insertEvent(projectId, issueId, old, "prod", "error");
 
 		assertThat(partitions.dropExpiredPartitions(PartitionManager.EVENT, cutoff, 5, true)).isZero();

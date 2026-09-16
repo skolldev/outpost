@@ -16,8 +16,7 @@ public class CorsConfig {
 		CorsConfiguration config = new CorsConfiguration();
 		config.setAllowedOrigins(origins);
 		config.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
-		// sentry-trace + baggage are what make distributed tracing work across the
-		// browser → backend hop; without them the preflight rejects the trace headers.
+		// sentry-trace/baggage must stay allowed or the preflight rejects trace headers.
 		config.setAllowedHeaders(List.of("content-type", "sentry-trace", "baggage", "x-demo-user"));
 		UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
 		source.registerCorsConfiguration("/api/**", config);

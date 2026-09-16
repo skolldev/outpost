@@ -114,7 +114,6 @@ class PasswordChangeIntegrationTest {
 		assertThat(loginStatus(MEMBER_EMAIL, MEMBER_PASSWORD)).isEqualTo(HttpStatus.OK);
 	}
 
-	/** The session principal decides whose password changes — an email in the body is ignored. */
 	@Test
 	void ignoresAnEmailInTheBody() {
 		ResponseEntity<Map> response = changePassword(memberCookie,

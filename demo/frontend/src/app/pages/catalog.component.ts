@@ -27,7 +27,7 @@ export class CatalogComponent {
   readonly error = signal<string | null>(null);
 
   constructor() {
-    // Fetch on load: an http.client span inside the pageload/navigation transaction.
+    // Fetching here keeps the request inside the pageload/navigation transaction.
     this.api.products().subscribe({
       next: (products) => {
         this.products.set(products);

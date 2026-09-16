@@ -66,11 +66,9 @@ public class ProjectController {
 
 	/**
 	 * Every Project, ordered by slug — extracted per {@link SearchQuery} so the MCP
-	 * Surface's {@code list_projects} Tool reads the same statement rather than a
-	 * copy of it (ADR-0016). No guard accompanies it, and that is a statement about
-	 * the table rather than an omission: {@code project} is a catalogue with one row
-	 * per Project and no partitions, so a buffer ceiling over it could not be set
-	 * anywhere it was able to fail.
+	 * Surface's {@code list_projects} Tool reads the same statement (ADR-0016). No
+	 * row limit: {@code project} is a small, unpartitioned catalogue table, so one
+	 * isn't needed here.
 	 */
 	static SearchQuery buildProjectListQuery() {
 		return new SearchQuery("SELECT id, slug, name, platform, created_at FROM project ORDER BY slug", List.of());
@@ -92,7 +90,7 @@ public class ProjectController {
 			.param(request.platform())
 			.query(this::mapProject)
 			.single();
-		createKey(project.id()); // a project without a DSN is useless — create the first key
+		createKey(project.id()); // every project needs at least one DSN key
 		return ResponseEntity.status(HttpStatus.CREATED).body(project);
 	}
 
@@ -138,12 +136,8 @@ public class ProjectController {
 	/**
 	 * The Environment Names of the given Projects, or of every Project when none are
 	 * given — extracted per {@link SearchQuery} so {@code list_projects} can answer
-	 * "which environments may I filter on" from the same statement this endpoint
-	 * runs, in one round trip rather than one per Project.
-	 *
-	 * <p>Guarded by the same reasoning as {@link #buildProjectListQuery()}:
-	 * {@code environment} holds one row per (Project, Environment Name) and is
-	 * neither partitioned nor telemetry, so there is no honest ceiling to put on it.
+	 * from the same statement, in one round trip. No row limit, same reasoning as
+	 * {@link #buildProjectListQuery()}: {@code environment} is unpartitioned and not telemetry.
 	 */
 	static SearchQuery buildEnvironmentsQuery(List<Long> project) {
 		StringBuilder sql = new StringBuilder("SELECT project_id, name FROM environment WHERE 1=1");
@@ -154,11 +148,10 @@ public class ProjectController {
 	}
 
 	/**
-	 * Intersection of Environment Names across the in-scope Projects,
-	 * alphabetically sorted (ADR 0009). In-scope = the given {@code project} ids, or every Project
-	 * when none are given. A Project with no {@code environment} rows is <em>no evidence</em>, not
-	 * <em>evidence of absence</em>: it is excluded from the denominator rather than emptying the
-	 * result, so a brand-new Project can't blank the bar.
+	 * Intersection of Environment Names across the in-scope Projects (the given
+	 * {@code project} ids, or every Project when none given), alphabetically sorted
+	 * (ADR 0009). A Project with no {@code environment} rows is excluded from the
+	 * denominator rather than emptying the result, so a new Project can't blank the list.
 	 */
 	@GetMapping("/environments")
 	public List<String> environmentIntersection(@RequestParam(required = false) List<Long> project) {

@@ -36,8 +36,7 @@ export class GlobalFilters {
   });
 
   setProjects(projects: number[]): void {
-    // Environment Names are cross-project (ADR 0009): the environment filter is
-    // pruned to the new intersection by the shell, not cleared here.
+    // Environment Names are cross-project (ADR 0009); pruning to the intersection happens in the shell, not here.
     this.merge({ project: projects.length ? projects.map(String) : null });
   }
 

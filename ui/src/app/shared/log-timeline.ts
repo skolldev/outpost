@@ -10,10 +10,7 @@ export interface TimelineWindow {
   to: string;
 }
 
-/**
- * Stacking order, worst at the top. Fixed rather than derived from the data so a
- * bucket that happens to contain no errors doesn't re-colour the bars around it.
- */
+/** Stacking order, worst at top. Fixed rather than derived per-bucket, so colors stay consistent across bars. */
 const STACK_ORDER: Level[] = ['fatal', 'error', 'warn', 'info', 'muted'];
 
 const LEVEL_FILL: Record<Level, string> = {
@@ -30,11 +27,7 @@ const HEIGHT = 100;
 /** Gap between bars, in bar-width units. */
 const GAP = 0.18;
 
-/**
- * Hoisted because `label` runs once per bucket and `bars` recomputes on every
- * pointer move during a drag — constructing the formatter is the expensive part of
- * `Intl`, and at 150 buckets a single drag would build thousands of them.
- */
+/** Hoisted: constructing an Intl formatter is expensive, and `bars` recomputes on every pointer move during a drag. */
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: 'short',
   day: 'numeric',
@@ -59,19 +52,9 @@ interface Bar {
 }
 
 /**
- * The log timeline: bucketed counts above the log stream, stacked by level, where
- * dragging or clicking selects a sub-window.
- *
- * <p>The selection <b>narrows the stream below; it does not zoom this chart</b> —
- * the bars keep spanning the whole range with the unselected ones dimmed, so a
- * spike stays visible in the context of the quiet period around it (ADR 0011).
- * That is why `window` is an input the chart renders and an output it emits, and
- * never something it feeds back into its own data.
- *
- * <p>Hand-rolled SVG, per the project's no-charting-library rule. The viewBox is one
- * unit per bucket with `preserveAspectRatio="none"`, so the bar geometry is computed
- * once in bucket space and the browser does the horizontal scaling — no resize
- * observer, no re-layout on window resize.
+ * Log timeline: bucketed counts above the log stream, stacked by level.
+ * Dragging or clicking selects a sub-window that narrows the stream below
+ * without zooming the chart itself (ADR 0011).
  */
 @Component({
   selector: 'app-log-timeline',
@@ -139,16 +122,12 @@ export class LogTimelineChart {
       const byLevel = this.byCanonicalLevel(counts.get(index));
       const total = STACK_ORDER.reduce((sum, level) => sum + (byLevel[level] ?? 0), 0);
 
-      // Height every level first, then put the top edge at their sum. Rounding the
-      // total separately would disagree with the rounded-and-floored segments: a
-      // bucket holding one record out of a max of 1000 rounds to a top edge of
-      // HEIGHT, and its 1-unit segment is then drawn below the viewBox and clipped
-      // away — so every quiet-but-non-empty bucket next to a spike vanishes.
+      // Height each level first, then set the top from their sum — rounding
+      // the total separately can put a 1-unit segment below the viewBox and clip it.
       const heights = STACK_ORDER.map((level) => {
         const value = byLevel[level] ?? 0;
         return value ? Math.max(1, Math.round((value / max) * HEIGHT)) : 0;
       });
-      // Stack downward from the top of the bar so the worst level sits on top.
       let y = Math.max(0, HEIGHT - heights.reduce((a, b) => a + b, 0));
       const segments: Segment[] = [];
       STACK_ORDER.forEach((level, i) => {

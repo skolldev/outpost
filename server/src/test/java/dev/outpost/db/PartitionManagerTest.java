@@ -15,8 +15,7 @@ class PartitionManagerTest {
 	@Test
 	void collapsesTimestampsOfTheSameWeekToOneWeek() {
 		Instant monday = Instant.parse("2026-07-27T00:00:00Z");
-		// Distinct instants a second apart — the shape of a log drain, where no two
-		// records share a timestamp but all share a partition.
+		// Distinct instants a second apart, like a log drain: no two share a timestamp but all share a partition.
 		List<Instant> timestamps = IntStream.range(0, 10_000).mapToObj(monday::plusSeconds).toList();
 
 		assertThat(PartitionManager.weeksOf(timestamps)).containsExactly(LocalDate.parse("2026-07-27"));

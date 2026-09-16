@@ -65,8 +65,7 @@ public class ResymbolicationJob {
 
 	void run(String release) {
 		int updated = 0;
-		// Keyset pagination so each flagged event is visited exactly once per
-		// run, even when its status stays flagged (still-missing maps).
+		// Keyset pagination: visits each flagged event exactly once per run, even if it's still flagged afterward.
 		Timestamp afterTimestamp = new Timestamp(0);
 		UUID afterId = new UUID(0, 0);
 		while (true) {

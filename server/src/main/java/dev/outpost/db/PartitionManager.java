@@ -21,10 +21,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Creates weekly range partitions of the partitioned telemetry tables on
- * demand. Partitions are named {@code <table>_pYYYYMMDD} after their Monday
- * (UTC) start. Creation runs inside a transaction holding a Postgres advisory
- * lock so concurrent ingest workers (or a second replica) never race on DDL.
+ * Creates weekly range partitions of the partitioned telemetry tables on demand,
+ * named {@code <table>_pYYYYMMDD} after their Monday (UTC) start. Creation runs
+ * inside a transaction holding a Postgres advisory lock so concurrent ingest
+ * workers (or a second replica) never race on DDL.
  */
 @Component
 public class PartitionManager {
@@ -78,25 +78,12 @@ public class PartitionManager {
 	}
 
 	/**
-	 * Drops every weekly partition of {@code table} lying entirely before
-	 * {@code cutoff} — reclaiming disk immediately instead of row-deleting. Takes
-	 * the same advisory lock as creation, so it never races {@link #ensureWeek}. The
-	 * boundary partition straddling the cutoff still holds live rows and is left for
-	 * the caller to prune.
-	 * <p>
-	 * {@code lockTimeoutSeconds} bounds each drop because {@code DROP TABLE} needs
-	 * an ACCESS EXCLUSIVE lock that a concurrent time-unfiltered scan (e.g. a trace
-	 * fan-out by {@code trace_id}) can hold; unbounded, the daily job could block
-	 * forever and pin a connection. On timeout the drop throws so the caller can
-	 * defer it to the next run.
-	 * <p>
-	 * {@code onlyIfEmpty} checks for rows <em>after</em> taking the partition's
-	 * ACCESS EXCLUSIVE lock, so a concurrent insert either commits before the check
-	 * (partition kept) or blocks until the decision is made — there is no window
-	 * where a committed row can be dropped. Needed for {@code event}, whose rows may
-	 * only be removed under the per-project event lock: a stale-timestamped event
-	 * can land in an already-expired week, and its partition must survive until the
-	 * next run row-deletes it and rebuilds the issue aggregates.
+	 * Drops every weekly partition of {@code table} lying entirely before {@code cutoff},
+	 * reclaiming disk immediately instead of row-deleting; the boundary partition straddling
+	 * {@code cutoff} is left for the caller to prune. {@code lockTimeoutSeconds} bounds the
+	 * DROP TABLE's ACCESS EXCLUSIVE wait so a concurrent scan can't block it forever, and
+	 * {@code onlyIfEmpty} checks for rows under that same lock so a concurrent insert can
+	 * never lose a committed row to the drop.
 	 *
 	 * @return the number of partitions dropped
 	 */
@@ -117,8 +104,7 @@ public class PartitionManager {
 			if (weekStart == null) {
 				continue;
 			}
-			// Compare the range's upper bound, not its start, so the current and
-			// future partitions are never eligible.
+			// Compare the range's upper bound, not its start, so current and future partitions stay ineligible.
 			Instant upperBound = weekStart.plusWeeks(1).atStartOfDay(ZoneOffset.UTC).toInstant();
 			if (upperBound.isAfter(cutoff)) {
 				continue;
@@ -143,18 +129,11 @@ public class PartitionManager {
 	}
 
 	/**
-	 * The lower bound of the oldest surviving partition of {@code table}, or empty
-	 * when it has none.
-	 *
-	 * <p>This is the cheapest honest answer to "how far back does data go": a
-	 * catalogue read with no heap access, where {@code min("timestamp")} would scan
-	 * every partition of the largest table in the product. Two things it is not.
-	 * It is <b>filter-blind</b> — it is when this installation started retaining
-	 * {@code table}, not when any one Project first wrote to it. And it can precede
-	 * the first surviving row by up to a week, because it is the partition's bound
-	 * rather than the earliest row inside it. Both are acceptable to the log
-	 * timeline, which needs a left edge to draw an axis from; a caller needing the
-	 * real minimum has to pay for the scan.
+	 * The lower bound of the oldest surviving partition of {@code table} — a cheap
+	 * catalog read, unlike {@code min("timestamp")} which would scan every partition
+	 * — or empty when {@code table} has none. It is filter-blind (reflects when
+	 * retention for the whole table started, not per-project) and can precede the
+	 * earliest surviving row by up to a week, since it's the partition's bound rather than the row's timestamp.
 	 */
 	public Optional<Instant> earliestPartitionStart(String table) {
 		String prefix = table + "_p";

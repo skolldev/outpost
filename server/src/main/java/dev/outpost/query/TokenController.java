@@ -22,43 +22,28 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * API Tokens: create (the secret is shown once), list, revoke.
- *
- * <p>Not Admin-only, per ADR-0017: a Member may mint a Personal Token carrying
- * {@code telemetry:read} for their own agent. Authority is enforced on the two
- * axes that differ by role rather than by a guard on the class —
- *
- * <ul>
- * <li><b>Scope.</b> {@code artifacts:write} uploads to Installation resources
- * and stays Admin-only; {@code telemetry:read} grants no capability a Member
- * lacks in the UI, only a different transport for it.
- * <li><b>Ownership.</b> An Admin chooses between a Personal Token and an
- * Installation Token that outlives every account; a Member only ever creates
- * their own. Listing and revoking follow: an Admin sees all tokens, a Member
- * only their own.
- * </ul>
+ * API Tokens: create (secret shown once), list, revoke. Not Admin-only
+ * (ADR-0017) — a Member may mint a Personal Token scoped to
+ * {@code telemetry:read} for their own use; {@code artifacts:write} and
+ * Installation Tokens remain Admin-only, and each role only lists/revokes its own tokens.
  */
 @RestController
 @RequestMapping("/api/internal/tokens")
 public class TokenController {
 
 	/**
-	 * {@code scopes} is required — a token carrying none authenticates nothing, so
-	 * an omitted list is a mistake worth reporting rather than a default worth
-	 * guessing. {@code personal} may be omitted, and then means the only kind the
-	 * caller can create: an Installation Token for an Admin (what this endpoint has
-	 * always minted), a Personal Token for a Member.
+	 * {@code scopes} is required; a token with none authenticates nothing, so an
+	 * omitted list is rejected rather than defaulted. {@code personal} may be
+	 * omitted, meaning the only kind the caller can create: an Installation Token
+	 * for an Admin, a Personal Token for a Member.
 	 */
 	public record CreateToken(String name, List<String> scopes, @Nullable Boolean personal) {
 	}
 
 	/**
-	 * Creation response — the only time the secret is shown.
-	 *
-	 * <p>{@code mcpUrl} is the MCP Surface's address on this Installation, sent so
-	 * the one-time reveal can render a paste-ready client configuration. The browser
-	 * cannot derive it: {@code location.origin} loses a reverse-proxy sub-path, and
-	 * hand-assembling the URL is the onboarding step that most often goes wrong.
+	 * Creation response — the only time the secret is shown. {@code mcpUrl} is
+	 * included because the browser can't derive it itself: {@code location.origin}
+	 * loses a reverse-proxy sub-path.
 	 */
 	public record CreatedTokenResponse(long id, String name, List<String> scopes, Instant createdAt,
 			@Nullable Long ownerUserId, @Nullable String ownerEmail, String token, String mcpUrl) {
@@ -96,8 +81,7 @@ public class TokenController {
 		if (request.name() == null || request.name().isBlank()) {
 			return ResponseEntity.badRequest().body(Map.of("detail", "name required"));
 		}
-		// Details are shown to the user verbatim by the settings page, so they are
-		// written as sentences.
+		// Shown to the user verbatim by the settings page, so written as sentences.
 		Set<String> scopes = new LinkedHashSet<>(request.scopes() == null ? List.<String>of() : request.scopes());
 		scopes.remove(null);
 		if (scopes.isEmpty()) {
@@ -119,9 +103,7 @@ public class TokenController {
 		}
 		Long ownerUserId = null;
 		if (personal) {
-			// The Session outlives the account it was granted to (ADR-0012), so a
-			// caller can still be authenticated after their row is gone. Minting a
-			// Personal Token for nobody would silently produce an Installation Token.
+			// Session can outlive its account (ADR-0012) — without this check a deleted user's request would silently mint an Installation Token.
 			UserService.User owner = caller(authentication).orElse(null);
 			if (owner == null) {
 				return ResponseEntity.status(HttpStatus.UNAUTHORIZED)

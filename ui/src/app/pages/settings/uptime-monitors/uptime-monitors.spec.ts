@@ -127,7 +127,7 @@ describe('UptimeMonitorsSettings', () => {
 
     await pickOption(user, 'Project', 'shop-frontend');
     await pickOption(user, 'Environment', 'prod');
-    expect(submit).toBeDisabled(); // url still missing
+    expect(submit).toBeDisabled();
 
     await user.type(screen.getByLabelText('URL'), 'https://shop.example.com/health');
     expect(submit).toBeEnabled();

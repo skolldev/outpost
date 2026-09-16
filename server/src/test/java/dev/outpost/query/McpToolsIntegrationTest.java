@@ -31,26 +31,11 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * The seven Tools #180 adds, each driven over JSON-RPC exactly as a client drives
- * them. {@code get_issue_context} and the transport and Scope underneath all
- * eight are covered by {@code McpSurfaceIntegrationTest}, through the same
- * {@link McpTestClient}.
- *
- * <p>Telemetry is posted through the real ingest surface rather than inserted,
- * as {@code TraceQueryIntegrationTest} does it: these Tools read columns and
- * {@code event.data} the pipeline wrote, and a hand-built row would let a
- * projection drift away from the shape ingestion actually produces. Uptime is the
- * exception — an Uptime Check has no ingest path, so those rows go in by hand.
- *
- * <p>Seeded once for the class rather than per test, which is a deliberate
- * departure from this repo's delete-all-in-{@code @BeforeEach} pattern. Every
- * Tool here is read-only and none of these tests can disturb another; re-running
- * the ingest pipeline sixteen times would be the whole runtime of the suite.
- *
- * <p>What each test asserts is not only the shape of the payload but the
- * <b>disclosure</b> in it, because that is what #177 says these Tools are for.
- * A field name that overstates its data and a missing caveat are both defects
- * here, and neither shows up in a schema.
+ * Seeded once for the class in {@code @BeforeAll}, not this repo's usual
+ * per-test delete-all — safe because every Tool here is read-only. Telemetry
+ * is posted through the real ingest envelope rather than inserted, so these
+ * Tools read what the pipeline actually writes; Uptime Checks have no ingest
+ * path and are seeded directly.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -133,8 +118,7 @@ class McpToolsIntegrationTest {
 		await("log records", () -> jdbc.sql("SELECT id::text FROM log_record").query(String.class).list(), 2);
 		await("transactions", () -> jdbc.sql("SELECT id::text FROM txn").query(String.class).list(),
 				CHECKOUT_TRANSACTIONS + 1);
-		// A known Environment with no Events, so "known name, nothing there" is
-		// distinguishable from "unknown name" — the two answer differently.
+		// A known Environment with no Events, so "nothing there" is distinguishable from "unknown".
 		jdbc.sql("INSERT INTO environment (project_id, name) VALUES (?, 'staging')").param(shopId).update();
 		seedUptime();
 
@@ -159,10 +143,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * Release versions are exact-match filters an agent cannot guess, so the
-	 * catalogue call hands out the recent ones the way it hands out Environment
-	 * Names — the release here was auto-created when the Event carrying it was
-	 * ingested.
+	 * Release versions are exact-match filters an agent can't guess, so recent
+	 * ones are handed out like Environment Names; the release here was
+	 * auto-created when its Event was ingested.
 	 */
 	@Test
 	void listProjectsNamesEachProjectsRecentReleases() {
@@ -174,9 +157,8 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * A Project that has received nothing has no Environment Names, and the empty
-	 * list has two readings — "none exist" and "nothing has arrived". Only one is
-	 * true, and an agent that takes the other stops looking.
+	 * An empty Environment list is ambiguous — "none exist" vs "nothing has
+	 * arrived" — so the caveat must say which.
 	 */
 	@Test
 	void anEmptyEnvironmentListIsExplainedRatherThanLeftAmbiguous() {
@@ -206,16 +188,14 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The limit is the MCP Surface's, not the Issues page's. An agent spends a
-	 * context window per call where a user spends a scroll, so the page size the
-	 * statement fetches is a ceiling rather than the answer.
+	 * The limit here is the MCP Surface's own, not the Issues page's — an agent
+	 * spends a context window per call where a user spends a scroll.
 	 */
 	@Test
 	void findIssuesDefaultsToItsOwnLimitAndClampsAHigherOne() {
 		assertThat(IssueSearchTool.DEFAULT_LIMIT).isLessThan(IssueController.PAGE_SIZE);
 
-		// One Issue is seeded, so the limit cannot be observed by count here; what is
-		// observable is that an over-limit ask is clamped rather than refused.
+		// Only one Issue is seeded, so what's observable here is clamping, not count.
 		JsonNode clamped = call("find_issues", Map.of("limit", IssueController.PAGE_SIZE * 10));
 		assertThat(clamped.path("issues")).hasSize(1);
 		assertThat(caveats(clamped)).anySatisfy(
@@ -224,10 +204,8 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The defaults ADR-0016 requires to be applied server-side, and the disclosure
-	 * that keeps them from being a silent narrowing. Both are the point: the window
-	 * is what makes the reused statement affordable, and the status is the predicate
-	 * the list indexes lead with.
+	 * ADR-0016 requires these defaults applied server-side and disclosed, rather
+	 * than left as a silent narrowing.
 	 */
 	@Test
 	void findIssuesAppliesItsDefaultsServerSideAndSaysSo() {
@@ -248,15 +226,13 @@ class McpToolsIntegrationTest {
 	void findIssuesFiltersByStatusAndRejectsAStatusItCannotAnswer() {
 		assertThat(call("find_issues", Map.of("status", "resolved")).path("issues")).isEmpty();
 
-		// Refused against the advertised enum, before dispatch, and named back with the
-		// values that would have worked — never coerced to the default.
+		// Refused before dispatch against the advertised enum, never coerced to the default.
 		assertThat(error("find_issues", Map.of("status", "any"))).contains("/status", "unresolved", "resolved");
 	}
 
 	/**
-	 * An unknown slug is an error rather than a dropped filter. A dropped filter
-	 * widens the answer silently, and a result spanning every Project reads exactly
-	 * like one scoped to the Project that was asked for.
+	 * An unknown slug is refused rather than dropped, because a silently widened
+	 * result reads exactly like one correctly scoped.
 	 */
 	@Test
 	void anUnknownProjectSlugIsRefusedRatherThanIgnored() {
@@ -266,11 +242,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The same rule for the other exact-match filters: an Environment Name or
-	 * release version nothing has ever carried is a typo, and binding it would
-	 * return an empty result that reads as "nothing happened there". The fixture's
-	 * Environment is 'prod', so 'production' is exactly the near-miss an agent
-	 * makes.
+	 * Same rule for Environment Name and release: an unrecognized value is
+	 * treated as a typo rather than bound, since binding it would return an
+	 * empty result indistinguishable from "nothing happened there".
 	 */
 	@Test
 	void anUnknownEnvironmentOrReleaseIsRefusedRatherThanBound() {
@@ -281,16 +255,14 @@ class McpToolsIntegrationTest {
 			.contains("no Project has received telemetry for a release 'shop-1.0.0'")
 			.contains("matched exactly");
 
-		// The exact values pass, and a known-but-empty Environment answers empty
-		// rather than erroring: staging exists, and nothing has happened there.
+		// Exact values pass; a known-but-empty Environment (staging) answers empty rather than erroring.
 		assertThat(call("find_issues", Map.of("release", "shop@1.0.0")).path("issues")).hasSize(1);
 		assertThat(call("find_issues", Map.of("environments", List.of("staging"))).path("issues")).isEmpty();
 	}
 
 	/**
-	 * A relative window, stated as a duration rather than as an instant the caller
-	 * would have to invent: a model has no reliable clock, so "the last hour" is
-	 * only honest as PT1H against the server's own now.
+	 * A relative window is stated as a duration (PT1H), not an instant — a model
+	 * has no reliable clock to compute "the last hour" against.
 	 */
 	@Test
 	void findIssuesAcceptsADurationAsTheStartOfTheWindow() {
@@ -317,8 +289,7 @@ class McpToolsIntegrationTest {
 		assertThat(newest.path("trace_id").asString()).isEqualTo(TRACE_ID);
 		assertThat(newest.path("attributes").path("order.id").asString()).isEqualTo("4711");
 
-		// Both records are the same Project's, so the slug is stated once rather than
-		// on each of them.
+		// Both records share a Project, so the slug is stated once via `common` rather than per record.
 		assertThat(result.path("common").path("project_slug").asString()).isEqualTo("shop");
 		assertThat(newest.has("project_slug")).isFalse();
 
@@ -328,9 +299,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * A record that agrees with nothing keeps its own fields: hoisting a single
-	 * record's values into {@code common} would split one record across two objects
-	 * and save nothing.
+	 * A record that shares nothing with others keeps its own fields — hoisting a
+	 * single record's values into {@code common} would split it across two
+	 * objects for no savings.
 	 */
 	@Test
 	void searchLogsKeepsPerRecordFieldsWhenThereIsNothingToShare() {
@@ -380,10 +351,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The limit is this surface's own, well under the log page's, and the cursor
-	 * resumes where the caller stopped reading rather than where the statement
-	 * stopped fetching — the whole point of trimming after the keyset rather than
-	 * before it.
+	 * The limit is this surface's own, well under the log page's; the cursor
+	 * resumes where the caller stopped reading, not where the statement stopped
+	 * fetching.
 	 */
 	@Test
 	void searchLogsHonoursItsLimitAndPagesFromWhereItStopped() {
@@ -413,10 +383,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * Levels are the one filter that cannot be validated — they are free text an
-	 * SDK chose — so a near-miss returns empty, and the caveat is what keeps that
-	 * from reading as "nothing was logged at that level". 'warning' for the stored
-	 * 'error' stands in for the classic 'warning'-vs-'warn' miss.
+	 * Levels are free text an SDK chose, so they can't be validated — a near-miss
+	 * returns empty, and the caveat is what keeps that from reading as "nothing
+	 * was logged". 'warning' here stands in for the classic 'warning'-vs-'warn' miss.
 	 */
 	@Test
 	void anEmptyLogResultUnderALevelFilterExplainsTheExactMatching() {
@@ -431,10 +400,9 @@ class McpToolsIntegrationTest {
 	// -------------------------------------------------------- get_issue_context
 
 	/**
-	 * The surrounding Log Records are one section of a result that also carries a
-	 * stack, breadcrumbs and a Trace summary, so they are capped by this Tool rather
-	 * than by the log page — whose size would let that one section run to a hundred
-	 * records of up to {@link LogSearchTool#MAX_BODY_CHARS} each.
+	 * Log Records are one section of a larger result (stack, breadcrumbs, Trace
+	 * summary), so they're capped tighter than the log page — which would let this
+	 * one section run to a hundred records of up to {@link LogSearchTool#MAX_BODY_CHARS} each.
 	 */
 	@Test
 	void getIssueContextCapsItsLogRecordsTighterThanTheLogPage() {
@@ -451,11 +419,8 @@ class McpToolsIntegrationTest {
 	// -------------------------------------------------- get_issue_context (env)
 
 	/**
-	 * The Environment scope on {@code get_issue_context}: an Issue spanning
-	 * environments has a latest Event per Environment, and the overall latest may
-	 * be from the wrong one. The rest of the Tool is covered by
-	 * {@code McpSurfaceIntegrationTest}; what belongs here is the scoping and its
-	 * disclosures.
+	 * An Issue spanning Environments has a latest Event per Environment, and the
+	 * overall latest may be from the wrong one — this tests the scoping.
 	 */
 	@Test
 	void getIssueContextScopesTheLatestEventToAnEnvironmentAndSaysSo() {
@@ -467,9 +432,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * A known Environment with no Events answers with the distinction that
-	 * matters: "never occurred there or aged out", not "no Event in retention" —
-	 * and an unknown Environment Name is refused outright, like everywhere else.
+	 * A known Environment with no Events explains why — "no Event in retention",
+	 * covering both "never occurred" and "aged out" — while an unknown
+	 * Environment Name is refused outright, like everywhere else.
 	 */
 	@Test
 	void getIssueContextTellsAnEmptyEnvironmentApartFromAnUnknownOne() {
@@ -504,10 +469,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * An identifier earns its bytes by leading somewhere. An error Event's id is
-	 * what {@code get_event_raw} is called with; a Log Record's is a parameter of
-	 * nothing on this surface, so it is a UUID per record the caller can only look
-	 * at.
+	 * An identifier earns its bytes by leading somewhere: an error Event's id is
+	 * what {@code get_event_raw} takes, while a Log Record's id is a parameter of
+	 * nothing here and is dropped.
 	 */
 	@Test
 	void getTraceKeepsTheIdsThatLeadSomewhereAndDropsTheOnesThatDoNot() {
@@ -518,9 +482,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The projection is named rather than left to be noticed. A Span's attribute bag
-	 * is where a database Span keeps its statement, and a caller that does not know
-	 * it is absent will conclude the Span carried nothing.
+	 * A Span's attribute bag (where a database Span keeps its statement) is
+	 * dropped from this projection, so the caveat says so explicitly rather than
+	 * leaving it to be noticed.
 	 */
 	@Test
 	void getTraceSaysThatSpanAttributesAreNotInIt() {
@@ -580,9 +544,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The naming decision this Tool exists to get right: a share of probes is not
-	 * availability, and a field called {@code uptime_pct} would invite a model to
-	 * report the stronger claim.
+	 * A share of Uptime Checks that succeeded is not availability, so the field
+	 * is named {@code successful_checks_pct} rather than {@code uptime_pct},
+	 * which would invite the stronger claim.
 	 */
 	@Test
 	void uptimeStatusNamesThePercentageForWhatItActuallyMeasures() {
@@ -604,10 +568,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * {@code days} bounds the read, not the rendering. The Uptime Checks here span
-	 * ten minutes, so a one-day window keeps them all and the count is unchanged —
-	 * what this pins is that the parameter reaches the statement at all, which
-	 * {@code McpToolPerformanceTest} asserts on the SQL and this asserts end to end.
+	 * {@code days} bounds the read, not just the rendering — the Uptime Checks
+	 * here span ten minutes so a 1-day window keeps them all, but this pins that
+	 * the parameter actually reaches the statement.
 	 */
 	@Test
 	void uptimeStatusReadsOnlyTheHistoryItWasAskedFor() {
@@ -643,9 +606,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The group below the sample floor is missing from the ranking and present in
-	 * the cardinality, which is why those two numbers do not reconcile — and why the
-	 * caveat has to say so rather than leave it looking like a defect.
+	 * The group below the sample floor is missing from the ranking but present in
+	 * the cardinality count, so the caveat has to explain the mismatch rather
+	 * than let it look like a defect.
 	 */
 	@Test
 	void performanceOverviewDisclosesTheSampleFloorAndTheCardinalityBehindIt() {
@@ -659,9 +622,8 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The disclosure #180 names outright: these are the Transactions Outpost
-	 * received, and the Performance view carries this as a banner that does not
-	 * survive a Tool call.
+	 * These are the Transactions Outpost received, not the requests served — the
+	 * UI shows this as a banner that a Tool call wouldn't otherwise carry.
 	 */
 	@Test
 	void performanceOverviewCarriesTheSamplingCaveatTheUiBannerCarries() {
@@ -685,10 +647,9 @@ class McpToolsIntegrationTest {
 	// -------------------------------------------------------- find_transactions
 
 	/**
-	 * The drill-down that closes the performance workflow: the leaderboard names
-	 * the group, this lists its members slowest first, and every row carries the
-	 * trace_id get_trace needs. Without it "what is slow" and "what did a slow
-	 * request do" were both answerable and unconnected.
+	 * The leaderboard names the group; this lists its members slowest-first with
+	 * the trace_id get_trace needs, connecting "what is slow" to "what did a
+	 * slow request do".
 	 */
 	@Test
 	void findTransactionsListsAGroupsMembersSlowestFirstWithTheirTraceIds() {
@@ -722,10 +683,9 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * The group key is (name, op) matched exactly, and the two near-misses an
-	 * agent actually makes — a mistyped name, and omitting the op of a group that
-	 * has one — both answer empty with the caveat that says why, because there is
-	 * no group catalogue to validate against the way slugs are validated.
+	 * The group key (name, op) is matched exactly; a mistyped name or an omitted
+	 * op both answer empty with a caveat explaining why, since there's no group
+	 * catalogue to validate against like there is for slugs.
 	 */
 	@Test
 	void aNearMissOnTheGroupKeyAnswersEmptyWithTheExactMatchingExplained() {
@@ -775,10 +735,10 @@ class McpToolsIntegrationTest {
 	}
 
 	/**
-	 * One Uptime Monitor that is down: ten Uptime Checks, the last three failed, and
-	 * the Incident those three opened. {@code next_check_at} is pushed into the
-	 * future because {@code UptimeScheduler} runs during tests and would otherwise
-	 * probe {@code example.invalid} for real.
+	 * One Uptime Monitor that is down: ten Uptime Checks, the last three failed,
+	 * and the Incident they opened. {@code next_check_at} is pushed into the
+	 * future so {@code UptimeScheduler} (which runs during tests) doesn't probe
+	 * {@code example.invalid} for real.
 	 */
 	private void seedUptime() {
 		monitorId = jdbc.sql("""

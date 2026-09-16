@@ -5,26 +5,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.List;
 
 /**
- * The journey to a deep page: cursor by cursor, exactly as a user gets there,
- * checking at every step that the cursor is actually advancing.
+ * Walks to a deep page cursor by cursor, exactly as a user gets there, checking
+ * at each step that the cursor is actually advancing.
  *
- * <p>The transport is the caller's — {@link Pages} is the whole dependency — so
- * the arithmetic that decides whether "page 50" is page 50 can be tested without
- * a server. It is worth testing: a walk one page short reports page 49 under a
- * "page 50" label, silently, which is the class of wrongness the rest of this
- * harness exists to eliminate.
- *
- * @param cursor the cursor that opens the page reached — what a scenario measures
+ * @param cursor the cursor that opens the page reached
  * @param depth which page that is
- * @param pageIsFull whether that page holds a full page of rows. A cursor is
- * emitted only when a full page was returned <em>and</em> more rows exist
- * ({@code KeysetPage.paginate}), so this is exact rather than inferred: the last
- * page of a dataset is legitimately short, and a scenario that asserted a full
- * page there would fail a {@code -Pbench.scale} smoke run for running out of rows.
+ * @param pageIsFull whether that page holds a full page of rows. Exact, not
+ * inferred: a cursor is emitted only when a full page was returned and more rows
+ * exist, so a legitimately short last page reports false rather than failing a
+ * smoke run.
  */
 record CursorWalk(String cursor, int depth, boolean pageIsFull) {
 
-	/** One page as the walk needs to see it. */
 	record Page(List<String> ids, String nextCursor) {
 	}
 
@@ -37,11 +29,8 @@ record CursorWalk(String cursor, int depth, boolean pageIsFull) {
 	}
 
 	/**
-	 * Walks to page {@code target}, or as deep as the data goes. Stopping early is
-	 * reported rather than thrown: a smoke run at a tenth scale legitimately runs
-	 * out of rows, and measuring the deepest page it reached is more useful than
-	 * failing — as long as nothing downstream mistakes it for a deep one, which is
-	 * what {@link #depth()} and {@link #pageIsFull()} are for.
+	 * Walks to page {@code target}, or as deep as the data goes — stopping early is
+	 * reported via {@link #depth()} and {@link #pageIsFull()} rather than thrown.
 	 */
 	static CursorWalk to(int target, Pages pages) throws Exception {
 		String cursor = null;
@@ -66,8 +55,7 @@ record CursorWalk(String cursor, int depth, boolean pageIsFull) {
 			previousIds = page.ids();
 		}
 
-		// Two is the floor at which this measured anything: the scenario is not page 1,
-		// and the overlap comparison above ran at least once.
+		// depth >= 2: page 1 plus at least one overlap comparison against it.
 		assertThat(depth).as("pages available — a deep-pagination scenario needs somewhere to go")
 			.isGreaterThanOrEqualTo(2);
 		return new CursorWalk(openedBy, depth, pageIsFull);

@@ -30,17 +30,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * A redelivered event must not inflate the aggregates. SDKs retry on network
- * failure, so the same {@code event_id} arrives more than once; the second copy
- * stores no event row and must therefore leave {@code issue.event_count},
- * {@code issue_env_stats.event_count} and {@code issue_release_stats.event_count}
- * untouched. Every envelope here carries a {@link #RELEASE}, so all three
- * counters are on the path each test exercises — a rollup nothing writes to
- * cannot be over-counted, and would pass silently.
- *
- * <p>The single-event path goes over HTTP. The batched path calls
- * {@link EventStore#store} directly: whether two envelopes land in the same
- * worker batch is a timing accident, and the invariant under test is not.
+ * A redelivered event (same {@code event_id}) must not inflate {@code issue.event_count},
+ * {@code issue_env_stats.event_count}, or {@code issue_release_stats.event_count}; every
+ * envelope here carries a {@link #RELEASE} so all three counters are exercised.
+ * The single-event path goes over HTTP; the batched path calls {@link EventStore#store}
+ * directly, since same-batch delivery is a timing accident, not the invariant under test.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -48,7 +42,6 @@ import org.springframework.web.client.RestTemplate;
 @Import(TestcontainersConfiguration.class)
 class DuplicateEventIngestIntegrationTest {
 
-	/** Carried by every envelope below, so the release rollup is written on each path. */
 	private static final String RELEASE = "shop@1.0.0";
 
 	@LocalServerPort
@@ -79,11 +72,7 @@ class DuplicateEventIngestIntegrationTest {
 	@BeforeEach
 	void setUp() {
 		baselineDuplicates = duplicates();
-		// Fixed per test so a redelivery is byte-identical, and recent enough that
-		// the skew clamp leaves it alone — a clamped timestamp would be rewritten to
-		// each delivery's received-at and the two copies would stop being the same
-		// event. Nanoseconds are deliberate: Postgres stores microseconds, so this
-		// is the case where a naive in-memory key stops matching the stored one.
+		// Fixed, recent (unclamped) timestamp with nanos, so redelivery is byte-identical and exercises Postgres's microsecond precision.
 		eventTimestamp = Instant.now().minusSeconds(60).truncatedTo(ChronoUnit.SECONDS).plusNanos(123_456_789).toString();
 		jdbc.sql("DELETE FROM event").update();
 		jdbc.sql("DELETE FROM issue").update();
@@ -105,9 +94,7 @@ class DuplicateEventIngestIntegrationTest {
 		assertThat(postEnvelope(envelope).getStatusCode()).isEqualTo(HttpStatus.OK);
 		awaitEvents(1);
 		assertThat(postEnvelope(envelope).getStatusCode()).isEqualTo(HttpStatus.OK);
-		// The redelivery stores nothing, so the counter is the only proof a worker
-		// saw it. Without this the assertions below would also pass on an envelope
-		// still sitting in the queue.
+		// The duplicates counter is the only proof the redelivery was processed, not just still queued.
 		awaitDuplicates(1);
 
 		assertThat(eventRows()).isEqualTo(1);
@@ -157,8 +144,6 @@ class DuplicateEventIngestIntegrationTest {
 		assertThat(status).isEqualTo("resolved");
 		assertThat(issueEventCount()).isEqualTo(1);
 	}
-
-	// ------------------------------------------------------------------ helpers
 
 	private ProcessedEvent process(String eventJson) {
 		JsonNode event = mapper.readTree(eventJson);

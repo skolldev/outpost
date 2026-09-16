@@ -11,21 +11,11 @@ import java.util.UUID;
 import java.util.function.Function;
 
 /**
- * Keyset pagination for the query list endpoints: pages ordered by
- * {@code (sort, id)} descending, navigated by an opaque cursor — the base64url
- * token {@code sortValue|id} of the previous page's last row.
- *
- * <p>Keyset over offset so page cost stays O(page size) at any depth, via the
- * {@code (sort, id) < (?, ?)} row comparison against an index on those columns.
- *
- * <p>The tail is returned as SQL for the caller to append to its own filter
- * {@code WHERE}, rather than this class owning the whole query: the readable
- * per-endpoint {@code WHERE} stays in the controller and the exact SQL remains
- * {@code EXPLAIN}-able without a database. Enrichment (e.g. sparklines) is
- * layered on the returned rows by the caller, so it never enters this interface.
- *
- * <p>Each {@link KeyColumn} owns its cursor codec, so the typed parse logic that
- * was once copied across controllers lives in one place.
+ * Keyset pagination for the query list endpoints: pages ordered by {@code (sort, id)}
+ * descending, navigated by an opaque cursor — the base64url token {@code sortValue|id} of the
+ * previous page's last row. Returns the SQL tail for the caller to append to its own filter
+ * {@code WHERE}, so the statement stays {@code EXPLAIN}-able without this class owning the
+ * whole query.
  */
 final class KeysetPage {
 
@@ -85,9 +75,9 @@ final class KeysetPage {
 	}
 
 	/**
-	 * The SQL tail to append after the caller's filter {@code WHERE}. Limits to
-	 * {@code pageSize + 1} — the extra row is how {@link #paginate} detects a next
-	 * page. Bind params are ordered to follow the caller's filter params.
+	 * The SQL tail to append after the caller's filter {@code WHERE}. Limits to {@code pageSize +
+	 * 1} — the extra row is how {@link #paginate} detects a next page — and orders its bind params
+	 * to follow the caller's filter params.
 	 */
 	Tail build(String cursor) {
 		StringBuilder sql = new StringBuilder();
@@ -109,20 +99,10 @@ final class KeysetPage {
 	}
 
 	/**
-	 * The same trim against a smaller page than the statement fetched, for a caller
-	 * that wants fewer rows than the page size the SQL was built with.
-	 *
-	 * <p>The statement's {@code LIMIT} is unchanged, so this trims the payload and
-	 * not the work — the same trade {@code find_transactions} and
-	 * {@code performance_overview} make. It is the trade worth making on the MCP
-	 * Surface: the index scan costs the same for a hundred rows as for
-	 * twenty-five, while the hundred rows are what a context window is spent on.
-	 * Keeping the SQL identical is also what lets {@code McpToolQueryReuseTest}
-	 * still assert these Tools run the list page's own statement, byte for byte.
-	 *
-	 * <p>The cursor is encoded from the last row actually returned, so paging from
-	 * a trimmed page resumes where the caller stopped reading rather than where the
-	 * statement stopped fetching.
+	 * The same trim against a smaller page than the statement fetched, without changing the
+	 * statement's {@code LIMIT} — so this trims the payload, not the query cost. The cursor is
+	 * encoded from the last row actually returned, so paging from a trimmed page resumes where the
+	 * caller stopped reading.
 	 */
 	Page paginate(List<Map<String, Object>> rows, int size) {
 		int trim = Math.max(1, Math.min(size, pageSize));

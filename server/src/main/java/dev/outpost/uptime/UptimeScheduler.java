@@ -16,17 +16,12 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * Drives uptime monitors: a single-thread coordinator polls for monitors whose
- * {@code next_check_at} is due and fans probes out to virtual threads, one
- * in-flight probe per monitor. A monitor is provisionally re-armed before its
- * probe starts, then re-armed from completion by
- * {@link UptimeCheckService#recordResult}. The provisional schedule prevents a
- * result-recording failure from making the coordinator immediately probe the
- * still-due monitor again, while the in-flight set prevents slow probes from
- * overlapping.
- *
- * <p>Assumes a single Outpost instance (like the rest of the app). If
- * replicas ever matter, add {@code FOR UPDATE SKIP LOCKED} to the due query.
+ * Drives uptime monitors: a single-thread coordinator polls for due monitors
+ * and fans probes out to virtual threads, one in-flight probe per monitor,
+ * with a provisional re-arm before each probe so a failed result-recording
+ * doesn't cause an immediate re-probe. Assumes a single Outpost instance; a
+ * multi-replica deployment would need {@code FOR UPDATE SKIP LOCKED} on the
+ * due query.
  */
 @Component
 public class UptimeScheduler implements SmartLifecycle {
@@ -40,8 +35,7 @@ public class UptimeScheduler implements SmartLifecycle {
 	private final UptimeCheckService checkService;
 	private final long tickMillis;
 
-	// Recreated on each start(): stop() shuts these down for good, so surviving a
-	// SmartLifecycle stop()/start() cycle needs fresh executors.
+	// Recreated on each start(): stop() shuts these down for good.
 	private ScheduledExecutorService coordinator;
 	private ExecutorService probes;
 	private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
@@ -61,9 +55,7 @@ public class UptimeScheduler implements SmartLifecycle {
 			return;
 		}
 		running = true;
-		// stop() can drop a queued probe before check()'s finally clears its id, so
-		// a restart may inherit stale ids that would make tick() skip those monitors
-		// forever. A fresh start owns no in-flight probes.
+		// stop() can drop a queued probe before its id is cleared; a fresh start must not inherit stale ids.
 		inFlight.clear();
 		coordinator = Executors.newSingleThreadScheduledExecutor(runnable -> {
 			Thread thread = new Thread(runnable, "uptime-coordinator");
@@ -77,13 +69,11 @@ public class UptimeScheduler implements SmartLifecycle {
 	@Override
 	public synchronized void stop() {
 		running = false;
-		// Null-checked: Spring won't stop() before start(), but a manual/edge
-		// invocation could, and the executors only exist after a start().
+		// Null-checked: Spring won't call stop() before start(), but a manual invocation could.
 		if (coordinator != null) {
 			coordinator.shutdownNow();
 		}
-		// Don't await in-flight probes: virtual threads, longest lingers one
-		// timeout (≤30 s) past shutdown — same fire-and-forget as LogTail.
+		// Don't await in-flight probes; virtual threads linger at most one timeout (≤30s) past shutdown.
 		if (probes != null) {
 			probes.shutdownNow();
 		}
@@ -107,9 +97,7 @@ public class UptimeScheduler implements SmartLifecycle {
 				// One in-flight probe per monitor; parallel across monitors.
 				if (inFlight.add(monitor.id())) {
 					try {
-						// Claim before the outbound request: recordResult normally re-arms
-						// from completion, but this provisional schedule is what survives if
-						// recording the result rolls back.
+						// Claim before the outbound request — this provisional schedule survives if recordResult rolls back.
 						int claimed = jdbc.sql("""
 								UPDATE uptime_monitor
 								SET next_check_at = now() + make_interval(secs => ?)

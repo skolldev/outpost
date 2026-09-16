@@ -71,12 +71,10 @@ class EnvelopeIngestIntegrationTest {
 
 	@Test
 	void angularAndSpringEventsAreIngestedGroupedAndEnvFilterable() {
-		// Angular SDK: two identical prod errors (auth via query param), one with a
-		// different stacktrace → separate issue.
+		// Two identical prod errors, plus one with a different stacktrace that should form a separate issue.
 		postEnvelope(jsEventEnvelope("prod", "t.handleClick"), null, "?sentry_key=" + publicKey, false);
 		postEnvelope(jsEventEnvelope("prod", "t.handleClick"), null, "?sentry_key=" + publicKey, false);
 		postEnvelope(jsEventEnvelope("prod", "t.otherHandler"), null, "?sentry_key=" + publicKey, false);
-		// Java SDK: gzipped body, X-Sentry-Auth header, dev environment.
 		postEnvelope(javaEventEnvelope("dev"),
 				"Sentry sentry_version=7, sentry_client=sentry.java/8.44.0, sentry_key=" + publicKey, "", true);
 
@@ -98,7 +96,6 @@ class EnvelopeIngestIntegrationTest {
 		assertThat(grouped.get("level")).isEqualTo("error");
 		assertThat(grouped.get("sparkline")).isNotNull();
 
-		// Environment filter: dev shows only the Java issue.
 		List<Map<String, Object>> devIssues = getIssues("&environment=dev");
 		assertThat(devIssues).hasSize(1);
 		assertThat(devIssues.get(0).get("title")).asString().startsWith("IllegalStateException");
@@ -106,7 +103,6 @@ class EnvelopeIngestIntegrationTest {
 		// Release filter: both JavaScript Issues carry this Release; the Java one does not.
 		assertThat(getIssues("&release=demo-frontend@1.0.0")).hasSize(2);
 
-		// Issue detail + events + event payload round-trip.
 		long issueId = ((Number) grouped.get("id")).longValue();
 		Map<String, Object> detail = getJson("/api/internal/issues/" + issueId);
 		assertThat((List<?>) detail.get("env_stats")).hasSize(1);
@@ -217,8 +213,6 @@ class EnvelopeIngestIntegrationTest {
 		ResponseEntity<String> unauthorized = rest.getForEntity(url("/api/internal/issues"), String.class);
 		assertThat(unauthorized.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 	}
-
-	// ------------------------------------------------------------------ helpers
 
 	private String login() {
 		ResponseEntity<Map> response = rest.postForEntity(url("/api/internal/auth/login"),

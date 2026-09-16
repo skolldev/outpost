@@ -97,8 +97,8 @@ public class LogTail implements SmartLifecycle {
 
 	private boolean send(SseEmitter emitter, EmitterAction action) {
 		try {
-			// SseEmitter.send is not thread-safe; publishes come from multiple
-			// ingest workers plus the heartbeat thread.
+			// SseEmitter.send isn't thread-safe; publishes come from multiple ingest
+			// workers plus the heartbeat thread.
 			synchronized (emitter) {
 				action.run(emitter);
 			}
@@ -116,7 +116,6 @@ public class LogTail implements SmartLifecycle {
 			emitter.complete();
 		}
 		catch (RuntimeException ignored) {
-			// already broken — nothing to complete
 		}
 	}
 

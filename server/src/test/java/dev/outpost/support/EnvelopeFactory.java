@@ -6,25 +6,10 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Builds SDK-shaped Sentry envelopes for tests and the load benchmark. Shapes
- * are lifted from the real SDK payloads asserted in {@code
- * EnvelopeIngestIntegrationTest}, {@code LogIngestIntegrationTest} and {@code
- * TraceQueryIntegrationTest}, which remain the source of truth for compatibility.
- *
- * <p>Two generation details decide whether a benchmark built on this measures
- * anything real:
- *
- * <ul>
- * <li><b>Every event gets a fresh {@code event_id}.</b> {@code EventStore}'s
- * insert is {@code ON CONFLICT DO NOTHING}, so a repeated id would time a no-op
- * insert and quietly report a throughput the storage path never achieved.
- * <li><b>{@code distinctFingerprints} is a constructor argument, and defaults
- * above one.</b> Events sharing a fingerprint all contend on a single
- * {@code issue} row inside the per-project advisory lock — a degenerate hot spot,
- * not production shape. Pass {@code 1} deliberately to measure that worst case.
- * </ul>
- *
- * <p>Instances are thread-safe: the only mutable state is a counter.
+ * Builds SDK-shaped Sentry envelopes for tests and the load benchmark; thread-safe,
+ * so one instance can be shared across benchmark workers. Every event gets a fresh
+ * {@code event_id} — a repeat would silently no-op against {@code EventStore}'s
+ * {@code ON CONFLICT DO NOTHING} and inflate throughput numbers.
  */
 public final class EnvelopeFactory {
 

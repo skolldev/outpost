@@ -18,30 +18,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Performance guards for the MCP Surface's {@code get_issue_context}, which is
- * the case ADR-0016 named when it said the reuse rule is not an exemption from
- * guarding. The Tool answers one call with three statements: an Issue + Project
- * + latest-Event join no controller performs, a Trace summary the trace detail
- * endpoint does not compute, and the log list's own factory bound to a window.
- * Only the third arrives with a guard already written, and it arrives at a shape
- * the log stream never sends — minutes wide rather than the UI's fourteen days.
- *
- * <p>Each guard {@code EXPLAIN}s the Tool's own SQL through {@link QueryPlans},
- * never a copy, and asserts on logical I/O and plan shape only. {@link QueryGuard}
- * documents how a ceiling is calibrated and why every one of them has to sit
- * below the cost of simply reading the table.
- *
- * <p>Baselines measured 2026-08-28 against {@link TelemetrySeeder.Scale#GUARD}:
- * 40 003 events, 40 010 log records and 8 000 transactions over 10 weekly
- * partitions each, where a full scan costs 15 027 blocks on {@code event},
- * 5 046 on {@code log_record}, 5 184 on {@code span} and 2 691 on {@code txn}.
- * One whole Tool call measured 927 blocks — 292 + 576 + 59, in that order.
- *
- * <p><b>The Tool binds the shapes the indexes were tuned for, and that is what
- * these guards check.</b> ADR-0016's warning is that an agent omits parameters a
- * user never has to pick, so the Tool applies its own defaults server-side; a
- * guard passing a window nobody sends would measure a request the Tool cannot
- * make, which is #126's failure mode transplanted onto this surface.
+ * Performance guards for the MCP {@code get_issue_context} Tool: EXPLAINs the
+ * Tool's own SQL via {@link QueryPlans} and asserts on logical I/O and plan
+ * shape only, at the shapes the Tool binds server-side by default (ADR-0016).
+ * See {@link QueryGuard} for how ceilings are calibrated.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -50,45 +30,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IssueContextPerformanceTest {
 
 	/**
-	 * Healthy is ~292 blocks; 10x is the standard multiple and sits far below the
-	 * ~15 000 a full scan of {@code event} costs, so it can still fail. What it
-	 * fails on is the lookup losing its index: the {@code LATERAL} has no time
-	 * bound, so an Issue's Events are only cheap to reach because
-	 * {@code idx_event_issue_ts} leads with {@code issue_id} and the ordered Append
-	 * over the weekly partitions stops at the first row.
+	 * Healthy is ~292 blocks. Catches the {@code LATERAL} losing
+	 * {@code idx_event_issue_ts} and scanning an Issue's Events instead of
+	 * stopping at the first row.
 	 */
 	private static final long MAX_ISSUE_CONTEXT_BLOCKS = 2_900;
 
 	/**
-	 * Healthy is ~576 blocks, over three partitioned tables with no time bound —
-	 * a trace_id is not a time, and the trace detail endpoint has always paid the
-	 * same price for the same reason. Not the standard 10x, which would be 5 760 and
-	 * above the 2 691 a full scan of {@code txn} costs: {@code txn} is the smallest
-	 * of the three tables this reads, so it is the one that decides whether the
-	 * ceiling can fail at all. 2 000 is ~3.5x over the measured plan and still under
-	 * it.
+	 * Healthy is ~576 blocks over three partitioned tables with no time bound
+	 * (a trace_id is not a time).
 	 */
 	private static final long MAX_TRACE_SUMMARY_BLOCKS = 2_000;
 
 	/**
-	 * Healthy is 4–8 blocks across runs — five minutes is a few dozen rows inside one
-	 * partition. 10x of the high end, far below {@code log_record}'s ~5 046. The
-	 * regression it catches is the window bound going missing, which turns this into
-	 * the whole log stream.
-	 *
-	 * <p>At these magnitudes the ceiling is only a backstop and
-	 * {@link #everySurroundingLogWindowPrunesToItsOwnPartitions}'s pruning assertion
-	 * is the guard proper — the range is what it is because the seeder scatters
-	 * timestamps, so how many records land in a five-minute window varies run to run.
+	 * Healthy is 4-8 blocks; catches the window bound going missing, which would
+	 * read the whole log stream. The range varies run to run because the seeder
+	 * scatters timestamps.
 	 */
 	private static final long MAX_SURROUNDING_LOG_BLOCKS = 80;
 
-	/**
-	 * The widest window the Tool accepts is an hour, measured at 32–50 blocks, so it
-	 * is guarded alongside the default: a shape the Tool will answer and no guard
-	 * binds is a shape nobody has measured, and the clamp exists precisely because an
-	 * agent will ask for more than an hour.
-	 */
+	/** The widest window the Tool accepts (one hour), measured at 32-50 blocks. */
 	private static final long MAX_WIDEST_SURROUNDING_LOG_BLOCKS = 500;
 
 	@Autowired
@@ -104,8 +65,6 @@ class IssueContextPerformanceTest {
 		seeded = new TelemetrySeeder(jdbc, partitions).seed(TelemetrySeeder.Scale.GUARD);
 	}
 
-	// ----------------------------------------------------------- issue + event
-
 	@Test
 	void theIssueContextJoinStaysUnderItsCeiling() {
 		PlanFacts facts = issueContext();
@@ -118,9 +77,9 @@ class IssueContextPerformanceTest {
 
 	/**
 	 * The latest Event is reached by walking {@code idx_event_issue_ts} backwards
-	 * and stopping, not by collecting an Issue's Events and sorting them. The index
-	 * is named rather than merely required, for the reason #126 established: "an
-	 * index was used" cannot fail when the wrong one is chosen.
+	 * and stopping, not by collecting the Issue's Events and sorting them. The
+	 * index is named explicitly because "an index was used" would still pass
+	 * with the wrong one chosen.
 	 */
 	@Test
 	void theLatestEventLookupWalksTheIssueIndex() {
@@ -131,12 +90,9 @@ class IssueContextPerformanceTest {
 	}
 
 	/**
-	 * The Environment-scoped variant is the same walk filtering as it goes, so it
-	 * stops at the first <em>matching</em> row rather than the first row — how far
-	 * that is depends on the data, which is why it gets its own guard rather than
-	 * inheriting the unfiltered one's. The seeder spreads Events over three
-	 * Environments, so at guard scale the walk passes a couple of rows before
-	 * stopping and the same ceiling holds.
+	 * The Environment-scoped variant stops at the first matching row rather than
+	 * the first row, so it needs its own guard instead of inheriting the
+	 * unfiltered one's.
 	 */
 	@Test
 	void theEnvironmentScopedLookupWalksTheSameIndexUnderTheSameCeiling() {
@@ -148,8 +104,6 @@ class IssueContextPerformanceTest {
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
 		QueryGuard.assertWalksIndex(jdbc, facts, PartitionManager.EVENT, List.of("idx_event_issue_ts"), what);
 	}
-
-	// -------------------------------------------------------------------- trace
 
 	@Test
 	void theTraceSummaryStaysUnderItsCeiling() {
@@ -163,10 +117,8 @@ class IssueContextPerformanceTest {
 
 	/**
 	 * The three counts are uncorrelated, so Postgres evaluates each once as an
-	 * {@code InitPlan} rather than once per candidate transaction. This is the
-	 * defect behind the trace-search regression and #130, and the one a buffer
-	 * ceiling cannot express: the right index makes a page's worth of per-row
-	 * probes cheap enough to sit under any ceiling a fixture can honestly set.
+	 * {@code InitPlan} rather than once per candidate transaction — a buffer
+	 * ceiling alone can't catch a per-row evaluation cheap enough to hide under it.
 	 */
 	@Test
 	void theTraceCountsAreEvaluatedOnceRatherThanPerRow() {
@@ -177,8 +129,6 @@ class IssueContextPerformanceTest {
 					facts.plan())
 			.isEmpty();
 	}
-
-	// --------------------------------------------------------------------- logs
 
 	@Test
 	void everySurroundingLogWindowPrunesToItsOwnPartitions() {
@@ -198,15 +148,10 @@ class IssueContextPerformanceTest {
 		}
 	}
 
-	// ---------------------------------------------------------------- whole call
-
 	/**
-	 * What one {@code tools/call} costs is the three statements together, so the
-	 * plan-shape assertions are also made against their sum — reporting one of three
-	 * would be a number nobody waits for. The ceiling stays per statement: each is
-	 * bounded by a different table, and a single number would have to sit below the
-	 * smallest of them to be able to fail, which would say nothing about the other
-	 * two.
+	 * One {@code tools/call} costs the three statements together, so the plan
+	 * assertions are made on their sum. Ceilings stay per statement, since each
+	 * is bounded by a different table.
 	 */
 	@Test
 	void theWholeToolCallSortsInMemoryAndScansNoTelemetrySequentially() {
@@ -216,8 +161,6 @@ class IssueContextPerformanceTest {
 		QueryGuard.assertNoTempFiles(call, "one get_issue_context call");
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, call, "one get_issue_context call");
 	}
-
-	// ------------------------------------------------------------------ fixtures
 
 	private PlanFacts issueContext() {
 		return QueryPlans.issueContext(seeded.issueId()).explain(jdbc);

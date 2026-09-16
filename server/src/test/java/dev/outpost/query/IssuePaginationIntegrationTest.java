@@ -22,17 +22,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Keyset pagination for the issue list, end to end through {@link KeysetPage}.
- * The seam's mechanics are unit-tested in {@code KeysetPageTest}; this proves the
- * wiring the unit test can't see — the dual-mode sort switch across a real
- * two-page walk, and that {@code attachAggregates} (run between trim and cursor)
- * rides along without disturbing the walk. PAGE_SIZE is 50, so 51 seeded issues
- * force exactly two pages.
- *
- * <p>event_count is seeded inversely to last_seen, so the default
- * ({@code last_seen}) and {@code sort=count} walks produce genuinely different
- * orders — a bug that ignored the sort mode would surface as identical first
- * pages.
+ * Keyset pagination for the issue list, end to end through {@link KeysetPage}:
+ * the dual-mode sort switch across a real two-page walk, and that
+ * {@code attachAggregates} rides along without disturbing it. event_count is
+ * seeded inversely to last_seen so the two sort modes produce different orders.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -110,8 +103,7 @@ class IssuePaginationIntegrationTest {
 		assertThat(walk.firstPageSize).isEqualTo(PAGE_SIZE);
 		assertThat(walk.pages).isEqualTo(2);
 		assertThat(walk.ids).containsExactlyElementsOf(idsByCountDesc);
-		// The two sort modes genuinely differ — the count walk does not equal the
-		// last_seen walk, so the dual-mode descriptor selection is exercised.
+		// The two sort modes must differ, or the dual-mode selection isn't exercised.
 		assertThat(walk.ids).isNotEqualTo(idsByLastSeenDesc);
 	}
 

@@ -108,17 +108,10 @@ export class LogsPage {
   ]);
 
   /**
-   * The brush selection, as `window=<fromISO>..<toISO>`. Page-local and deliberately
-   * one opaque param: `from` is also what the global range derives, and a URL
-   * carrying both would invite someone to move this into `GlobalFilters` — which is
-   * the thing ADR 0011 exists to prevent.
-   *
-   * <p>Validated here rather than at each use, because this one parse feeds three
-   * consumers that all take a hand-typed URL badly: `currentFilters` would forward
-   * the garbage to the API, the chart would compute NaN bounds and dim every bar
-   * with nothing explaining why, and the clear chip's `DatePipe` throws outright.
-   * A repeated `?window=` is the same problem — Angular hands back an array, which
-   * has no `.split`.
+   * The brush selection as `window=<fromISO>..<toISO>`, kept as one opaque URL param
+   * rather than split into `GlobalFilters` (ADR 0011). Validated here since
+   * `currentFilters`, the chart and the clear chip's `DatePipe` all handle malformed
+   * input badly.
    */
   readonly window = computed<TimelineWindow | null>(() => {
     const [raw] = this.multi(this.queryParams()['window']);
@@ -132,14 +125,12 @@ export class LogsPage {
   readonly debouncedQuery = debounced(this.search, 300);
 
   readonly live = signal(false);
-  // Tracks whether the previous live-effect run was already live, so a filter
-  // change while live clears the stale buffer but entering live does not.
+  // True once live streaming has started, so a filter change while live clears the buffer but entering live does not.
   private wasLive = false;
   readonly expanded = signal<ReadonlySet<string>>(new Set());
   readonly copiedId = signal<string | null>(null);
 
-  // The "Add filter" builder. Suggestions come from the records already loaded, so
-  // they cost nothing and cannot offer a key no loaded record carries.
+  // Add-filter builder; suggestions come from already-loaded records, so they're free but incomplete.
   readonly builderOpen = signal(false);
   readonly draftKey = signal('');
   readonly draftValue = signal('');
@@ -149,17 +140,10 @@ export class LogsPage {
   private readonly keyInput = viewChild<ElementRef<HTMLInputElement>>('keyInput');
 
   /**
-   * Everything that narrows the stream except time. The three consumers below differ
-   * only in which time bounds they add, so they share this rather than each rebuilding
-   * the filter set — and the SSE tail, which understands no time bounds at all, uses
-   * it as is.
-   *
-   * <p>Compared by value, and that is load-bearing rather than a micro-optimisation.
-   * `project`, `environments` and `selectedLevels` are all computed off the query
-   * params, so each hands back a fresh array whenever <em>any</em> param changes —
-   * `window` included. On identity alone a brush would therefore rebuild this object,
-   * rebuild the chart's request, and refetch the chart: the one thing ADR 0011 says
-   * must not happen, made visible as the chart blanking and remounting mid-drag.
+   * Filters shared by the list, timeline and SSE tail requests, minus time bounds.
+   * Compared by value, not identity — `project`/`environments`/`selectedLevels` return
+   * fresh arrays on any param change, so identity comparison would refetch the chart
+   * on every brush drag (ADR 0011).
    */
   private readonly baseFilters = computed<LogFilters>(
     () => ({
@@ -175,9 +159,8 @@ export class LogsPage {
   );
 
   /**
-   * What the chart is drawn from: the global range, and deliberately <em>not</em> the
-   * brush. Feeding the selection back in would collapse the chart onto it on every
-   * drag, which is the zoom behaviour ADR 0011 rejects.
+   * The chart's filters: the global range, deliberately not the brush — feeding the
+   * selection back in would collapse the chart onto it on every drag (ADR 0011).
    */
   private readonly timelineFilters = computed<LogFilters>(() => ({
     ...this.baseFilters(),
@@ -196,8 +179,7 @@ export class LogsPage {
     computation: () => undefined,
   });
 
-  // Live mode owns `logs` via SSE; the resource goes idle (request fn returns
-  // undefined → no fetch, no spinner) until live is switched back off.
+  // Live mode owns `logs` via SSE; returning undefined here keeps the resource idle (no fetch, no spinner) until live ends.
   private readonly page = httpResource<LogPage>(() =>
     this.live()
       ? undefined
@@ -207,9 +189,7 @@ export class LogsPage {
         },
   );
 
-  // Its own resource, keyed on its own filters: the list refetches on every cursor
-  // and on the brush, and neither has any bearing on the chart. Idle while live,
-  // where the chart is hidden and the SSE tail has no window to speak of.
+  // Separate resource from the list's — refetches on cursor/brush, neither of which the chart needs; idle while live.
   private readonly timeline = httpResource<LogTimeline>(() =>
     this.live()
       ? undefined
@@ -231,18 +211,14 @@ export class LogsPage {
       untracked(() => this.logs.set(this.cursor() ? [...this.logs(), ...page.logs] : page.logs));
     });
 
-    // SSE live tail: while live, prepend new records, filters and all.
+    // SSE live tail: prepends new records while live.
     effect((onCleanup) => {
       if (!this.live()) return;
       this.filterKey(); // reconnect when filters change
-      // A filter change while already live invalidates the buffered records
-      // (they were streamed under the old filter). Entering live keeps the
-      // rows the resource already fetched — clear only on the reconnect case.
+      // Reconnect (filter change while live) clears stale buffered records; entering live keeps what the resource already fetched.
       if (this.wasLive) this.logs.set([]);
       this.wasLive = true;
-      // Base filters, not the list's: a tail has no window. Reading `currentFilters`
-      // here would also race the navigation that clears the brush on the way in, and
-      // connect a live tail bounded to a closed window in the past.
+      // Base filters only: a tail has no window, and `currentFilters` would race the brush-clearing navigation and bind to a stale window.
       const source = new EventSource(this.api.logTailUrl(untracked(() => this.baseFilters())));
       source.onmessage = (message: MessageEvent<string>) => {
         let record: LogRecord;
@@ -256,10 +232,7 @@ export class LogsPage {
       onCleanup(() => source.close());
     });
 
-    // A brush is a window inside the current scope, so any change of scope makes it
-    // meaningless: the selection would sit outside the new range and empty the stream
-    // with nothing on screen explaining why. Skips its first run so a shared URL
-    // arrives with its selection intact.
+    // Scope change makes the brush meaningless (selection outside new range empties the stream); skip the first run so a shared URL's selection survives.
     let lastScope: string | null = null;
     effect(() => {
       const scope = JSON.stringify([
@@ -284,9 +257,8 @@ export class LogsPage {
   }
 
   /**
-   * The list's filters. A brush selection replaces the range-derived `from` outright
-   * and supplies the `to` the range never has — it is the window, not an extra bound
-   * on top of one.
+   * The list's filters. A brush selection replaces the range-derived `from` and
+   * supplies `to` outright — it's the window, not an added bound.
    */
   private currentFilters(): LogFilters {
     const selection = this.window();
@@ -307,16 +279,13 @@ export class LogsPage {
   }
 
   toggleLive(): void {
-    // Leaving live: drop the streamed buffer and reset to page one so the
-    // resource's fresh result — not a stale cursor — becomes the source of truth.
+    // Leaving live: drop the buffer and reset to page one so the resource's fresh result, not a stale cursor, is the source of truth.
     if (this.live()) {
       this.logs.set([]);
       this.cursor.set(undefined);
       this.wasLive = false;
     } else if (this.window()) {
-      // Entering live: a closed window in the past and a tail of what is arriving now
-      // are contradictory, and the SSE endpoint takes no time bounds at all — leaving
-      // the selection in the URL would be state the request deliberately ignores.
+      // Entering live: a closed past window contradicts a live tail, and the SSE endpoint ignores time bounds anyway, so clear the selection.
       this.syncUrl({ window: null });
     }
     this.live.set(!this.live());
@@ -346,9 +315,9 @@ export class LogsPage {
   }
 
   /**
-   * Narrows the stream to records whose field equals `value` — exactly, since equality
-   * is textual (ADR-0018). One chip per key: a second value for a key replaces the first
-   * rather than ANDing into a filter that could match nothing.
+   * Narrows the stream to records whose field equals `value` exactly (ADR-0018 —
+   * textual equality). One chip per key: a second value replaces the first rather
+   * than ANDing.
    */
   addFilter(key: string, value: string): void {
     if (!isFilterableKey(key)) return;

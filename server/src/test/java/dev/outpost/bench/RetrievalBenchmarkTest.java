@@ -14,11 +14,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Self-tests for the retrieval harness. Runs in CI — the harness is code, and a
- * broken harness reports confident nonsense: a plan parser that silently returned
- * zero would make every guard in {@code dev.outpost.query} pass, and a page-walk
- * check that never fired would let the deep-pagination scenarios measure page 1
- * fifty times and call it fast.
+ * Self-tests for the retrieval harness. Runs in CI: a broken harness reports
+ * confident nonsense — a plan parser that silently returns zero, or a
+ * page-walk check that never fires, would let a deep-pagination scenario
+ * measure page 1 fifty times and call it fast.
  */
 class RetrievalBenchmarkTest {
 
@@ -32,12 +31,8 @@ class RetrievalBenchmarkTest {
 			assertThat(tenth.events()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.events() / 10);
 			assertThat(tenth.logs()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.logs() / 10);
 			assertThat(tenth.txns()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.txns() / 10);
-			// Cardinalities and the window are what make the dataset production-shaped.
-			// Shrinking them with the volume would give a small dataset that is also the
-			// wrong shape, and the run would measure a plan production never gets. Two of
-			// these matter more than the rest: `users` is the divisor of the suspect
-			// count(DISTINCT user_ident), and `issues` decides how many pages deep the
-			// deep-pagination scenario can actually go.
+			// Cardinalities and window make the dataset production-shaped; `users` and `issues` also gate
+			// correctness elsewhere (the distinct-user divisor, and deep-pagination depth).
 			assertThat(tenth.users()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.users());
 			assertThat(tenth.issues()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.issues());
 			assertThat(tenth.windowDays()).isEqualTo(TelemetrySeeder.Scale.DEFAULT.windowDays());
@@ -61,7 +56,7 @@ class RetrievalBenchmarkTest {
 				.isEqualTo(TelemetrySeeder.Scale.DEFAULT.txns() * TelemetrySeeder.Scale.DEFAULT.spansPerTxn());
 		}
 
-		/** The guards' pruning assertions are vacuous against a dataset that fits in one week. */
+		/** Must span several weekly partitions, or partition-pruning checks have nothing to prune. */
 		@Test
 		void guardScaleStillSpansSeveralWeeks() {
 			assertThat(TelemetrySeeder.Scale.GUARD.windowDays()).isGreaterThan(28);
@@ -114,9 +109,8 @@ class RetrievalBenchmarkTest {
 	}
 
 	/**
-	 * The arithmetic that decides whether "page 50" is page 50. A walk one page
-	 * short reports page 49 under a "page 50" label and nothing says so, which is
-	 * the same silent wrongness {@link PageWalk} exists to catch one level up.
+	 * The arithmetic that decides whether "page 50" is page 50 — a walk one page
+	 * short reports page 49 under that label and nothing says so.
 	 */
 	@Nested
 	class CursorWalking {
@@ -150,9 +144,8 @@ class RetrievalBenchmarkTest {
 		}
 
 		/**
-		 * The reason {@code pageIsFull} is read from the cursor rather than from the
-		 * depth reached: a dataset ending on a page boundary hands back a full page with
-		 * no cursor after it, and a scenario must not be told to expect more.
+		 * {@code pageIsFull} is read from the cursor, not the depth reached: a dataset
+		 * ending on a page boundary returns a full page with no cursor after it.
 		 */
 		@Test
 		void reportsAnExactlyFullFinalPageAsNotGuaranteedFull() throws Exception {
@@ -187,8 +180,7 @@ class RetrievalBenchmarkTest {
 				for (int row = firstRow; row < Math.min(firstRow + PAGE_SIZE, rows); row++) {
 					ids.add("row-" + row);
 				}
-				// KeysetPage emits a cursor only when a full page was returned and more rows
-				// exist behind it — the property the walk reads `pageIsFull` from.
+				// KeysetPage emits a cursor only when a full page was returned and more rows exist behind it.
 				boolean more = firstRow + PAGE_SIZE < rows;
 				return new CursorWalk.Page(ids, more ? cursorFor(page + 1) : null);
 			};
@@ -201,11 +193,9 @@ class RetrievalBenchmarkTest {
 	}
 
 	/**
-	 * Against a plan recorded from a real {@code EXPLAIN (ANALYZE, BUFFERS, FORMAT
-	 * JSON)} of a time-bounded log page —
-	 * {@code src/test/resources/plans/log-page-bounded.json}. The expectations below
-	 * are the numbers in that file, so a parser that stopped descending, or started
-	 * counting a relation twice, changes them.
+	 * Against a real recorded {@code EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)} plan
+	 * ({@code src/test/resources/plans/log-page-bounded.json}); the expectations
+	 * below are the exact numbers in that file.
 	 */
 	@Nested
 	class PlanParsing {
@@ -248,11 +238,9 @@ class RetrievalBenchmarkTest {
 	}
 
 	/**
-	 * The two things a healthy recorded plan cannot demonstrate, so they are
-	 * constructed: a partition eliminated by runtime pruning (which appears in the
-	 * plan with {@code "Actual Loops": 0}) and a sort that spilled. Counting the
-	 * pruned partition would make every pruning assertion vacuous; missing the spill
-	 * would make {@code assertNoTempFiles} unable to fail.
+	 * Two things a healthy recorded plan can't demonstrate, so they're constructed
+	 * here: a partition eliminated by runtime pruning ({@code "Actual Loops": 0})
+	 * and a sort that spilled.
 	 */
 	@Nested
 	class PlanParsingEdgeCases {
@@ -310,10 +298,7 @@ class RetrievalBenchmarkTest {
 
 		@Test
 		void countsBlocksReadFromDiskAlongsideBlocksFoundInCache() {
-			// 100 on each of Sort, Append and the one executed Seq Scan: Postgres reports
-			// buffers cumulatively up the tree, so the total is an index of logical I/O
-			// rather than a block count. That is deliberate — it is what the text-format
-			// regex this replaced produced, which is what the trace guard's 50 000 means.
+			// Postgres reports buffers cumulatively up the tree, so 100 counts on Sort, Append and the Seq Scan alike.
 			assertThat(facts.sharedHits()).isEqualTo(300);
 			assertThat(facts.sharedReads()).isEqualTo(7);
 			assertThat(facts.logicalIo()).isEqualTo(307);

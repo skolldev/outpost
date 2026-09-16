@@ -25,12 +25,9 @@ import org.springframework.web.client.RestTemplate;
 
 /**
  * Keyset pagination for the log list, end to end through {@link KeysetPage}. Logs
- * sort by {@code (timestamp, id)} with a UUID id and PAGE_SIZE 100, so 101 seeded
- * records force two pages. Proves the seam drives the ordered walk with no
- * overlap and a terminating cursor — the coverage LogController never had.
- *
- * <p>{@code log_record} is weekly range-partitioned, so partitions are ensured
- * before seeding, exactly as the ingest store does.
+ * sort by {@code (timestamp, id)} with a UUID id; {@code log_record} is weekly
+ * range-partitioned, so partitions are ensured before seeding, as the ingest
+ * store does.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })

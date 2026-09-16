@@ -16,38 +16,16 @@ import org.springframework.stereotype.Component;
 
 /**
  * The MCP Surface's {@code find_transactions} Tool: the Transactions received
- * for one Transaction Group, slowest first, each carrying its Trace ID.
- *
- * <p>It exists because without it the performance workflow dead-ends. The
- * leaderboard answers "what is slow", {@code get_trace} answers "what did a slow
- * request do", and nothing connected them: a Transaction Group payload is an
- * aggregate with no exemplar in it, and no other Tool lists a group's members.
- * That clears #177's bar for another Tool the hard way — it is not that an agent
- * would need three calls and still get it wrong, it is that no number of calls
- * got there at all.
- *
- * <p><b>This is the SQL the reuse rule cannot buy.</b> The UI's own drill-down
- * ({@code /transaction-groups/detail}) aggregates the group and never lists its
- * rows, so there is no controller factory to call; the statement is written here,
- * the file is named in {@code McpToolQueryReuseTest.TOOLS_WITH_THEIR_OWN_SQL},
- * and {@code McpToolPerformanceTest} guards it. The predicates are the group's
- * key exactly as {@code idx_txn_performance} leads with it — {@code project_id},
- * {@code name}, {@code op} (where {@code IS NULL} is an index condition like
- * {@code = ?}) — followed by the same window resolution the leaderboard uses, so
- * the two Tools agree about what "in the last N days" means down to the 30-day
- * clamp.
- *
- * <p>The default ranking is slowest-first because an exemplar is what the caller
- * came for; {@code start_ts} is offered because the slowest Transaction of a
- * window may predate a fix, and "the most recent ones" is the question that
- * checks. Both are named with their unit or their meaning, never a bare column.
+ * for one Transaction Group, slowest first, each carrying its Trace ID for
+ * {@code get_trace}. Unlike other Tools here, its query is written directly
+ * rather than reused from a controller, since the UI's own drill-down
+ * ({@code /transaction-groups/detail}) aggregates the group and never lists
+ * its rows.
  */
 @Component
 public class TransactionSearchTool {
 
-	// op is absent rather than null for a group that has none: the MCP transport
-	// validates results against the advertised output schema, and a null where a
-	// string is declared fails it.
+	// op omitted (not null) when absent — MCP schema validation rejects null for a declared string.
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record TransactionSearchResult(String from, String to, boolean range_clamped, String project_slug,
 			String name, @Nullable String op, String sorted_by, List<TransactionPayload> transactions,
@@ -59,20 +37,13 @@ public class TransactionSearchTool {
 			String start_ts, double duration_ms, @Nullable String status) {
 	}
 
-	/**
-	 * Transactions returned when the caller names no limit. A handful of exemplars
-	 * answers "show me a slow one" and a spread of ten shows whether slow is the
-	 * tail or the norm; the statement reads the group's window either way, so the
-	 * limit trims the payload, not the work.
-	 */
 	static final int DEFAULT_LIMIT = 10;
 
 	static final int MAX_LIMIT = 50;
 
 	/**
-	 * The orderings offered, mapped to the ORDER BY each resolves to. The map is
-	 * also the whitelist: an unrecognised value is rejected against {@link Sort}
-	 * and never reaches the statement.
+	 * The orderings offered, mapped to their ORDER BY clause; also the whitelist
+	 * that keeps an unrecognised value out of the statement.
 	 */
 	private static final Map<String, String> SORTS = sorts();
 
@@ -85,11 +56,7 @@ public class TransactionSearchTool {
 
 	private static final String DEFAULT_SORT = "duration_ms";
 
-	/**
-	 * The orderings this Tool accepts, as the JSON Schema advertises them. Named in
-	 * payload spelling so the schema's {@code enum} and {@link #SORTS}'s keys are
-	 * the same strings.
-	 */
+	/** Must match {@link #SORTS}'s keys exactly — the JSON Schema enum is generated from these names. */
 	public enum Sort {
 
 		duration_ms, start_ts
@@ -153,8 +120,7 @@ public class TransactionSearchTool {
 		int size = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(limit, MAX_LIMIT));
 		String groupOp = op == null || op.isBlank() ? null : op;
 
-		// The leaderboard's own window resolution, 30-day clamp included, so this
-		// Tool and performance_overview agree about what any relative window means.
+		// Reuses performance_overview's window resolution (30-day clamp) so the two Tools agree on relative windows.
 		ToolSupport.Window requested = ToolSupport.window(from, to, caveats);
 		TransactionGroupController.Window window = TransactionGroupController.window(requested.fromInstant(),
 				requested.toInstant());
@@ -163,8 +129,7 @@ public class TransactionSearchTool {
 					+ ", the same cap performance_overview applies.");
 		}
 
-		// One row past the limit, so "was there anything more" is answered by the
-		// rows in hand rather than a second count.
+		// Fetches one row past the limit so "more matched" is answered without a second count.
 		SearchQuery search = buildTransactionSearchQuery(projectId, name, groupOp, environments, release, sortedBy,
 				window.from(), window.to(), size + 1);
 		List<TransactionPayload> rows = jdbc.query(search.sql(),
@@ -181,9 +146,7 @@ public class TransactionSearchTool {
 					+ ("duration_ms".equals(sortedBy) ? "slowest " : "most recent ") + size + " of them.");
 		}
 		if (transactions.isEmpty()) {
-			// The group key is the one filter here with no catalogue to validate
-			// against, so a near-miss returns empty rather than being refused — the
-			// caveat is what keeps that from reading as "this group went quiet".
+			// Group key has no catalogue to validate against, so a near-miss returns empty rather than an error.
 			caveats.add("No Transaction matched between " + window.from() + " and " + window.to() + ". The group key "
 					+ "is matched exactly: name and op must be character-for-character what performance_overview "
 					+ "reported, and op must be supplied whenever the group reports one.");
@@ -196,12 +159,9 @@ public class TransactionSearchTool {
 	}
 
 	/**
-	 * The group's members over a window: the one statement this Tool issues,
-	 * guarded by {@code McpToolPerformanceTest}. The key predicates are written the
-	 * way {@code idx_txn_performance} leads — {@code project_id}, {@code name},
-	 * then {@code op = ?} or {@code op IS NULL}, both index conditions on its third
-	 * column — and the ORDER BY is a top-N over the group's window rows, which
-	 * sorts in memory at any size a group honestly reaches.
+	 * The group's members over a window. Predicate order matches
+	 * {@code idx_txn_performance} (project_id, name, op) so the query stays an
+	 * index scan.
 	 */
 	static SearchQuery buildTransactionSearchQuery(long project, String name, @Nullable String op,
 			@Nullable List<String> environment, @Nullable String release, String sort, Instant from, Instant to,
@@ -231,7 +191,6 @@ public class TransactionSearchTool {
 		return new SearchQuery(sql.toString(), params);
 	}
 
-	/** Every ranking this Tool accepts — read by the guards. */
 	static List<String> sortKeys() {
 		return List.copyOf(SORTS.keySet());
 	}

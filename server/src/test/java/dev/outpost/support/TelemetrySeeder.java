@@ -11,65 +11,10 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Builds a production-<em>shaped</em> telemetry dataset directly in Postgres, for
- * the retrieval guards (thousands of rows) and the retrieval benchmark (millions).
- *
- * <p>Seeding goes through {@code INSERT … SELECT … FROM generate_series(…)} rather
- * than the ingest path on purpose: ingest tops out around 700 events/s, so
- * seeding two million events through it would take the better part of an hour
- * and measure the write path instead of preparing the read one.
- *
- * <p>Everything below is a decision about whether the numbers a benchmark built on
- * this produces mean anything. They are easy to get wrong in a direction that
- * makes the read path look fast:
- *
- * <ul>
- * <li><b>Partitions come from the real {@link PartitionManager}.</b> Hand-rolled
- * {@code CREATE TABLE … PARTITION OF} (as {@code scripts/seed.sql} does) would let
- * the seeder and production drift apart silently, and a pruning assertion against
- * a partition layout production never uses proves nothing.
- * <li><b>Events per issue are skewed, not uniform.</b> Uniform events-per-issue
- * makes every issue equally cheap and hides the aggregates that hurt in
- * production. Issues are drawn as {@code floor(issues · random()³)}, so a handful
- * own most of the events.
- * <li><b>{@code user_ident} has real cardinality.</b> It feeds {@code
- * count(DISTINCT user_ident)} directly: one distinct user makes the aggregate
- * free, one per row makes it degenerate. ~10 000 is the shape that costs what
- * production costs.
- * <li><b>{@code release} cardinality stays small</b> (~20), because the issue-list
- * release filter and {@code ReleaseController}'s correlated count are both
- * suspects and both get cheaper as versions multiply.
- * <li><b>Timestamps span the full window, weighted recent</b> ({@code random()²}),
- * so the partition count is production-shaped rather than one week deep.
- * <li><b>{@code data} is ~1 KB of synthetic jsonb</b>, so heap fetches and TOAST
- * behave like they do against real payloads. It is not a real Sentry event — read
- * it as a size, not as a fixture. Spans get a smaller (~250 B) payload of their
- * own: a database span carries a statement and a few attributes, not a stack
- * trace, and there are three spans per transaction — giving them the event
- * payload would add gigabytes to the seed to model something no span has.
- * Empty is the one thing they must not be, or every span row is free.
- * <li><b>Transactions span hundreds of Transaction Groups, not a handful.</b> The
- * Performance leaderboard groups {@code txn} by (project, name, op) and returns
- * the top 100, so a fixture with four names would build fewer groups than the
- * limit discards and certify nothing about the plan a real Project produces.
- * {@link #TRANSACTION_GROUPS_PER_PROJECT} of them, with a null-op third, and tens
- * of Transactions in each at {@link Scale#GUARD} — enough that a percentile over a
- * group is a percentile, and enough to survive the minimum-sample floor the list
- * is due to grow (#160).
- * <li><b>{@code trace_id}s are drawn from one pool shared by all four tables</b>,
- * so the trace-detail fan-out has real work to do in each.
- * <li><b>Issue counters are derived from the events</b>, not invented, because
- * {@code last_seen} and {@code event_count} are the issue list's sort keys — a
- * seeder that made them up would page over an order the data does not have.
- * <li><b>{@code VACUUM ANALYZE} runs at the end.</b> Without the {@code ANALYZE}
- * the planner is blind and every number the run produces is about a plan nobody
- * will ever get. The {@code VACUUM} is there for a subtler reason: it sets the
- * hint bits on the freshly bulk-loaded heap, which the first reader would
- * otherwise set as a side effect of reading. That made the first measurement of a
- * query cost about twice its steady state, so a guard's number depended on
- * whether it happened to run first — a difference of ~185 blocks against ~90 on
- * the issue list. Paying it once here makes the guards order-independent.
- * </ul>
+ * Builds a production-shaped telemetry dataset directly in Postgres for the
+ * retrieval guards and benchmark. Seeds via bulk {@code INSERT ... SELECT}
+ * rather than the ingest path, which tops out around 700 events/s and would
+ * measure the write path instead of preparing the read one.
  */
 public final class TelemetrySeeder {
 
@@ -90,15 +35,8 @@ public final class TelemetrySeeder {
 		public static final Scale GUARD = new Scale(2, 200, 40_000, 40_000, 8_000, 3, 500, 8, 42);
 
 		/**
-		 * Scales the <b>row counts</b> by {@code factor} and nothing else.
-		 *
-		 * <p>Cardinalities and the time window are what make the data
-		 * production-shaped, so they are deliberately left alone. Scaling
-		 * {@code users} down would make {@code count(DISTINCT user_ident)} — the single
-		 * most suspect query in the read path — cheaper on a smaller run, so a smoke
-		 * run would understate exactly the thing it exists to look at. Scaling
-		 * {@code issues} down would take the issue list from eighty pages to eight and
-		 * quietly turn the deep-pagination scenario into a shallow one.
+		 * Scales the row counts by {@code factor} and nothing else — cardinalities and
+		 * the time window stay fixed, since those are what make the data production-shaped.
 		 */
 		public Scale times(double factor) {
 			return new Scale(projects, issues, Math.max(1, (long) (events * factor)),
@@ -140,10 +78,9 @@ public final class TelemetrySeeder {
 	private static final int ATTRIBUTE_VALUES = 1_000;
 
 	/**
-	 * The substring a body search looks for. Deliberately <em>selective</em> (~1 in
+	 * The substring a body search looks for. Deliberately selective (~1 in
 	 * {@link #BODY_ORDERS} rows): a needle matching every body makes the planner
-	 * choose a sequential scan on its own, which would test the wrong thing while
-	 * looking like a trigram-index guard.
+	 * choose a sequential scan on its own instead of exercising the trigram index.
 	 */
 	public static final String BODY_NEEDLE = "for order 137";
 
@@ -153,10 +90,7 @@ public final class TelemetrySeeder {
 	/** The trace guaranteed to fan out across all four tables. */
 	private static final String KNOWN_TRACE_ID = "0".repeat(24) + "cafebabe";
 
-	/**
-	 * The Transaction Group the known trace's Transactions belong to, for scenarios
-	 * that drill into one group — {@code find_transactions}' guard binds this key.
-	 */
+	/** The Transaction Group the known trace's Transactions belong to, for scenarios that drill into one group. */
 	public static final String KNOWN_TRANSACTION_NAME = "GET /api/checkout/{id}";
 
 	public static final String KNOWN_TRANSACTION_OP = "http.server";
@@ -170,14 +104,9 @@ public final class TelemetrySeeder {
 	private static final int UPTIME_CHECK_INTERVAL_MINUTES = 15;
 
 	/**
-	 * Postgres settings that decide whether a run is measuring cache or disk; recorded,
-	 * never assumed.
-	 *
-	 * <p>{@code random_page_cost} is here because #185 showed it is the one that decides
-	 * <em>which plan</em> rather than only how fast a plan runs: at the shipped 4.0 the log
-	 * timeline's index-only scan and a heap read priced within a percent of each other and
-	 * {@code ANALYZE}'s sample noise picked the winner. {@code TestcontainersConfiguration}
-	 * pins it, and a report that does not state it is a report about an unknown planner.
+	 * Postgres settings that decide whether a run is measuring cache or disk;
+	 * recorded, never assumed. {@code random_page_cost} matters most (#185): it can
+	 * decide which plan is chosen, not just how fast it runs.
 	 */
 	private static final List<String> REPORTED_SETTINGS = List.of("shared_buffers", "work_mem", "maintenance_work_mem",
 			"effective_cache_size", "random_page_cost", "seq_page_cost", "synchronous_commit",
@@ -213,8 +142,7 @@ public final class TelemetrySeeder {
 		rollUpIssueCounters();
 		analyze();
 
-		// The event and its timestamp together, because the detail endpoint's neighbour
-		// lookups key on (issue_id, timestamp, id) — an id alone cannot reproduce them.
+		// Paired with its timestamp: detail-endpoint neighbour lookups key on (issue_id, timestamp, id), not id alone.
 		Map.Entry<UUID, Instant> event = jdbc.sql("SELECT id, \"timestamp\" FROM event WHERE issue_id = ? LIMIT 1")
 			.param(issueIdBase)
 			.query((rs, i) -> Map.entry(rs.getObject("id", UUID.class), rs.getTimestamp("timestamp").toInstant()))
@@ -234,15 +162,10 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * Empties every table this seeder writes, and reclaims their pages.
-	 *
-	 * <p>{@code TRUNCATE}, not {@code DELETE}, and the difference is load-bearing:
-	 * deleted rows leave their pages allocated until a {@code VACUUM}, so a
-	 * sequential scan of a table that has been emptied still reads every block the
-	 * data used to occupy. A later test measuring buffer counts against what it
-	 * believes is a small table then fails for a reason that has nothing to do with
-	 * its own query — and the whole point of these fixtures is that a failure means
-	 * what it says.
+	 * Empties every table this seeder writes and reclaims their pages. {@code
+	 * TRUNCATE}, not {@code DELETE}: deleted rows leave their pages allocated until
+	 * a {@code VACUUM}, so a sequential scan of an "emptied" table would still read
+	 * every block it used to occupy.
 	 */
 	public void clear() {
 		jdbc.sql("""
@@ -251,8 +174,6 @@ public final class TelemetrySeeder {
 				         release, environment, project_key, project CASCADE
 				""").update();
 	}
-
-	// -------------------------------------------------------------- partitions
 
 	/**
 	 * One timestamp per week of the window, handed to the production partition
@@ -270,8 +191,6 @@ public final class TelemetrySeeder {
 			partitions.ensurePartitions(table, weeks);
 		}
 	}
-
-	// ------------------------------------------------------------------ tables
 
 	private List<Long> seedProjects(Scale scale) {
 		List<Long> ids = new ArrayList<>();
@@ -310,8 +229,7 @@ public final class TelemetrySeeder {
 
 	/**
 	 * Issues are round-robined over the projects, so the id of the {@code k}-th
-	 * issue is {@code base + k} and its project is {@code projectIds[k % n]} — an
-	 * arithmetic the event insert reuses instead of joining back to {@code issue}.
+	 * issue is {@code base + k} and its project is {@code projectIds[k % n]}.
 	 */
 	private long seedIssues(Scale scale, List<Long> projectIds) {
 		return jdbc.sql("""
@@ -326,8 +244,7 @@ public final class TelemetrySeeder {
 				FROM generate_series(1, ?) g
 				RETURNING id
 				""".formatted(projectArray(projectIds), projectIds.size()))
-			// Issues the skew leaves event-less keep these placeholders, so they sort
-			// to the bottom of the default list instead of crowding out page 1.
+			// Issues the skew leaves event-less keep these placeholders, sorting to the bottom instead of crowding page 1.
 			.param(scale.windowDays())
 			.param(scale.windowDays())
 			.param(scale.issues())
@@ -413,22 +330,11 @@ public final class TelemetrySeeder {
 	public static final int TRANSACTION_GROUPS_PER_PROJECT = TRANSACTION_NAMES * TRANSACTION_OPS;
 
 	/**
-	 * Names, cycling with a period of {@link #TRANSACTION_NAMES}: three methods x
-	 * eight resources x three API versions. Modular rather than random so the group
-	 * count is a property of the fixture rather than of a seed — a guard whose
-	 * cardinality drifts run to run cannot have a ceiling calibrated against it.
-	 *
-	 * <p><b>Every divisor is a multiple of {@code projects}, and that is what makes
-	 * the count come out right.</b> Rows are round-robined over the Projects by
-	 * {@code g % projects}, so one Project only ever sees an arithmetic progression
-	 * of {@code g} — and a cycle whose period shares a factor with that stride shows
-	 * that Project half its groups. Dividing through by {@code projects} first turns
-	 * {@code g} into the Project's own row number, so each Project gets the whole
-	 * cycle.
-	 *
-	 * <p>Single {@code %} in the result rather than {@code %%}: this is substituted
-	 * into the insert as a {@code %s} argument, and {@link String#formatted} does not
-	 * re-scan what it substitutes.
+	 * Names, cycling with a period of {@link #TRANSACTION_NAMES}, modular rather
+	 * than random so the group count is a fixture property, not a seed's. Every
+	 * divisor must stay a multiple of {@code projects} — rows are round-robined by
+	 * {@code g % projects}, so a divisor that doesn't share that factor would show
+	 * each Project only part of the cycle.
 	 */
 	private static String transactionName(int projects) {
 		return """
@@ -439,14 +345,10 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * Ops, cycling one rung slower than the names so the two are independent and
-	 * every name really appears under every op — the Performance leaderboard keys on
-	 * (project, name, op), and a fixture where op were a function of name would make
-	 * that key look like (project, name).
-	 *
-	 * <p>{@code NULL} is one of the three on purpose: {@code txn.op} is nullable and
-	 * "no op" is a legitimate Transaction Group, so a fixture without one would let
-	 * a {@code GROUP BY} that quietly drops null keys pass.
+	 * Ops, cycling one rung slower than the names so every name appears under every
+	 * op — the leaderboard keys on (project, name, op). {@code NULL} is one of the
+	 * three deliberately: {@code txn.op} is nullable, and "no op" is a legitimate
+	 * Transaction Group.
 	 */
 	private static String transactionOp(int projects) {
 		return "(ARRAY['http.server','navigation',NULL])[1 + ((g / %d) %% 3)::int]"
@@ -455,9 +357,8 @@ public final class TelemetrySeeder {
 
 	/**
 	 * Spans are inserted from the transactions' own {@code RETURNING} in the same
-	 * statement, so every span really belongs to the transaction it names and shares
-	 * its trace and week. Generating them independently would have been simpler and
-	 * would have quietly broken the trace-detail fan-out.
+	 * statement, so each span shares its transaction's trace and week. Generating
+	 * them independently would quietly break the trace-detail fan-out.
 	 */
 	private void seedTransactionsAndSpans(Scale scale, List<Long> projectIds, long traces) {
 		inChunks(scale.txns(), (lo, hi) -> jdbc.sql("""
@@ -576,11 +477,8 @@ public final class TelemetrySeeder {
 
 	/**
 	 * Issue counters and per-environment/release stats, derived from the Events in
-	 * two passes. Environment stats share the issue-counter aggregate; release stats
-	 * need a different grouping.
-	 *
-	 * <p>{@code last_seen} and {@code event_count} are the Issue list's sort keys,
-	 * so inventing them would page over an order the data does not have.
+	 * two passes. {@code last_seen} and {@code event_count} are the Issue list's sort
+	 * keys, so inventing them would page over an order the data doesn't have.
 	 */
 	private void rollUpIssueCounters() {
 		jdbc.sql("""
@@ -612,8 +510,6 @@ public final class TelemetrySeeder {
 				+ ", issue, issue_env_stats, issue_release_stats, release, uptime_check").update();
 	}
 
-	// ----------------------------------------------------------------- helpers
-
 	private interface Chunk {
 
 		void insert(long lo, long hi);
@@ -621,16 +517,12 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * The per-row random draws, as a derived table over the row numbers rather than
-	 * a {@code CROSS JOIN LATERAL}. A lateral subquery that references nothing from
-	 * the outer query is not lateral at all: Postgres evaluates it <b>once</b> and
-	 * the join replicates that single row, so every seeded row would share one
-	 * timestamp and one issue — a dataset that looks seeded and measures nothing.
-	 *
-	 * <p>{@code OFFSET 0} is the standard optimization fence. Without it the planner
-	 * may pull the subquery up and inline a volatile expression into each of its
-	 * reference sites, drawing a fresh value per site — which would decouple an
-	 * event's project from its issue.
+	 * The per-row random draws, as a derived table rather than a {@code CROSS JOIN
+	 * LATERAL} — a lateral referencing nothing from the outer query is evaluated
+	 * once, and every row would share one timestamp. {@code OFFSET 0} is a real
+	 * optimization fence: without it the planner may inline the volatile
+	 * expressions and draw a fresh value per reference, decoupling an event's
+	 * project from its issue.
 	 */
 	private static String rowVariables(String columns) {
 		return """
@@ -663,11 +555,6 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * ~1 KB of jsonb per row, so heap fetches and TOAST behave as they do against
-	 * real payloads. Synthetic: the shape borrows from a Sentry event, the contents
-	 * are filler.
-	 */
-	/**
 	 * ~250 B of jsonb per span. Deliberately smaller than {@link #syntheticPayload}:
 	 * the shape borrows from an OpenTelemetry database span, which carries a
 	 * statement and a handful of attributes rather than a stack trace.
@@ -680,6 +567,10 @@ public final class TelemetrySeeder {
 				"thread.name":"http-nio-8080-exec-7"}""";
 	}
 
+	/**
+	 * ~1 KB of jsonb per row, so heap fetches and TOAST behave as they do against
+	 * real payloads; the shape borrows from a Sentry event but the contents are filler.
+	 */
 	private static String syntheticPayload() {
 		StringBuilder frames = new StringBuilder();
 		for (int i = 0; i < 6; i++) {

@@ -15,9 +15,8 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * A duration that is a *sum* rather than one measurement, where `formatDuration`
- * would print "312.4s". Both Performance surfaces show the same total for the same
- * Transaction Group, so they format it the same way from here.
+ * Duration that is a *sum* rather than a single measurement — `formatDuration`
+ * would print "312.4s" for this; both Performance surfaces use this instead.
  */
 export function formatTotalDuration(ms: number): string {
   return ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}min` : formatDuration(ms);

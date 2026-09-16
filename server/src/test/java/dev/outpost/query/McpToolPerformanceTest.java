@@ -17,32 +17,13 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance guards for the seven Tools beyond {@code get_issue_context}, whose
- * own guards are in {@code IssueContextPerformanceTest}.
- *
- * <p>None of these Tools writes SQL — {@code McpToolQueryReuseTest} asserts that
- * outright — so what is guarded here is not a statement but a <b>shape</b>. That
- * is the half of ADR-0016 the reuse rule does not cover: reuse buys the SQL and
- * whatever guard was written for it, but only for requests shaped the way the UI
- * shapes them, and the warning ADR-0016 records is that an agent omits what a
- * user never picks. Every guard below therefore binds what the Tool binds when
- * the caller supplies nothing, reading the defaults from the code that owns them
- * through {@link QueryPlans} rather than restating them — a guard with its own
- * copy of a default would {@code EXPLAIN} a request no Tool can make.
- *
- * <p>Two of these paths had no plan guard before this, only a benchmark: the
- * trace detail fan-out {@code get_trace} reuses, and the row lookup
- * {@code get_event_raw} reuses. They are guarded here because this is the surface
- * on which an unattended caller reaches them.
- *
- * <p>Everything asserted is logical I/O and plan shape, never wall clock.
- * {@link QueryGuard} documents how a ceiling is calibrated and why each one has
- * to sit below the cost of simply reading the table.
- *
- * <p>Baselines measured 2026-08-29 against {@link TelemetrySeeder.Scale#GUARD}:
- * 40 003 events, 40 010 log records, 8 000 transactions and 24 000 spans over 10
- * weekly partitions each, where a full scan costs 15 024 blocks on {@code event},
- * 5 163 on {@code span}, 5 028 on {@code log_record} and 2 688 on {@code txn}.
+ * Performance guards for the seven Tools beyond {@code get_issue_context} (its
+ * own guards are in {@code IssueContextPerformanceTest}): none of these write
+ * SQL of their own, so what's guarded is the request shape, bound the
+ * way the Tool binds it when the caller supplies nothing, reading defaults from
+ * {@link QueryPlans} rather than restating them. Everything asserted is logical
+ * I/O and plan shape, never wall clock; see {@link QueryGuard} for how a ceiling
+ * is calibrated.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -51,52 +32,39 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class McpToolPerformanceTest {
 
 	/*
-	 * find_issues has no buffer ceiling, for the reason IssueQueryPerformanceTest
-	 * records at length: the statement touches only `issue`, which a full scan reads
-	 * in ~23 blocks at guard scale while the healthy indexed plan measures 137 —
-	 * fifty random heap fetches into a ten-block table legitimately cost more than
-	 * reading the ten blocks. Every ceiling clearing the healthy plan would sit above
-	 * the scan and could not fail. What this surface adds to that guard is not a
-	 * number but the shape the Tool arrives in; see
-	 * findIssuesBindsBothPredicatesTheListIndexesLeadWith.
+	 * find_issues has no buffer ceiling: it touches only `issue`, which a full scan
+	 * reads in ~23 blocks while the healthy indexed plan measures 137 — any ceiling
+	 * clearing the healthy plan already sits above the scan. See
+	 * findIssuesBindsBothPredicatesTheListIndexesLeadWith for the shape guard instead.
 	 */
 
 	/**
-	 * Healthy is ~411 blocks over the default fourteen-day window; 10x is 4 110 and
-	 * still under the 5 028 a full scan of {@code log_record} costs, so it can fail.
-	 * What it fails on is the window bound going missing — the log list treats
-	 * {@code from} as optional because a human always has a range picker set, and
-	 * without it this is an ordered walk over every partition ever created.
+	 * Healthy is ~411 blocks over the default fourteen-day window. Catches the
+	 * window bound going missing — the log list treats {@code from} as optional
+	 * since a human always has a range picker set, but without it this Tool would
+	 * walk every partition ever created.
 	 */
 	private static final long MAX_SEARCH_LOGS_BLOCKS = 4_000;
 
 	/**
-	 * Healthy is 165–295 blocks per statement. Not the standard 10x, which would be
-	 * 2 950 and above the 2 688 a full scan of {@code txn} costs: {@code txn} is the
-	 * smallest of the four tables this fans out over, so it is the one that decides
-	 * whether the ceiling can fail at all. 2 000 is ~6.8x over the measured plan and
-	 * still under it.
-	 *
-	 * <p>None of the four carries a time predicate, because a Trace ID is not a time.
-	 * That is a property of the question rather than a defect, and it is why each is
-	 * only ever as cheap as its {@code trace_id} index.
+	 * Healthy is 165-295 blocks per statement; {@code txn} is the smallest of the
+	 * four tables this fans out over, so it caps how high the ceiling can sit and
+	 * still be able to fail. None of the four carries a time predicate — a Trace ID
+	 * is not a time — so each is only ever as cheap as its {@code trace_id} index.
 	 */
 	private static final long MAX_TRACE_FANOUT_BLOCKS = 2_000;
 
 	/**
 	 * Healthy is ~105 blocks: {@code event}'s primary key leads with {@code id}, so
-	 * this is one index probe per weekly partition. 10x, far below {@code event}'s
-	 * 15 024. The regression it catches is that probe going missing and the lookup
-	 * falling back to reading partitions.
+	 * this is one index probe per weekly partition. Catches that probe going
+	 * missing and the lookup falling back to reading whole partitions.
 	 */
 	private static final long MAX_EVENT_RAW_BLOCKS = 1_050;
 
 	/**
-	 * Healthy is 518–631 blocks across the four rankings, and 415 for the cardinality
-	 * count beside them. The same 2 000 the Performance view's own guard uses, chosen
-	 * there for the same reason: 10x would be above {@code txn}'s 2 688 and could not
-	 * fail. This window is the narrower of the two — fourteen days against the
-	 * endpoint's thirty-day cap — so the shared ceiling is if anything stricter here.
+	 * Healthy is 518-631 blocks across the four rankings, 415 for the cardinality
+	 * count. {@code txn}'s full-scan cost caps how high the ceiling can sit and
+	 * still be able to fail.
 	 */
 	private static final long MAX_PERFORMANCE_BLOCKS = 2_000;
 
@@ -124,16 +92,12 @@ class McpToolPerformanceTest {
 		from = to.minus(QueryPlans.toolWindow());
 	}
 
-	// ------------------------------------------------------------ find_issues
-
 	/**
 	 * The two predicates {@code idx_issue_status_last_seen_id} and its
-	 * project-scoped sibling lead with. Asserted on the statement rather than on its
-	 * plan because that is the claim this surface makes and the plan cannot make it:
-	 * at guard scale 200 issues live in ten blocks and Postgres reads them end to
-	 * end whatever the predicates say, so a plan assertion here would pass with the
-	 * time bound deleted. #126 shipped once with exactly that hole — a green guard
-	 * over a shape the product could not send.
+	 * project-scoped sibling lead with. Asserted on the SQL text rather than the
+	 * plan, because at guard scale 200 issues live in ten blocks and Postgres reads
+	 * them end to end regardless of the predicates, so a plan assertion would pass
+	 * even with the time bound deleted.
 	 */
 	@Test
 	void findIssuesBindsBothPredicatesTheListIndexesLeadWith() {
@@ -149,10 +113,9 @@ class McpToolPerformanceTest {
 	}
 
 	/**
-	 * Both orderings the Tool offers, not just the default. The second one pages by
-	 * {@code (event_count, id)} against a different index, and it is exactly the kind
-	 * of shape that gets added to a whitelist and never to a guard — which is why the
-	 * loop reads the whitelist rather than a list written here.
+	 * Both orderings the Tool offers, not just the default. The loop reads the
+	 * Tool's own sort whitelist rather than a list written here, so a new sort
+	 * added there is covered on the same commit.
 	 */
 	@Test
 	void findIssuesSortsInMemoryForEveryStatusAndOrderItAnswers() {
@@ -165,8 +128,6 @@ class McpToolPerformanceTest {
 			}
 		}
 	}
-
-	// ------------------------------------------------------------ search_logs
 
 	/**
 	 * The default window is the whole reason this Tool can reuse the log list's
@@ -185,11 +146,9 @@ class McpToolPerformanceTest {
 	}
 
 	/**
-	 * The trace filter is the other shape this Tool is called in, and it is the one
-	 * an agent reaches from a Trace ID it read in another payload. It walks
-	 * {@code idx_log_record_trace} rather than the ordering index — the same lookup
-	 * {@code LogQueryPerformanceTest} guards, re-asserted here because the Tool
-	 * sends it with a window bound the log page does not.
+	 * The trace filter is the other shape this Tool sends. It walks
+	 * {@code idx_log_record_trace} rather than the ordering index, re-asserted here
+	 * because the Tool pairs it with a window bound the log page does not send.
 	 */
 	@Test
 	void searchLogsByTraceIdStaysUnderTheSameCeiling() {
@@ -202,13 +161,9 @@ class McpToolPerformanceTest {
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, "search_logs by trace_id");
 	}
 
-	// -------------------------------------------------------------- get_trace
-
 	/**
 	 * The four statements {@code get_trace} fans out into, each guarded against the
-	 * table it reads. Guarded here rather than alongside the trace detail endpoint
-	 * because until this Tool existed they had a benchmark and no guard, and a
-	 * benchmark reports a number nobody's build fails on.
+	 * table it reads.
 	 */
 	@Test
 	void everyTraceFanOutStatementStaysUnderItsCeiling() {
@@ -225,11 +180,9 @@ class McpToolPerformanceTest {
 	}
 
 	/**
-	 * What one {@code tools/call} costs is the four statements together, so the
-	 * plan-shape assertions are also made against their sum. The ceiling stays per
-	 * statement: each is bounded by a different table, and one number would have to
-	 * sit below the smallest of them to be able to fail, which would say nothing
-	 * about the other three.
+	 * One {@code tools/call} costs the four statements together, so the plan
+	 * assertions are made on their sum. Ceilings stay per statement, since each is
+	 * bounded by a different table.
 	 */
 	@Test
 	void theWholeTraceCallSortsInMemoryAndScansNoTelemetrySequentially() {
@@ -243,8 +196,6 @@ class McpToolPerformanceTest {
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, call, "one get_trace call");
 	}
 
-	// ---------------------------------------------------------- get_event_raw
-
 	@Test
 	void getEventRawIsOneIndexProbePerPartition() {
 		PlanFacts facts = eventRaw();
@@ -255,14 +206,11 @@ class McpToolPerformanceTest {
 		QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, "get_event_raw");
 	}
 
-	// --------------------------------------------------- performance_overview
-
 	/**
 	 * Every ranking the Tool offers, read from its own whitelist so a ranking added
-	 * there is one this guard covers on the same commit. The percentile sorts are
-	 * the ones worth naming: they subscript an array the ordered-set aggregate
-	 * already produced, and a second {@code percentile_cont} in the {@code ORDER BY}
-	 * would sort every group's durations twice for a number the first sort made.
+	 * there is covered on the same commit. The percentile sorts subscript an array
+	 * the ordered-set aggregate already produced — a second {@code percentile_cont}
+	 * in the {@code ORDER BY} would sort every group's durations twice.
 	 */
 	@Test
 	void everyPerformanceRankingStaysUnderItsCeilingAndPrunesToItsWindow() {
@@ -298,9 +246,8 @@ class McpToolPerformanceTest {
 	}
 
 	/**
-	 * The Tool's default window has to survive the endpoint's own 30-day cap
-	 * unclamped, or every call would come back reporting a clamp the caller did not
-	 * cause — and the disclosure would stop meaning anything by being always on.
+	 * The Tool's default window must survive the endpoint's own 30-day cap
+	 * unclamped, or every call would report a clamp the caller didn't cause.
 	 */
 	@Test
 	void theDefaultWindowIsInsideThePerformanceViewsOwnCap() {
@@ -309,16 +256,12 @@ class McpToolPerformanceTest {
 			.isFalse();
 	}
 
-	// -------------------------------------------------------- find_transactions
-
 	/**
 	 * The one statement {@code find_transactions} issues, in both orderings it
-	 * offers. This is the Tool's own SQL — the UI's drill-down aggregates a group
-	 * and never lists its rows, so there was no factory to reuse — which is exactly
-	 * the case ADR-0016 says gets a guard of its own. Healthy is an index range
-	 * over one group's window rows via {@code idx_txn_performance} with a top-N
-	 * sort on top; the regression this catches is the key predicates falling off
-	 * that index and the lookup reading every group.
+	 * offers — the Tool's own SQL, since the UI's drill-down aggregates a group
+	 * and never lists its rows. Healthy is an index range over one group's window
+	 * via {@code idx_txn_performance}; catches the key predicates falling off that
+	 * index and the lookup reading every group.
 	 */
 	@Test
 	void findTransactionsReadsOneGroupNotTheTable() {
@@ -340,19 +283,12 @@ class McpToolPerformanceTest {
 		}
 	}
 
-	// ------------------------------------------------------------ uptime_status
-
 	/**
-	 * The parameters {@code uptime_status} takes reach the database. This is the
-	 * assertion the Tool's whole shape rests on: {@code uptime_check} is a plain
-	 * table holding one row per probe per interval, and a {@code days} that trimmed
-	 * the payload rather than the read would leave every call paying for ninety days
-	 * of every Monitor.
-	 *
-	 * <p>Asserted on the statements rather than only on their plans because at guard
-	 * scale the whole table is a handful of blocks, so a plan assertion here would
-	 * pass with both predicates deleted — the same reason
-	 * {@link #findIssuesBindsBothPredicatesTheListIndexesLeadWith} reads SQL.
+	 * The parameters {@code uptime_status} takes must reach the database, not just
+	 * trim the payload after reading every row. Asserted on the SQL text rather
+	 * than the plan, for the reason
+	 * {@link #findIssuesBindsBothPredicatesTheListIndexesLeadWith} reads SQL: at
+	 * guard scale the whole table is too small for a plan assertion to fail.
 	 */
 	@Test
 	void uptimeStatusNarrowsInTheDatabaseRatherThanInJava() {
@@ -367,18 +303,11 @@ class McpToolPerformanceTest {
 	}
 
 	/**
-	 * No buffer ceiling here, and the reason is the table rather than an omission.
-	 * {@code uptime_check} is not one of the partitioned telemetry tables, so
-	 * {@link QueryGuard#assertCeilingCanFail} has no full-scan cost to validate a
-	 * ceiling against — and the daily rollup is an aggregate that must read every
-	 * matching row, so any number above the healthy plan is above the scan and
-	 * cannot fail.
-	 *
-	 * <p>What can fail is a spill. The rollup groups by (Monitor, day) and the
-	 * {@code DISTINCT ON} sorts per Monitor, and both are bounded by the window and
-	 * the Project filter above; a temp file says one of those bounds stopped
-	 * working. Asserted for the widest history the Tool will read, not the default,
-	 * because the clamp exists precisely because an agent will ask for more.
+	 * No buffer ceiling: {@code uptime_check} isn't a partitioned telemetry table,
+	 * so there's no full-scan cost to validate one against, and what can fail
+	 * instead is a spill in the rollup's grouping or {@code DISTINCT ON} sort, both
+	 * bounded by the window and Project filter. Asserted at the widest history the
+	 * Tool will read, not just the default.
 	 */
 	@Test
 	void noUptimeStatusStatementSpillsAtTheWidestHistoryItWillRead() {
@@ -388,8 +317,6 @@ class McpToolPerformanceTest {
 			}
 		}
 	}
-
-	// ------------------------------------------------------------------ shapes
 
 	/** {@code find_issues} as the Tool binds it with nothing supplied but a status. */
 	private PlanFacts findIssues(String status) {

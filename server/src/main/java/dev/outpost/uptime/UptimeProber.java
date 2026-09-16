@@ -10,16 +10,10 @@ import org.springframework.stereotype.Component;
 
 /**
  * Performs a single uptime probe: HTTP GET, success = final status &lt; 400
- * (redirects followed) within the monitor's timeout. Timeouts, connection
- * errors, and 4xx/5xx are failures — a failure is a <em>result</em>, never an
- * exception to the caller.
- *
- * <p>SSRF note: monitor URLs are admin-configured on a self-hosted install,
- * so probing internal addresses is accepted by design (no allowlist).
- *
- * <p>{@link HttpRequest#timeout} covers time-to-response-headers only; the
- * discarding body handler minimizes but does not hard-cap body-read time, which
- * is negligible for health endpoints.
+ * within the timeout; timeouts, connection errors, and 4xx/5xx come back as a
+ * failure result, never an exception. Monitor URLs are admin-configured on a
+ * self-hosted install, so probing internal addresses is accepted by design
+ * (no SSRF allowlist).
  */
 @Component
 public class UptimeProber {
