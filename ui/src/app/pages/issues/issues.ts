@@ -77,8 +77,7 @@ export class IssuesPage {
     initialValue: this.route.snapshot.queryParams,
   });
 
-  // Status/sort live in the URL (shareable, back/forward-aware); search is a
-  // local signal for instant input feedback, mirrored to the URL on debounce.
+  // Status/sort live in the URL; search is a local signal mirrored to the URL on debounce.
   readonly status = computed<string>(() => this.queryParams()['status'] ?? 'unresolved');
   readonly sort = computed<string>(() => this.queryParams()['sort'] ?? 'last_seen');
   readonly search = signal(this.route.snapshot.queryParams['query'] ?? '');
@@ -86,8 +85,7 @@ export class IssuesPage {
 
   readonly timeAgo = timeAgo;
 
-  // Everything the request depends on except the cursor. When any of these
-  // change the cursor resets to undefined (linkedSignal) → back to page one.
+  // Everything the request depends on except the cursor; a change resets the cursor to page one.
   private readonly filterKey = computed(() =>
     JSON.stringify({
       project: this.filters.project(),
@@ -126,8 +124,7 @@ export class IssuesPage {
     effect(() => {
       const page = this.page.value();
       if (!page) return;
-      // Read cursor untracked so this only re-runs when a response lands, not
-      // when we set the cursor — avoids double-applying a page.
+      // Read cursor untracked so this only re-runs when a response lands, not when we set it.
       untracked(() =>
         this.issues.set(this.cursor() ? [...this.issues(), ...page.issues] : page.issues),
       );

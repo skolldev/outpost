@@ -91,7 +91,6 @@ public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
 		heading(body, occurrence.message());
 	}
 
-	/** The deep-link button label, per trigger — always a one-click path to diagnosis. */
 	private String linkLabel(NotificationOccurrence occurrence) {
 		return switch (occurrence) {
 			case NotificationOccurrence.NewIssue ignored -> "View issue in Outpost";
@@ -101,7 +100,7 @@ public class TeamsAdaptiveCardFormatter implements NotificationFormatter {
 		};
 	}
 
-	/** Small bold caption naming the trigger, above the heading. */
+	/** Small bold caption above the heading, naming the trigger. */
 	private void title(ArrayNode body, String text) {
 		ObjectNode block = body.addObject();
 		block.put("type", "TextBlock");

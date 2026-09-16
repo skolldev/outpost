@@ -74,10 +74,7 @@ export class TracesPage {
   });
 
   readonly hasErrors = computed<boolean>(() => this.queryParams()['has_errors'] === 'true');
-  // A duration band, both edges optional. `max_duration` has no control on this page:
-  // it arrives from the Performance detail view's "typical Traces" link, which needs an
-  // upper bound to mean anything — without one, "typical" would include every cache hit
-  // in the window (#162).
+  // Duration band, both edges optional; max_duration has no control on this page — it arrives via a link from the Performance view (#162).
   readonly minDuration = computed<number | undefined>(() =>
     this.num(this.queryParams()['min_duration']),
   );

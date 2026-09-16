@@ -9,10 +9,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Pure shape tests for the Generic JSON payload — the public contract receiver
- * developers depend on (parent #41, user story 14). Asserts the {@code version}
- * discriminator, snake_case keys, and the new-issue fields, independent of any
- * delivery or persistence.
+ * Pure shape tests for the Generic JSON payload: the {@code version}
+ * discriminator, snake_case keys, and the new-issue fields.
  */
 class GenericJsonFormatterTest {
 

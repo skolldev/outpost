@@ -2,10 +2,8 @@ import { LogRecord } from '../../core/models';
 
 /**
  * One chip on the logs page: a field of a Log Record and the value it must equal.
- *
- * `trace_id` and `release` are columns and travel as their own query params; every
- * other key is an Attribute and travels as `attr=key=value`. The person filtering
- * has no reason to know which is which, so a chip does not say.
+ * `trace_id`/`release` travel as their own query params; every other key travels
+ * as `attr=key=value`.
  */
 export interface FieldFilter {
   key: string;
@@ -78,8 +76,8 @@ export function formatAttr(filters: readonly FieldFilter[]): string[] {
 
 /**
  * Keys worth offering, from the records already loaded: the first-class fields,
- * then the Project's own Attributes by how many records carry them, then the SDK's
- * `sentry.*` bookkeeping. Free, and blind to keys no loaded record carries.
+ * then the Project's own Attributes by frequency, then the SDK's `sentry.*`
+ * bookkeeping.
  */
 export function keySuggestions(records: readonly LogRecord[]): string[] {
   const counts = new Map<string, number>();

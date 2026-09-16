@@ -12,16 +12,12 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Records a completed probe and drives incident transitions: the 3rd consecutive
- * failure opens an incident (idempotent via the partial unique index on open
- * incidents), the first success closes it. The counter arithmetic never races
- * with itself because {@link UptimeScheduler}'s in-flight set already serializes
- * per monitor.
- *
- * <p>Transitions cross the notifications publisher seam (#45), and publishing
- * happens only after the transaction commits so a rolled-back transition never
- * notifies. The seam is fire-and-forget (ADR 0005), so a notification hiccup can
- * never fail a recorded check.
+ * Records a completed probe and drives incident transitions: the 3rd
+ * consecutive failure opens an incident (idempotent via a partial unique
+ * index), the first success closes it — safe without locking because
+ * {@link UptimeScheduler} already serializes per monitor. Notifications (#45)
+ * publish only after commit and are fire-and-forget (ADR-0005), so a rollback
+ * never notifies and a notification failure never fails the check.
  */
 @Service
 public class UptimeCheckService {
@@ -74,22 +70,20 @@ public class UptimeCheckService {
 		});
 		NotificationOccurrence pending = occurrence.get();
 		if (pending != null) {
-			// The seam never throws, but guard anyway so a notification hiccup can't
-			// fail an already-recorded check.
 			try {
 				notifications.publish(pending);
 			}
 			catch (RuntimeException e) {
-				// Swallowed by design: the check is durably recorded; the notification is not.
+				// Swallowed by design — the notification failure must not fail the check.
 			}
 		}
 	}
 
 	/**
-	 * Opens (or, on the 4th+ failure, refreshes) the monitor's incident. Returns an
-	 * occurrence only when the row was actually inserted, so notifications fire once
-	 * per incident rather than per failed check: {@code xmax = 0} is true exactly
-	 * for the tuple this statement inserted, false for the {@code DO UPDATE} path.
+	 * Opens (or, on the 4th+ failure, refreshes) the monitor's incident. Returns
+	 * an occurrence only when the row was actually inserted — {@code xmax = 0}
+	 * is true for the inserted tuple, false on the {@code DO UPDATE} path — so
+	 * notifications fire once per incident, not per failed check.
 	 */
 	private NotificationOccurrence openIncident(long monitorId, String failureReason) {
 		Incident incident = jdbc.sql("""

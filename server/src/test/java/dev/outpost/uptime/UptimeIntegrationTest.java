@@ -28,12 +28,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
-/**
- * Uptime monitoring end to end: monitor CRUD with validation and admin
- * gating, the synchronous test-connection probe against a local stub server,
- * incident transitions (3 consecutive failures open, one success closes), the
- * scheduler picking up due monitors, and the 90-day overview aggregation.
- */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
 		"outpost.uptime.tick-millis=100" })
@@ -96,8 +90,6 @@ class UptimeIntegrationTest {
 		stub.stop(0);
 	}
 
-	// ------------------------------------------------------------------ CRUD
-
 	@Test
 	void createValidatesInput() {
 		assertThat(post("/api/internal/uptime/monitors", monitorBody("not-a-url", 60, 10), adminCookie)
@@ -123,7 +115,6 @@ class UptimeIntegrationTest {
 		assertThat(body.get("interval_seconds")).isEqualTo(3600);
 		long id = ((Number) body.get("id")).longValue();
 
-		// Seed a failure streak, then PATCH — project, streak, and schedule update.
 		jdbc.sql("UPDATE uptime_monitor SET consecutive_failures = 2 WHERE id = ?").param(id).update();
 		long otherProjectId = jdbc.sql("INSERT INTO project (slug, name) VALUES ('payments', 'Payments') RETURNING id")
 			.query(Long.class)
@@ -169,8 +160,6 @@ class UptimeIntegrationTest {
 			.isEqualTo(HttpStatus.OK);
 	}
 
-	// ------------------------------------------------------------------ test connection
-
 	@Test
 	void testConnectionReportsResultWithoutRecording() {
 		stubStatus = 200;
@@ -198,8 +187,6 @@ class UptimeIntegrationTest {
 		// Ad-hoc probes are never recorded.
 		assertThat(count("uptime_check")).isZero();
 	}
-
-	// ------------------------------------------------------------------ incidents
 
 	@Test
 	void thirdConsecutiveFailureOpensIncidentAndSuccessClosesIt() {
@@ -236,8 +223,6 @@ class UptimeIntegrationTest {
 			.query(Long.class)
 			.single()).isEqualTo(2);
 	}
-
-	// ------------------------------------------------------------------ scheduler
 
 	@Test
 	void schedulerRunsDueMonitors() {
@@ -286,8 +271,6 @@ class UptimeIntegrationTest {
 			.single()).isTrue();
 	}
 
-	// ------------------------------------------------------------------ overview + retention
-
 	@Test
 	void overviewAggregatesDailyBuckets() {
 		long id = insertMonitor(stubUrl("/health"), 3600);
@@ -324,8 +307,6 @@ class UptimeIntegrationTest {
 		assertThat(((Map<String, Object>) withIncident.get("open_incident")).get("last_error")).isEqualTo("HTTP 503");
 
 	}
-
-	// ------------------------------------------------------------------ helpers
 
 	private ProbeResult failure() {
 		return new ProbeResult(false, null, 5, "java.net.ConnectException: refused");

@@ -167,10 +167,9 @@ public class EnvelopeSpool {
 	}
 
 	/**
-	 * Removes spool files that no live queue entry points at and that have not
-	 * been touched for {@code maxAge}. Both conditions must hold: the liveness
-	 * check is what makes the sweep safe within this process, and the age gate
-	 * covers the window it cannot — a file created but not yet registered.
+	 * Removes spool files that no live queue entry points at and that have gone
+	 * untouched for {@code maxAge}. Both conditions must hold — liveness alone
+	 * misses a file created but not yet registered.
 	 */
 	public Sweep reap(Duration maxAge) {
 		Instant cutoff = Instant.now().minus(maxAge);

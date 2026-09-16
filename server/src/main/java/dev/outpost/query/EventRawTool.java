@@ -16,28 +16,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * The MCP Surface's {@code get_event_raw} Tool: one Event's stored payload,
- * whole.
- *
- * <p>It is a separate Tool rather than a flag on {@code get_issue_context}
- * because the two are different sizes of answer, and the caller should have to
- * decide which it wants. Every other Tool projects {@code event.data} and names
- * what it dropped; this one hands over the document the SDK sent, which is the
- * only way to answer a question about a key no projection anticipated — a custom
- * context, a tag, an SDK-specific block. The cost is that a large Event is a
- * large result, which is why {@link EventRawResult#data_bytes()} is reported
- * beside it.
- *
- * <p>The statement is {@link IssueController#EVENT_BY_ID}, the event detail
- * page's own (ADR-0016). The page's two neighbour lookups are deliberately not
- * issued: they exist so a human can step through an Issue's Events, and an agent
- * navigates by {@code find_issues} instead. Skipping them makes this call a third
- * of the cost of the page it reuses.
- *
- * <p><b>{@code data} is returned verbatim and unredacted.</b> It is whatever the
- * SDK sent, including request headers, cookies and user context if the SDK was
- * configured to send them. The caveat says so on every call: an agent handed a
- * document has no way to know what an Outpost installation's SDKs put in it.
+ * The MCP Surface's {@code get_event_raw} Tool: one Event's stored payload, returned verbatim
+ * and unredacted, including any request headers, cookies or user context the SDK sent.
  */
 @Component
 public class EventRawTool {
@@ -89,11 +69,7 @@ public class EventRawTool {
 			}
 			JsonNode stored = QuerySupport.parseJson(mapper, json);
 			if (!stored.isObject() && json != null && !json.isBlank()) {
-				// The one Tool whose whole job is completeness must not answer an
-				// unreadable payload with an empty object and no explanation: data_bytes
-				// beside it would say the row held something, and nothing would say what.
-				// The column is jsonb, so this is not malformed JSON — it is valid JSON
-				// that is not an object, which no SDK sends and no other Tool can render.
+				// Valid JSON but not an object (rare); disclose it rather than silently returning empty data.
 				caveats.add("The stored payload is not a JSON object but a " + stored.getNodeType()
 						+ ", so data is empty even though data_bytes reports what the column holds. "
 						+ "Every Outpost SDK sends an object; this row is anomalous.");
@@ -127,14 +103,6 @@ public class EventRawTool {
 		}
 	}
 
-	/**
-	 * The stored document as a map, or empty when the column does not hold an
-	 * object. Degrading rather than failing, for the reason
-	 * {@link QuerySupport#parseJson} degrades: one anomalous row is not a reason to
-	 * fail the call — but unlike that helper, this one's caller discloses the
-	 * degradation, because an empty {@code data} is the single answer this Tool
-	 * must never give silently.
-	 */
 	@SuppressWarnings("unchecked")
 	private Map<String, Object> data(JsonNode stored) {
 		return stored.isObject() ? mapper.convertValue(stored, LinkedHashMap.class) : Map.of();

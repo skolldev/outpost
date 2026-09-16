@@ -11,51 +11,19 @@ import org.springframework.stereotype.Component;
 
 /**
  * The MCP Surface's {@code uptime_status} Tool: every Uptime Monitor, its
- * current state, the Incident open against it if there is one, and the daily
- * Uptime Check rollup behind that state.
- *
- * <p>It reads through {@link UptimeStatusService}, the same component the status
- * page reads through, so there is no second copy of these statements and no
- * second definition of what {@code up} means. It passes {@link ToolSupport}'s own
- * {@code JdbcClient}, so the statement timeout that bounds the rest of the MCP
- * path bounds this Tool too — the service takes the client from its caller
- * precisely so that timeout does not become the status page's.
- *
- * <p><b>Both parameters are predicates, not post-filters.</b> {@code uptime_check}
- * is a plain table holding one row per probe per interval, and the daily rollup
- * over it is the one statement on this path whose cost grows with retention
- * rather than with the number of Monitors. Narrowing in Java would have made
- * {@code days} and {@code project_slugs} trim the payload while the work stayed
- * the same; {@code McpToolPerformanceTest} guards the difference. Nothing new is
- * computed here — the window totals below are the sums of the daily buckets the
- * service produced.
- *
- * <p><b>The percentage is named for what it measures.</b> It is
- * {@code successful_checks_pct}, not {@code uptime_pct}, because the two are not
- * the same claim and only one of them is supportable. Outpost probes on an
- * interval and stores what came back; a minute in which no probe ran leaves no
- * evidence either way, and an outage of Outpost itself records no failed Uptime
- * Checks at all. A field called {@code uptime_pct} invites a model to report
- * availability, which is a stronger statement than a ratio of two counts of
- * probes — exactly the naming failure ADR-0014 forbids.
- *
- * <p>The same number is still called {@code uptime_pct} on
- * {@code /api/internal/uptime/overview}, which is a knowing inconsistency rather
- * than an oversight, and one worth its own change. ADR-0014's argument for
- * putting a disclosure in a field name is that a name survives where a footnote
- * does not — and the status page has a legend beside the number while a Tool
- * result has nothing at all. Renaming the wire contract touches
- * {@code ui/src/app/core/models.ts} and the components under it, which is not
- * this change.
+ * state, any open Incident, and its daily Uptime Check rollup — read through
+ * {@link UptimeStatusService}, shared with the status page. Field
+ * {@code successful_checks_pct} deliberately differs in name from
+ * {@code /api/internal/uptime/overview}'s {@code uptime_pct} (ADR-0014): it
+ * measures probe success, not availability.
  */
 @Component
 public class UptimeStatusTool {
 
 	/**
-	 * @param window_days the span the Uptime Checks below were read over, ending
-	 * today. It is a property of the query rather than of the data: a Monitor first
-	 * probed yesterday reports the same {@code window_days} as one probed for a year,
-	 * and how much of it that Monitor actually has is the length of its {@code days}.
+	 * @param window_days the span read over, ending today — a property of the
+	 * query, not of how much history a Monitor actually has (see each Monitor's
+	 * {@code days}).
 	 */
 	public record UptimeStatusResult(int window_days, List<MonitorPayload> monitors, List<String> caveats) {
 	}
@@ -75,11 +43,6 @@ public class UptimeStatusTool {
 			@Nullable Integer avg_latency_ms) {
 	}
 
-	/**
-	 * Days of history returned when the caller names none. A week answers "is it
-	 * flapping" without spending a context window on the ninety days the status page
-	 * draws, which is a screen of pixels rather than a screen of text.
-	 */
 	static final int DEFAULT_DAYS = 7;
 
 	private final UptimeStatusService uptime;
@@ -122,8 +85,7 @@ public class UptimeStatusTool {
 			long failed = buckets.stream().mapToLong(DayPayload::checks_failed).sum();
 			monitors.add(new MonitorPayload(monitor.id(), monitor.projectSlug(), monitor.environment(),
 					monitor.url(), monitor.intervalSeconds(), monitor.status(), incident(monitor), received, failed,
-					// Null rather than 100 when nothing was probed: a percentage of no
-					// observations is not a percentage, and zero would read as total failure.
+					// Null (not 0 or 100) when nothing was probed — an empty percentage isn't 0% failure.
 					received == 0 ? null : Math.round((received - failed) * 10_000.0 / received) / 100.0, buckets));
 		}
 
@@ -147,9 +109,8 @@ public class UptimeStatusTool {
 	}
 
 	/**
-	 * The number of days of history to render. Clamped rather than rejected, and the
-	 * clamp disclosed: unlike a filter, a too-wide history returns a superset of what
-	 * was asked for, so narrowing it silently is the only thing that could mislead.
+	 * Clamps rather than rejects, disclosing the clamp — a too-wide request returns
+	 * a superset, so only a silent narrowing would mislead.
 	 */
 	private static int days(Integer requested, List<String> caveats) {
 		if (requested == null) {

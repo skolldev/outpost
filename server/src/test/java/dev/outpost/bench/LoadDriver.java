@@ -18,22 +18,13 @@ import java.util.function.Supplier;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * An open-loop HTTP load generator: it offers requests at a fixed rate
- * regardless of how fast the server answers, and measures each request's latency
- * from the instant it was <em>due to be sent</em>.
- *
- * <p>Both properties matter. A closed-loop driver — N threads each looping
- * send-then-wait — throttles itself the moment the server slows down, so offered
- * load silently tracks served load and the saturation point never appears. And
- * timing from the actual send instead of the intended one is the classic
- * coordinated-omission error: a server stalled for a second looks fast because
- * the driver simply stopped asking during the stall. Here the backlog shows up
- * in the percentiles, which is the whole point of the exercise.
- *
- * <p>Requests are dispatched onto virtual threads, so a slow server costs
- * parked continuations rather than platform threads. {@link #MAX_IN_FLIGHT} caps
- * the backlog so a wedged server exhausts the driver's patience rather than its
- * heap; anything shed past the cap is reported rather than hidden.
+ * An open-loop HTTP load generator: offers requests at a fixed rate regardless
+ * of how fast the server answers, and times each request from the instant it was
+ * <em>due to be sent</em> rather than when it was actually sent — otherwise a
+ * server stall would look fast because the driver simply stopped asking
+ * (coordinated omission). {@link #MAX_IN_FLIGHT} caps the backlog so a wedged
+ * server exhausts the driver's patience rather than its heap; anything shed past
+ * the cap is reported rather than hidden.
  */
 public final class LoadDriver implements AutoCloseable {
 
@@ -79,8 +70,7 @@ public final class LoadDriver implements AutoCloseable {
 	}
 
 	private final HttpClient http = HttpClient.newBuilder()
-		// HTTP/1.1 with connection pooling is what the Sentry SDKs actually do,
-		// and it keeps the driver from multiplexing everything onto one stream.
+		// HTTP/1.1 with connection pooling matches what the Sentry SDKs actually do.
 		.version(HttpClient.Version.HTTP_1_1)
 		.connectTimeout(Duration.ofSeconds(5))
 		.executor(Executors.newVirtualThreadPerTaskExecutor())
@@ -121,9 +111,7 @@ public final class LoadDriver implements AutoCloseable {
 					latencies[latencyIndex.getAndIncrement()] = System.nanoTime() - dueAt;
 				}
 				catch (Exception e) {
-					// Classified, because "9454 failed" is not a finding: a connection
-					// reset means the accept backlog broke before the ingest buffer
-					// did, which is a completely different bottleneck from a timeout.
+					// Classified by cause: a connection reset and a timeout point at different bottlenecks.
 					failures.computeIfAbsent(describe(e), key -> new LongAdder()).increment();
 				}
 				finally {
@@ -133,10 +121,8 @@ public final class LoadDriver implements AutoCloseable {
 			});
 		}
 		long offerNanos = System.nanoTime() - startNanos;
-		// Generous: the tail after a saturated plateau is exactly what we want to see.
 		if (!done.await(2, TimeUnit.MINUTES)) {
-			// Requests still in flight would race the array read below, so say so
-			// rather than sorting a half-written buffer and reporting the result.
+			// Still in flight would race the array read below, so report it instead of sorting a half-written buffer.
 			failures.computeIfAbsent("still in flight after 2m", key -> new LongAdder()).add(done.getCount());
 		}
 
@@ -162,8 +148,7 @@ public final class LoadDriver implements AutoCloseable {
 		if (message == null) {
 			return root.getClass().getSimpleName();
 		}
-		// Collapse ports, addresses and counts, or every ephemeral port becomes its
-		// own bucket and the breakdown is thousands of rows long.
+		// Collapse ports, addresses and counts, or every ephemeral port becomes its own bucket.
 		return root.getClass().getSimpleName() + ": " + message.split("\\R")[0].replaceAll("\\d+", "N");
 	}
 

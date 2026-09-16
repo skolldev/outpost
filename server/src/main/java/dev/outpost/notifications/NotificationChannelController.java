@@ -21,13 +21,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Notification Channel management (#42, parent #41): admin-configured webhook
- * destinations, plus the test-send action.
- * <p>
- * The whole surface is Admin-only, unlike uptime reads, because a channel's URL
- * is a bearer credential returned unmasked (ADR 0006) — so even listing is gated.
- * Filters are only persisted here; {@link NotificationService} applies them at
- * delivery.
+ * Notification Channel management: admin-configured webhook destinations, plus the test-send
+ * action. The whole surface is Admin-only because a channel's URL is a bearer credential
+ * returned unmasked (ADR 0006); filters are persisted here but applied at delivery by
+ * {@link NotificationService}.
  */
 @RestController
 @RequestMapping("/api/internal/notifications/channels")
@@ -46,12 +43,12 @@ public class NotificationChannelController {
 			Instant lastDeliveryAt) {
 	}
 
-	/** One Notification history row for a channel's recent-delivery listing (#44). */
+	/** One Notification history row for a channel's recent-delivery listing. */
 	public record HistoryEntry(long id, String triggerType, String status, String summary, String errorDetail,
 			Instant createdAt, Instant updatedAt) {
 	}
 
-	/** Test-send outcome reported inline to the Admin (#44). */
+	/** Test-send outcome reported inline to the Admin. */
 	public record TestSendResponse(String status, String errorDetail) {
 	}
 
@@ -107,8 +104,7 @@ public class NotificationChannelController {
 		if (problem != null) {
 			return ResponseEntity.badRequest().body(Map.of("detail", problem));
 		}
-		// Full replace (like uptime edits): the UI resends the whole channel,
-		// including for the enable/disable toggle, so there is no partial state.
+		// Full replace despite PATCH: the UI always resends the whole channel, so there's no partial state.
 		int updated = jdbc.sql("""
 				UPDATE notification_channel SET
 					name = ?, type = ?, url = ?, enabled = ?, triggers = string_to_array(?, ','),
@@ -134,10 +130,9 @@ public class NotificationChannelController {
 	}
 
 	/**
-	 * Fire a test Notification at one channel (#44): runs the full delivery
-	 * pipeline (matching bypassed, per-type formatting, history row, async send)
-	 * and reports the outcome inline. A disabled channel is refused (409) rather
-	 * than silently skipped, so the Admin gets a clear reason.
+	 * Fires a test notification at one channel: runs the full delivery pipeline (matching
+	 * bypassed, per-type formatting, history row, async send) and reports the outcome inline. A
+	 * disabled channel is refused with 409 rather than silently skipped.
 	 */
 	@PostMapping("/{id}/test")
 	public ResponseEntity<?> test(@PathVariable long id) {
@@ -153,7 +148,7 @@ public class NotificationChannelController {
 		};
 	}
 
-	/** Recent Notifications delivered to one channel, newest first (#44). */
+	/** Recent Notifications delivered to one channel, newest first. */
 	@GetMapping("/{id}/history")
 	public ResponseEntity<List<HistoryEntry>> history(@PathVariable long id) {
 		Integer exists = jdbc.sql("SELECT 1 FROM notification_channel WHERE id = ?")

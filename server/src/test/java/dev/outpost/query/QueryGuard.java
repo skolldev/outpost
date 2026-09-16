@@ -17,46 +17,21 @@ import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * The assertion vocabulary the retrieval guards share. Everything here is
- * machine-independent — logical I/O and plan shape, never wall clock — so a slow
- * or loaded CI box cannot flake it.
- *
- * <p>A buffer ceiling on its own is a blunt instrument: it cannot tell a query
- * that pruned correctly from one that got lucky on a small dataset, and it
- * changes meaning the moment the dataset does. The plan-shape assertions
- * ({@link #assertPrunesFrom}, {@link #assertNoSequentialScanOfTelemetry},
- * {@link #assertNoTempFiles}) are the ones that survive a change of scale; the
- * ceiling sits behind them as a backstop.
- *
- * <h2>Calibrating a ceiling</h2>
- *
- * For a path whose current plan is healthy: ten times its measured logical I/O,
- * confirmed by {@link #assertCeilingCanFail} to sit below the cost of the
- * corresponding full scan — a ceiling above the scan cost cannot fail and is
- * decoration. For a path with a known bug the rule inverts: the ceiling goes at
- * the <em>healthy target</em> and the guard is {@code @Disabled} naming its
- * follow-up issue. Calibrating off a bug's plan would certify the bug as the
- * baseline and call it a guard.
+ * Assertion vocabulary shared by the retrieval guards, machine-independent
+ * (logical I/O and plan shape, never wall clock) so a loaded CI box cannot flake
+ * them. Calibrate a ceiling at ten times healthy measured I/O, confirmed by
+ * {@link #assertCeilingCanFail} to sit below the cost of a full scan.
  */
 final class QueryGuard {
 
-	/**
-	 * The partitioned tables, from the one place production registers them. A
-	 * sequential scan of a populated one is the failure these guards exist to catch.
-	 */
+	/** The partitioned tables; a sequential scan of a populated one is the failure these guards catch. */
 	static final List<String> TELEMETRY_TABLES = PartitionManager.TABLES;
 
 	/**
-	 * Per table, a column no index covers — aggregating it forces the heap read that
-	 * makes {@link #fullScanCost} an honest upper bound. {@code count(*)} may be
-	 * answered from an index and would understate it.
-	 *
-	 * <p>{@code txn} uses {@code status} rather than the {@code name} it used to,
-	 * because {@code V15} put {@code name} in a covering index: {@code count(name)}
-	 * then became an index-only scan measuring 447 blocks where the heap costs 2 691,
-	 * which would have quietly turned every {@code txn} ceiling into one that cannot
-	 * fail. Any future index over one of these columns has the same effect — pick a
-	 * different one rather than accepting the smaller number.
+	 * Per table, a column no index covers, so aggregating it forces the heap read
+	 * that makes {@link #fullScanCost} an honest upper bound. If a future index ever
+	 * covers one of these columns, pick a different one rather than keeping the
+	 * smaller number.
 	 */
 	private static final Map<String, String> FULL_SCAN_COLUMNS = Map.of(PartitionManager.EVENT, "message",
 			PartitionManager.LOG_RECORD, "body", PartitionManager.TXN, "status", PartitionManager.SPAN, "description");
@@ -75,8 +50,8 @@ final class QueryGuard {
 
 	/**
 	 * A page-sized result that spills to a temp file is sorting or hashing something
-	 * far larger than the page — the signature of an aggregate or ordering the
-	 * pagination cannot push down.
+	 * far larger than the page — the signature of an aggregate the pagination
+	 * cannot push down.
 	 */
 	static void assertNoTempFiles(PlanFacts facts, String what) {
 		assertThat(facts.tempBlocks()).as("temp-file blocks for %s — a normal page should sort in memory%n%s", what,
@@ -85,12 +60,8 @@ final class QueryGuard {
 
 	/**
 	 * No sequential scan of a partition holding a material share of its table.
-	 *
-	 * <p>The share matters. A weekly partition at the edge of the retention window
-	 * holds a handful of rows, and reading those end to end is the cheapest plan
-	 * available — Postgres picks it for healthy queries, and failing on it would
-	 * make this assertion useless noise. What it catches is the real thing: a
-	 * selective lookup falling back to reading a partition that holds real data.
+	 * Partitions at the edge of the retention window are excluded, since reading a
+	 * near-empty one end to end is the cheapest plan available for it.
 	 */
 	static void assertNoSequentialScanOfTelemetry(JdbcClient jdbc, PlanFacts facts, String what) {
 		Set<String> scans = new LinkedHashSet<>();
@@ -126,41 +97,13 @@ final class QueryGuard {
 	}
 
 	/**
-	 * Every index this plan read on {@code table} belongs to {@code index}, and no
-	 * {@code Sort} ran.
-	 *
-	 * <p>Both halves are load-bearing, for the reasons #126 established. "Some index
-	 * was used" cannot fail when a redundant index is added, so the index is named;
-	 * and a bitmap scan of the right index returns rows in heap order and sorts them
-	 * anyway, so the {@code Sort} has to be excluded separately. An
-	 * {@code Incremental Sort} is deliberately allowed — it is bounded by the group
-	 * size rather than the table, which is the property being guarded.
-	 *
-	 * <p>Naming an index on a <em>partitioned</em> table means naming a family: the
-	 * parent index in the migration is a catalogue entry with no storage, and the
-	 * plan reads the per-partition children Postgres named itself. The family is
-	 * read from {@code pg_inherits} rather than pattern-matched, so a rename in the
-	 * migration cannot silently widen what this accepts.
-	 *
-	 * <p>The assertion is containment, not intersection: it is satisfied only if
-	 * <em>every</em> index touched on a populated partition is in the family.
-	 * Intersection would pass a plan that walked the right index on one partition
-	 * and the wrong one on the other nine.
-	 *
-	 * <p>Several indexes may be named where several are genuinely equivalent — a
-	 * request filtering on project <em>and</em> environment can walk either the
-	 * project-leading or the project+environment index in order, and they measured
-	 * four blocks apart. Pinning one of two near-equal plans produces a guard that
-	 * fails when the planner picks the other, which is a fact about cost estimates
-	 * rather than about health, and a guard that fails for a healthy plan is one the
-	 * next person disables. Naming both still excludes the plan that matters — the
-	 * global ordering index walked with both filters applied as predicates.
-	 *
-	 * <p>Indexes on <em>empty</em> partitions are excluded, for the same reason
-	 * {@link #assertNoSequentialScanOfTelemetry} discounts small ones: the partition
-	 * manager keeps a week of partitions ahead of the newest row, and which index
-	 * the planner picks on a relation holding nothing is not a fact about the
-	 * query — both cost zero and it chooses arbitrarily between them.
+	 * Every index this plan read on a populated partition of {@code table} belongs
+	 * to the family of {@code indexes} (the parent plus its {@code pg_inherits}
+	 * children), and no {@code Sort} ran — {@code Incremental Sort} is allowed since
+	 * it is bounded by the group size rather than the table. The assertion is
+	 * containment, not intersection: every index touched must be in the family, not
+	 * just one of them, or a plan walking the wrong index on some partitions would
+	 * pass.
 	 */
 	static void assertWalksIndex(JdbcClient jdbc, PlanFacts facts, String table, List<String> indexes, String what) {
 		assertReadsOnlyIndex(jdbc, facts, table, indexes, what);
@@ -169,14 +112,10 @@ final class QueryGuard {
 	}
 
 	/**
-	 * Every index this plan read on a populated partition of {@code table} belongs to
-	 * one of {@code indexes} — {@link #assertWalksIndex} without its ban on a
-	 * {@code Sort}.
-	 *
-	 * <p>For a selective lookup, which is <em>expected</em> to fetch its few matches
-	 * through a bitmap and sort them: an ordered walk would read its whole window to
-	 * find them, so for that shape the sort is the healthy plan and the index it read
-	 * is the thing to name.
+	 * Every index this plan read on a populated partition of {@code table} belongs
+	 * to one of {@code indexes} — {@link #assertWalksIndex} without the ban on a
+	 * {@code Sort}. Use this for a selective lookup, which is expected to fetch its
+	 * few matches through a bitmap and sort them rather than walk in order.
 	 */
 	static void assertReadsOnlyIndex(JdbcClient jdbc, PlanFacts facts, String table, List<String> indexes,
 			String what) {

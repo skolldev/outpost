@@ -5,8 +5,7 @@ import { appConfig } from './app/app.config';
 import { RuntimeConfig } from './app/core/runtime-config';
 
 async function bootstrap(): Promise<void> {
-  // Runtime config instead of build-time environments: the same build works in
-  // dev, prod-serve, and docker (where the entrypoint templates config.json).
+  // Fetched at runtime so one build serves dev, prod-serve, and docker.
   const cfg: RuntimeConfig = await fetch('/config.json').then((r) => r.json());
 
   Sentry.init({
@@ -15,8 +14,7 @@ async function bootstrap(): Promise<void> {
     release: cfg.release,
     sendDefaultPii: true,
     tracesSampleRate: 1.0,
-    // Propagate sentry-trace/baggage to the demo backend so browser + server
-    // transactions join into one distributed trace.
+    // Lets browser and server transactions join into one distributed trace.
     tracePropagationTargets: [new URL(cfg.apiBase).host, /^\//],
     enableLogs: true,
     integrations: [

@@ -9,18 +9,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Auto-creates the environments and releases a batch of telemetry says it came
- * from — the ingest-side half of "environments and releases are never managed
- * by hand".
- *
- * <p>Costs one round trip per <em>distinct</em> value, not per record (#107). A
- * batch is up to 50,000 rows sharing a handful of environments and one release,
- * so the per-row form spent almost all of its round trips on {@code DO NOTHING}
- * — inside the storing transaction, and for events inside the per-project
- * advisory lock.
- *
- * <p>Callers upsert inside their own storing transaction, so an environment is
- * never created for rows that roll back.
+ * Auto-creates the environments and releases a batch of telemetry came from, one round
+ * trip per distinct value rather than per record. Callers upsert inside their own
+ * storing transaction, so an environment is never created for rows that roll back.
  */
 @Component
 public class TelemetryOrigins {
@@ -48,19 +39,9 @@ public class TelemetryOrigins {
 	}
 
 	/**
-	 * Creates any environment or release in {@code batch} that does not exist yet.
-	 *
-	 * <p>A <em>blank</em> release is skipped, and the rest of the product already
-	 * agrees it is not a Release: an SDK sending {@code "release":""} reaches here
-	 * as an empty string, {@code EventStore} keeps no rollup row for it,
-	 * {@code IssueController} rejects a blank release filter, and
-	 * {@code sentry-cli}'s release endpoint refuses to create one. A row here would
-	 * be a Release the Releases page lists with an empty name and — since #130 reads
-	 * its Issue counts from that rollup — no Issues, whatever its Events say.
-	 * Environments are not held to the same rule here because only the error
-	 * pipeline defaults a blank one; the log and transaction pipelines store it as
-	 * given, and an environment the signal rows carry but the filter list omits is
-	 * the mismatch this avoids.
+	 * Creates any environment or release in {@code batch} that does not exist yet. A
+	 * blank release is skipped (see {@link Releases#isNamed}); environments have no
+	 * such rule since callers may legitimately store a blank one.
 	 */
 	public void ensure(Collection<? extends ProcessedTelemetry> batch) {
 		for (Ref environment : distinct(batch, ProcessedTelemetry::environment)) {
@@ -74,13 +55,9 @@ public class TelemetryOrigins {
 	}
 
 	/**
-	 * The distinct project-scoped values of one field, in a stable order so two
-	 * concurrent batches inserting the same pair of environments take them in the
-	 * same order and cannot deadlock on each other.
-	 *
-	 * <p>Only a release is ever null — the pipelines default an absent environment
-	 * to {@code production}, and the signal tables reject a null one anyway, so
-	 * skipping it here cannot hide a bad row.
+	 * The distinct project-scoped values of one field, in a stable order so concurrent
+	 * batches can't deadlock inserting the same environments in different orders. Only
+	 * a release is ever null — an absent environment is already defaulted to {@code production}.
 	 */
 	private static Set<Ref> distinct(Collection<? extends ProcessedTelemetry> batch,
 			Function<ProcessedTelemetry, String> field) {

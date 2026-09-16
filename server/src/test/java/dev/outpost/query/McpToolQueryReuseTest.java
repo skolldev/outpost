@@ -16,30 +16,11 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * ADR-0016's reuse rule, asserted rather than trusted: the MCP Surface's Tools
- * call the query controllers' {@code build…Query} factories, and do not carry
- * copies of their SQL.
- *
- * <p>The rule is a performance rule, not a tidiness one, and this is the test
- * that keeps it true. A copied statement looks identical on the day it is copied
- * and diverges silently afterwards — the controller gains a predicate, an index
- * is added for the shape it now sends, and the Tool goes on running the old one
- * with the guards still green because the guards {@code EXPLAIN} the factory. That
- * is #126's failure with the guard aimed at the wrong statement instead of at the
- * wrong shape.
- *
- * <p>Two kinds of assertion, because either alone is escapable.
- * {@link #noToolDeclaresSqlOfItsOwn()} says no Tool has SQL in it at all, which
- * catches a statement pasted in beside the factory call — it is the one that
- * fails when the rule is broken outright.
- *
- * <p>The equality tests catch something narrower and worth naming, because a
- * pass-through wrapper looks like it cannot fail: <b>they pin the argument
- * order</b>. {@code buildIssueQuery} takes four consecutive {@code String}
- * parameters and two consecutive {@code Instant}s, {@code buildLogQuery} takes
- * three more Strings in a row — transposing any adjacent pair compiles, runs, and
- * silently filters on the wrong column. That is the live failure mode of a
- * delegating factory, and it is what these assert against.
+ * Enforces ADR-0016: Tools must call the query controllers' {@code build…Query}
+ * factories instead of carrying copies of their SQL, so a factory change can't
+ * silently diverge from what its guard checked. The equality tests below also pin
+ * argument order, since several factories take consecutive same-typed parameters
+ * that would compile and run silently wrong if transposed.
  */
 class McpToolQueryReuseTest {
 
@@ -47,15 +28,9 @@ class McpToolQueryReuseTest {
 	private static final Path TOOLS = Path.of("src/main/java/dev/outpost/query");
 
 	/**
-	 * The Tools allowed to declare SQL, and the reason ADR-0016 says the reuse
-	 * rule is not an exemption from guarding: each asks a question no controller
-	 * asks, so the statement is written in the Tool and guarded on its own.
-	 * {@code IssueContextTool}'s Issue + Project + latest-Event join and Trace
-	 * summary are guarded by {@code IssueContextPerformanceTest};
-	 * {@code TransactionSearchTool}'s group-member listing — the UI's drill-down
-	 * aggregates a group and never lists its rows — by
-	 * {@code McpToolPerformanceTest}. Anything added to this set needs the same
-	 * treatment.
+	 * The Tools allowed to declare SQL, because each asks a question no controller
+	 * asks, so the statement is written in the Tool and guarded on its own instead.
+	 * Anything added to this set needs the same treatment.
 	 */
 	private static final Set<String> TOOLS_WITH_THEIR_OWN_SQL = Set.of("IssueContextTool.java",
 			"TransactionSearchTool.java");
@@ -71,8 +46,7 @@ class McpToolQueryReuseTest {
 				if (TOOLS_WITH_THEIR_OWN_SQL.contains(name)) {
 					continue;
 				}
-				// A bare "SELECT" in a comment would be a false positive; "SELECT … FROM"
-				// on one statement is what a pasted query looks like and prose does not.
+				// Matches "SELECT … FROM" rather than bare "SELECT" to avoid flagging prose.
 				String text = Files.readString(source, StandardCharsets.UTF_8);
 				if (text.contains("SELECT ") && text.contains(" FROM ")) {
 					offenders.add(name);
@@ -86,10 +60,7 @@ class McpToolQueryReuseTest {
 			.isEmpty();
 	}
 
-	/**
-	 * Distinct values per parameter on purpose: identical placeholders would make a
-	 * transposition invisible, which is the only thing this test exists to see.
-	 */
+	/** Distinct values per parameter: identical placeholders would make a transposition invisible. */
 	@Test
 	void findIssuesRunsTheIssueListsOwnStatement() {
 		Instant to = Instant.now();
@@ -115,10 +86,6 @@ class McpToolQueryReuseTest {
 					"shop@1.0.0", "timeout", attr, from, to, null));
 	}
 
-	/**
-	 * {@code get_issue_context}'s surrounding Log Records, which were the first
-	 * instance of this rule and are the one the slice in #178 shipped.
-	 */
 	@Test
 	void theSurroundingLogWindowRunsTheLogStreamsOwnStatement() {
 		Instant at = Instant.now();
@@ -150,12 +117,10 @@ class McpToolQueryReuseTest {
 
 	/**
 	 * The uptime read has one definition. {@code uptime_status} reuses it through
-	 * {@link dev.outpost.uptime.UptimeStatusService} rather than through a
-	 * {@code build…Query} factory in this package, which is a second mechanism and
-	 * therefore a second place the reuse rule can be broken —
-	 * {@link #noToolDeclaresSqlOfItsOwn()} scans {@code dev.outpost.query} and would
-	 * not see it. What it would look like is the controller keeping its own copy of
-	 * these statements after the service was extracted.
+	 * {@link dev.outpost.uptime.UptimeStatusService} rather than a
+	 * {@code build…Query} factory in this package, so
+	 * {@link #noToolDeclaresSqlOfItsOwn()} — which scans only {@code dev.outpost.query}
+	 * — would not catch a regression here.
 	 */
 	@Test
 	void theUptimeReadIsNotDeclaredTwice() throws IOException {
@@ -172,10 +137,7 @@ class McpToolQueryReuseTest {
 
 	/**
 	 * {@code get_event_raw} runs the event detail page's row lookup and <em>not</em>
-	 * the two neighbour probes beside it, which exist so a human can step through an
-	 * Issue's Events and are where that page's cost actually is. Asserted rather than
-	 * left in a comment because "we left the expensive part out" stops being true
-	 * quietly: adding them back is a one-line change with no visible consequence.
+	 * the two neighbour probes beside it, which is where that page's cost actually is.
 	 */
 	@Test
 	void getEventRawRunsTheEventLookupAloneAndNotThePagesNeighbourProbes() {
@@ -192,9 +154,8 @@ class McpToolQueryReuseTest {
 
 	/**
 	 * Every ranking the Tool offers resolves to one the leaderboard whitelists. The
-	 * Tool renames them — {@code p95_ms} rather than {@code p95}, because ADR-0014
-	 * will not have a duration without its unit — and a rename that stopped resolving
-	 * would throw at the statement rather than here.
+	 * Tool renames them — {@code p95_ms} rather than {@code p95}, per ADR-0014's
+	 * rule that a duration always carries its unit.
 	 */
 	@Test
 	void everyRankingTheToolOffersIsOneTheLeaderboardWhitelists() {
@@ -207,14 +168,8 @@ class McpToolQueryReuseTest {
 	/**
 	 * The enumerated parameters are declared twice over: once as the {@code enum}
 	 * whose constants the JSON Schema advertises, and once as the whitelist the
-	 * statement resolves a value through. The two are the same strings or the
-	 * schema is lying — it would advertise a ranking the statement cannot bind, or
-	 * hide one it can.
-	 *
-	 * <p>Asserted rather than derived because the enum is the wire contract and the
-	 * map is the SQL, and collapsing either into the other would make one of them
-	 * follow the other's changes silently. This test is what makes them follow
-	 * loudly.
+	 * statement resolves a value through. The two must be the same strings, or the
+	 * schema advertises a ranking the statement cannot bind, or hides one it can.
 	 */
 	@Test
 	void everyEnumeratedParameterAdvertisesExactlyTheValuesItsWhitelistAccepts() {

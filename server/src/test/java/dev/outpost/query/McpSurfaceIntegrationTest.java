@@ -30,23 +30,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * The vertical slice #178 exists to prove: a real MCP client reaches {@code /mcp}
- * over streamable HTTP with an {@code Authorization: Bearer} header, past the
- * hand-rolled {@code SecurityConfig} chain, and gets one Tool back that returns
- * an Issue's context.
- *
- * <p>The exchange runs through {@link McpTestClient}, which speaks what the
- * streamable-HTTP transport actually speaks, so these tests fail for the same
- * reasons a client would rather than for reasons only a test can hit.
- *
- * <p>What is proved here is the surface: the transport, the Scope that gates it,
- * and {@code get_issue_context}, the one Tool the slice shipped. The other seven
- * are driven by {@code McpToolsIntegrationTest} through the same client.
- *
- * <p>Telemetry is posted through the real ingest surface, as
- * {@code TraceQueryIntegrationTest} does: the Tool reads {@code event.data} the
- * pipeline wrote, and a hand-inserted row would let a projection drift away from
- * the payload shape ingestion actually produces.
+ * A real MCP client reaching {@code /mcp} over streamable HTTP with a bearer
+ * token, through {@link McpTestClient}, so failures here mirror what a real client
+ * would hit. Telemetry is posted through the real ingest surface rather than
+ * inserted by hand, so Tools read the payload shape ingestion actually produces.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -57,7 +44,6 @@ class McpSurfaceIntegrationTest {
 	private static final String TRACE_ID = "c0ffee00c0ffee00c0ffee00c0ffee00";
 	private static final String BACKEND_SPAN = "cccc000000000001";
 
-	/** The protocol revision the SDK on the classpath speaks. */
 	private static final String PROTOCOL_VERSION = "2025-06-18";
 
 	@LocalServerPort
@@ -72,10 +58,9 @@ class McpSurfaceIntegrationTest {
 	McpTestClient client;
 
 	/**
-	 * One base instant for the whole fixture, so the Log Record can be placed
+	 * One base instant for the whole fixture, so the Log Record is placed
 	 * <em>before</em> the Event deliberately rather than by winning a race with the
-	 * next HTTP round trip. The window the Tool reads ends at the Event, so "before"
-	 * is the behaviour under test, not an incidental detail.
+	 * next HTTP round trip.
 	 */
 	Instant base;
 
@@ -102,7 +87,7 @@ class McpSurfaceIntegrationTest {
 			.param(projectId)
 			.param(projectKey)
 			.update();
-		// No migration and no UI in this slice (#178): the token rows go in by hand.
+		// No token UI yet: the rows go in by hand.
 		readToken = insertToken("agent", ApiTokenService.SCOPE_TELEMETRY_READ);
 		writeOnlyToken = insertToken("ci", ApiTokenService.SCOPE_ARTIFACTS_WRITE);
 		base = Instant.now();
@@ -112,8 +97,7 @@ class McpSurfaceIntegrationTest {
 
 	/**
 	 * 401 rather than 403, and the challenge names the Scope: an MCP client reads a
-	 * 401 as "present a credential" and a 403 as final, so a token minted before
-	 * {@code telemetry:read} existed has to look fixable rather than fatal.
+	 * 401 as "present a credential" and a 403 as final.
 	 */
 	@Test
 	void mcpRefusesATokenWithoutTelemetryRead() {
@@ -131,9 +115,8 @@ class McpSurfaceIntegrationTest {
 
 	/**
 	 * The bearer surfaces stay separate: widening the filter to {@code /mcp} must not
-	 * have widened what a Scope buys. 403 rather than the 401 {@code /mcp} answers —
-	 * sentry-cli's surface keeps the status it has always returned, and
-	 * {@code SecurityConfig.denyAccess} says why the two differ.
+	 * have widened what a Scope buys, so this surface still answers 403 rather than
+	 * the 401 {@code /mcp} does.
 	 */
 	@Test
 	void telemetryReadDoesNotOpenTheUploadSurface() {
@@ -148,19 +131,11 @@ class McpSurfaceIntegrationTest {
 
 	// -------------------------------------------------------------------- tools
 
-	/**
-	 * The whole Tool set, listed in one place so adding a ninth is a decision
-	 * somebody makes rather than a side effect of adding a bean. #177 sets the bar
-	 * for a ninth: an agent would otherwise need three calls and still get it wrong.
-	 */
+	/** The whole Tool set, listed in one place so adding a tenth is a deliberate decision rather than a side effect of adding a bean. */
 	private static final List<String> TOOLS = List.of("list_projects", "find_issues", "get_issue_context",
 			"search_logs", "get_trace", "get_event_raw", "uptime_status", "performance_overview",
 			"find_transactions");
 
-	/**
-	 * What {@code initialize} answers, which is the first thing a client reads and
-	 * the only place the server names itself.
-	 */
 	@Test
 	void theHandshakeNamesTheServerAndAdvertisesToolsOnly() {
 		ResponseEntity<String> response = post(initialize(), readToken);
@@ -170,8 +145,7 @@ class McpSurfaceIntegrationTest {
 		JsonNode result = client.unwrap(response.getBody()).path("result");
 		assertThat(result.path("serverInfo").path("name").asString()).isEqualTo("outpost");
 		assertThat(result.path("capabilities").path("tools")).isNotEmpty();
-		// Tools only in v1, as application.yaml pins. Logging rides along with the
-		// transport and is not a surface this server offers anything through.
+		// Tools only in v1, as application.yaml pins.
 		assertThat(result.path("capabilities").propertyNames())
 			.doesNotContain("resources", "prompts", "completions");
 	}
@@ -184,8 +158,7 @@ class McpSurfaceIntegrationTest {
 
 		assertThat(tools.valueStream().map(tool -> tool.path("name").asString()).toList())
 			.containsExactlyInAnyOrderElementsOf(TOOLS);
-		// Read-only and non-destructive is the whole v1 posture: a client that gates
-		// writes behind a confirmation must not gate any of these.
+		// Every Tool must be read-only and non-destructive, so write-confirmation gating doesn't apply.
 		assertThat(tools.valueStream().toList()).allSatisfy(tool -> {
 			assertThat(tool.path("annotations").path("readOnlyHint").asBoolean())
 				.as("%s is not annotated read-only", tool.path("name").asString())
@@ -198,9 +171,8 @@ class McpSurfaceIntegrationTest {
 
 	/**
 	 * The enumerated parameters reach the caller as a schema {@code enum}, not as
-	 * prose inside a description. It is the difference between a value a client can
-	 * validate before dispatch and one only this server can reject after it, and it
-	 * is the whole reason these parameters are declared as types.
+	 * prose inside a description, so a client can validate a value before dispatch
+	 * rather than only have it rejected after.
 	 */
 	@Test
 	void enumeratedParametersAdvertiseTheirValuesInTheSchema() {
@@ -271,14 +243,13 @@ class McpSurfaceIntegrationTest {
 		assertThat(context.path("latest_event").path("trace_id").asString()).isEqualTo(TRACE_ID);
 		assertThat(context.path("exception").path("type").asString()).isEqualTo("IllegalStateException");
 		assertThat(context.path("exception").path("frames")).isNotEmpty();
-		// Frames arrive newest-first: the throw site is what a reader starts from.
+		// Frames arrive newest-first.
 		assertThat(context.path("exception").path("frames").get(0).path("function").asString())
 			.isEqualTo("loadCustomer");
 		assertThat(context.path("breadcrumbs")).singleElement()
 			.satisfies(crumb -> assertThat(crumb.path("message").asString()).isEqualTo("POST /api/checkout"));
 
-		// The Log Record was written before the Event, which is the half of the window
-		// the Tool keeps — see IssueContextTool.Window.
+		// The Log Record was written before the Event; see IssueContextTool.Window for which half it keeps.
 		assertThat(context.path("log_records")).isNotEmpty();
 		assertThat(context.path("log_records").get(0).path("body").asString()).isEqualTo("handling checkout");
 		assertThat(context.path("log_window").path("minutes_before_event").asInt())
@@ -291,11 +262,7 @@ class McpSurfaceIntegrationTest {
 		assertThat(context.path("trace").path("error_events_received").asLong()).isEqualTo(1);
 	}
 
-	/**
-	 * The ADR-0014 disclosures, which are the reason this Tool is worth having over
-	 * three thinner ones: the raw payload is not returned, and what was left out is
-	 * named rather than left to be inferred.
-	 */
+	/** The ADR-0014 disclosures: the raw payload is not returned, and what was left out is named rather than left to be inferred. */
 	@Test
 	void theRawEventPayloadIsNotReturnedAndTheOmissionIsNamed() {
 		postEnvelope(errorEnvelope());
@@ -314,9 +281,8 @@ class McpSurfaceIntegrationTest {
 	}
 
 	/**
-	 * The failure mode ADR-0014 names outright: handing a model a minified frame
-	 * without saying it is minified. The status rides on the Event and the warning
-	 * rides in a caveat, so neither truncation nor re-summarization loses it.
+	 * The status rides on the Event and the warning rides in a caveat, so neither
+	 * truncation nor re-summarization loses the fact that a stack is unsymbolicated.
 	 */
 	@Test
 	void anUnsymbolicatedStackIsDisclosedOnTheEventAndInACaveat() {
@@ -399,9 +365,8 @@ class McpSurfaceIntegrationTest {
 	}
 
 	/**
-	 * The same SHA-256 {@code ApiTokenService} hashes with. Duplicated rather than
-	 * called because the point of the fixture is a row inserted by hand, exactly as
-	 * an operator does until the token UI lands in the next slice.
+	 * The same SHA-256 {@code ApiTokenService} hashes with, duplicated rather than
+	 * called because the point of the fixture is a row inserted by hand.
 	 */
 	private static String sha256(String value) {
 		try {
@@ -443,7 +408,6 @@ class McpSurfaceIntegrationTest {
 		return envelope("transaction", txn);
 	}
 
-	/** Two seconds before the Event: a Log Record leading up to the failure. */
 	private String logEnvelope() {
 		String payload = """
 				{"items":[{"timestamp":%s,"trace_id":"%s","span_id":"%s","level":"info","severity_number":9,\
@@ -468,7 +432,6 @@ class McpSurfaceIntegrationTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 	}
 
-	/** Ingestion is asynchronous; wait for the pipeline to open the Issue. */
 	private long awaitIssue() {
 		Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
 		while (Instant.now().isBefore(deadline)) {

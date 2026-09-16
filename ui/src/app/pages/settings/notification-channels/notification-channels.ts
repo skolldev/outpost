@@ -54,11 +54,10 @@ export class NotificationChannelsSettings {
 
   readonly editingChannelId = signal<number | null>(null);
   readonly confirmDeleteChannelId = signal<number | null>(null);
-  // Per-channel test-send outcome, shown inline until the next test or edit.
-  // 'pending' while the request is in flight.
+  // Per-channel test outcome, cleared on the next test or edit; 'pending' while in flight.
   readonly channelTestResult = signal<Record<number, NotificationTestResult | 'pending'>>({});
 
-  // The channel whose delivery history is expanded; the rows load reactively.
+  // Channel whose delivery history is expanded; historyResource below reacts to it.
   readonly expandedChannelId = signal<number | null>(null);
   private readonly historyResource = httpResource<NotificationHistoryEntry[]>(
     () => {
@@ -76,12 +75,7 @@ export class NotificationChannelsSettings {
     { value: 'incident_resolved', label: 'Incident resolved' },
   ];
 
-  // Typed form model. Triggers is a fixed boolean-per-trigger group and the
-  // project scope a dynamic id→boolean map — both bind checkboxes via formField
-  // and normalize to the DTO's string[]/number[] at submit. Environments stays a
-  // CSV string for its free-text input. `enabled` has no control: it round-trips
-  // the per-row list toggle so a save doesn't revert it. New channels start
-  // enabled.
+  // `enabled` has no form control: it round-trips the per-row list toggle so a save doesn't revert it.
   private readonly model = signal({
     name: '',
     type: 'teams' as NotificationChannelType,
@@ -102,8 +96,7 @@ export class NotificationChannelsSettings {
       required(path.name, { message: 'Name is required.' });
       required(path.url, { message: 'Webhook URL is required.' });
       pattern(path.url, /^https?:\/\/\S+$/i, { message: 'Enter a valid http(s) URL.' });
-      // At least one trigger must be selected. A tree validator on the group
-      // keeps the error attached to the fieldset rather than to any one checkbox.
+      // Requires at least one trigger; the tree validator attaches the error to the fieldset, not a checkbox.
       validateTree(path.triggers, ({ value }) => {
         const t = value();
         return t.new_issue || t.incident_started || t.incident_resolved
@@ -136,10 +129,7 @@ export class NotificationChannelsSettings {
   );
 
   constructor() {
-    // Projects load asynchronously; give every rendered project checkbox a
-    // backing field (defaulting to unchecked) without disturbing existing
-    // selections — including ids for since-deleted projects that editChannel
-    // scoped but which have no checkbox to render.
+    // Adds a backing field (default unchecked) for each newly-rendered project without disturbing existing selections, including since-deleted projects that have no checkbox.
     effect(() => {
       const projects = this.projectsStore.projects();
       const current = this.model().projectSelected;
@@ -153,11 +143,9 @@ export class NotificationChannelsSettings {
     });
   }
 
-  /** Resolves the type select's trigger label from the selected value. */
   readonly typeLabel = (value: string): string =>
     this.channelTypeLabel(value as NotificationChannelType);
 
-  /** A project-scope map with every currently-rendered project unchecked. */
   private blankProjectSelection(): Record<string, boolean> {
     const selection: Record<string, boolean> = {};
     for (const project of this.projectsStore.projects()) {
@@ -177,9 +165,7 @@ export class NotificationChannelsSettings {
       triggers: this.channelTriggerOptions
         .map((option) => option.value)
         .filter((value) => m.triggers[value]),
-      // Derive from the selection map, not the loaded project list, so ids
-      // scoped to a since-deleted project (still selected, but with no checkbox
-      // to render) survive a save instead of collapsing the scope to "all".
+      // Reads the selection map, not the loaded project list, so a since-deleted project's scope survives instead of collapsing to "all".
       project_filter: Object.entries(m.projectSelected)
         .filter(([, selected]) => selected)
         .map(([id]) => Number(id)),
@@ -225,9 +211,7 @@ export class NotificationChannelsSettings {
     for (const option of this.channelTriggerOptions) {
       triggers[option.value] = channel.triggers.includes(option.value);
     }
-    // Seed every current project unchecked, then check the channel's scope. Ids
-    // for since-deleted projects have no checkbox but are kept so a save
-    // preserves them (channelBody reads the whole map).
+    // Unchecked for every current project, then checked for the channel's scope; since-deleted-project ids are kept since channelBody reads the whole map.
     const projectSelected = this.blankProjectSelection();
     for (const id of channel.project_filter) projectSelected[String(id)] = true;
     this.channelForm().reset({
@@ -258,8 +242,7 @@ export class NotificationChannelsSettings {
           environment_filter: channel.environment_filter,
         }),
       );
-      // If this channel is open in the edit form, keep the form's (invisible)
-      // enabled flag in sync so a later save doesn't revert the toggle.
+      // Keeps the form's enabled flag in sync if this channel is open for edit, so a later save doesn't revert the toggle.
       if (this.editingChannelId() === channel.id) {
         this.model.update((m) => ({ ...m, enabled: !channel.enabled }));
       }
@@ -290,9 +273,8 @@ export class NotificationChannelsSettings {
   }
 
   /**
-   * Fire a real test Notification through the full pipeline and show the outcome
-   * inline. On success we also reload the list (its last-outcome column moves)
-   * and, if the channel's history is open, refresh it so the new row appears.
+   * Sends a real test notification through the full pipeline and shows the
+   * outcome inline; on success also reloads the list and, if open, the history.
    */
   async testChannel(channel: NotificationChannel): Promise<void> {
     this.channelTestResult.update((map) => ({ ...map, [channel.id]: 'pending' }));
@@ -325,7 +307,7 @@ export class NotificationChannelsSettings {
     return trigger === 'test' ? 'Test' : this.triggerLabel(trigger);
   }
 
-  /** A CSS color token for a delivery status, matching the status stripes elsewhere. */
+  /** CSS color token for a delivery status. */
   deliveryStatusColor(status: NotificationDeliveryStatus | null): string {
     switch (status) {
       case 'sent':

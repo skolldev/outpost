@@ -24,7 +24,7 @@ import org.springframework.web.client.RestTemplate;
 /**
  * Outpost User administration: an Admin can delete another account, but not
  * their own and not the last remaining Admin. See ADR-0012 for what deletion
- * deliberately leaves alone (the deleted user's Session).
+ * leaves untouched (the deleted user's Session).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -71,11 +71,11 @@ class UserAdminIntegrationTest {
 	}
 
 	/**
-	 * Two Admins holding live Sessions can delete each other in turn — the second
-	 * deletion is the one that would leave the Installation with no Admin, and no
-	 * endpoint can promote anyone back. Deleting the second Admin's account leaves
-	 * their Session working (ADR-0012), which is exactly how a request arrives
-	 * asking to delete the last Admin without being self-deletion.
+	 * Two Admins can delete each other in turn; the second deletion is the one that
+	 * would leave the Installation with no Admin, and no endpoint can promote anyone
+	 * back. Deleting the second Admin's account leaves their Session working
+	 * (ADR-0012), so a request to delete the last Admin can arrive without being
+	 * self-deletion.
 	 */
 	@Test
 	void rejectsDeletingTheLastAdmin() {

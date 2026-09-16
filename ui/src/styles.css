@@ -14,8 +14,6 @@
 
   --radius: 0.5rem;
 
-  /* PostHog-inspired: warm cream canvas, white cards, royal-blue primary,
-     orange-red destructive, warm neutral grays. */
   --background: oklch(0.965 0.008 100);
   --foreground: oklch(0.185 0.01 65);
   --card: oklch(1 0 0);
@@ -67,9 +65,7 @@
   --project-7: oklch(0.53 0.17 310);
   --project-8: oklch(0.55 0.18 350);
 
-  /* Duration trend series. Two hues far enough apart to separate where the lines
-     cross, and both readable against --card: the typical case is the calmer of
-     the two, the tail the warmer, so a rising tail reads as the alarming one. */
+  /* p50 uses the calmer hue, p95 the warmer one, so a rising tail reads as alarming. */
   --duration-p50: oklch(0.55 0.14 225);
   --duration-p95: oklch(0.58 0.19 35);
 }

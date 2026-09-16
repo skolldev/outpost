@@ -11,29 +11,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * The MCP Surface's {@code get_trace} Tool: one Trace with the Transactions,
- * Spans, error Events and Log Records that share its Trace ID.
- *
- * <p>The four statements are {@link TraceController}'s own, unchanged — the
- * cross-project fan-out the waterfall is drawn from, reused per ADR-0016. None
- * of them carries a time predicate, because a Trace ID is not a time; that is a
- * property of the question rather than a defect, and it is why this Tool takes
- * no window while every other list Tool does.
- *
- * <p><b>The payload is capped and the caps are not summaries.</b> A busy Trace
- * holds thousands of Spans, and a Tool result is read into a context window. Each
- * list is cut at the constants below, <em>chronologically</em> — the earliest
- * rows are kept, because they are the ones nearest the root and the ones that
- * explain the shape of everything after them. What was cut is not hinted at: the
- * {@code …_received} counts beside each list are the totals before truncation,
- * so a caller can always tell how much of the Trace it is holding.
- *
- * <p>Span and Transaction {@code data} — the attribute bags an SDK attaches, where
- * a database Span keeps its statement — are not returned. The rule that only
- * {@code get_event_raw} returns a raw payload whole is about the caller knowing
- * when it is reading a projection, and it applies to these bags for the same
- * reason it applies to {@code event.data}. The omission is named in
- * {@code caveats} rather than left to be noticed.
+ * The MCP Surface's {@code get_trace} Tool: the Transactions, Spans, error
+ * Events and Log Records sharing one Trace ID, across all Projects. Each list
+ * is capped, keeping the earliest (root-nearest) rows rather than summarizing,
+ * and Span/Transaction attribute payloads are omitted.
  */
 @Component
 public class TraceTool {
@@ -63,27 +44,16 @@ public class TraceTool {
 	}
 
 	/**
-	 * One Log Record correlated with the Trace.
-	 *
-	 * <p>No {@code id}, for the reason {@code search_logs} omits it: a Log Record's
-	 * id is not a parameter of any Tool on this surface, so it is a UUID per record
-	 * the caller can only look at. An {@link ErrorEventPayload}'s id is kept because
-	 * {@code get_event_raw} spends it, and that is the distinction — an identifier
-	 * earns its bytes by leading somewhere.
-	 *
-	 * <p>No {@code trace_id} either: every row here has the Trace's, which the
-	 * result states once.
+	 * One Log Record correlated with the Trace. No {@code id} (unlike
+	 * {@link ErrorEventPayload}, whose id {@code get_event_raw} takes) and no
+	 * {@code trace_id}, since every row here shares the one the result states once.
 	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record LogRecordPayload(String timestamp, @Nullable String project_slug, String environment, String level,
 			String body, @Nullable String span_id) {
 	}
 
-	/**
-	 * Rows kept per list, counted from the start of the Trace. A distributed Trace
-	 * legitimately holds thousands of Spans; these are the widths at which the
-	 * result still reads as a Trace rather than as a transcript of one.
-	 */
+	/** Rows kept per list, counted from the start of the Trace. */
 	static final int MAX_TRANSACTIONS = 100;
 
 	static final int MAX_SPANS = 200;
@@ -158,28 +128,20 @@ public class TraceTool {
 
 		List<String> caveats = new ArrayList<>();
 		if (transactions.isEmpty()) {
-			// The same distinction the trace detail endpoint draws: a Trace is only fully
-			// known once a Transaction has arrived for it, and errors and logs may name one
-			// whose Transactions were never sent or have aged out.
 			caveats.add("No Transaction has arrived for this Trace, so it has no root and no duration. The Events "
 					+ "and Log Records below reference the Trace ID without one having been recorded.");
 		}
 		caveats.add("Transaction and Span attribute payloads are not returned by this Tool. Only the columns above "
 				+ "are projected; a Span's own attributes, including any recorded statement or URL, are not here.");
 
-		// Sizes read before the caps are applied: the counts beside each list are what
-		// the Trace holds, and the lists are what fits.
+		// Counts are taken before capping, so *_received reflects the full Trace.
 		return new TraceResult(traceId, transactions.size(), spans.size(), errors.size(), logs.size(),
 				cap(transactions, MAX_TRANSACTIONS, "Transactions", caveats),
 				cap(spans, MAX_SPANS, "Spans", caveats), cap(errors, MAX_ERROR_EVENTS, "error Events", caveats),
 				cap(logs, MAX_LOG_RECORDS, "Log Records", caveats), caveats);
 	}
 
-	/**
-	 * Keeps the first {@code limit} rows and says so. Chronological order makes the
-	 * kept half the one nearest the root of the Trace, which is the half the rest is
-	 * only interpretable against.
-	 */
+	/** Keeps the first {@code limit} rows (chronological order), adding a caveat when any were cut. */
 	private static <T> List<T> cap(List<T> rows, int limit, String what, List<String> caveats) {
 		if (rows.size() <= limit) {
 			return rows;

@@ -7,8 +7,7 @@ import org.junit.jupiter.api.Test;
 
 class UptimeSchedulerTest {
 
-	// A tick one hour out never fires during the test, so the null collaborators
-	// (jdbc/prober/checkService) are never touched by the scheduled body.
+	// A tick one hour out never fires during the test, so the null jdbc/prober/checkService are never touched.
 	private UptimeScheduler scheduler() {
 		return new UptimeScheduler(null, null, null, 3_600_000L);
 	}
@@ -34,8 +33,7 @@ class UptimeSchedulerTest {
 	void repeatedStartIsIdempotent() {
 		UptimeScheduler scheduler = scheduler();
 		scheduler.start();
-		// A second start() while running must be a no-op — no orphaned executor,
-		// no duplicate tick schedule.
+		// A second start() while running must be a no-op: no orphaned executor, no duplicate tick schedule.
 		scheduler.start();
 		assertThat(scheduler.isRunning()).isTrue();
 		scheduler.stop();

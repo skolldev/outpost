@@ -6,9 +6,8 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Formatting helpers shared across {@link NotificationFormatter} implementations.
- * Pure presentation with no contract semantics. Package-private, so it stays an
- * implementation detail of the notifications module.
+ * Formatting helpers shared across {@link NotificationFormatter} implementations. Pure
+ * presentation with no contract semantics; package-private so it stays an implementation detail.
  */
 final class NotificationText {
 

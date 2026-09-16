@@ -8,30 +8,19 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * A Postgres tuned for the retrieval benchmark, replacing the defaults
- * {@code TestcontainersConfiguration} leaves alone.
- *
- * <p>Explicit beats accidental. Postgres ships with {@code shared_buffers=128MB},
- * and running a multi-gigabyte dataset against that means every query is cold
- * I/O — which is a real operating condition, and a perfectly legitimate thing to
- * measure, but only if it was chosen. Stumbled into, it silently turns every
- * latency number in the report into a statement about disk rather than about the
- * query. The settings here are read back with {@code SHOW} and printed as report
- * conditions, so what is quoted is what the server actually ran with, not what
- * this file asked for.
- *
- * <p>{@code synchronous_commit=off} and the raised {@code maintenance_work_mem}
- * are for the seed, not the measurement: they cut minutes off loading millions of
- * rows and cannot affect a read-only benchmark.
+ * {@code TestcontainersConfiguration} leaves alone (notably Postgres's own
+ * {@code shared_buffers=128MB}, which would make a multi-gigabyte dataset read
+ * as cold I/O rather than the tuned condition being measured).
+ * {@code synchronous_commit=off} and the raised {@code maintenance_work_mem} are
+ * for the seed only and don't affect the read-only benchmark.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class BenchContainerConfiguration {
 
 	/**
-	 * Docker's 64 MB default for {@code /dev/shm} is enough for the guards and not
-	 * for this: a parallel hash or sort over millions of rows allocates its shared
-	 * segment there, and running out surfaces as {@code could not resize shared
-	 * memory segment}, which reads like a Postgres bug rather than a container
-	 * setting.
+	 * Docker's 64 MB default for {@code /dev/shm} is too small for a parallel hash
+	 * or sort over millions of rows; running out surfaces as {@code could not resize
+	 * shared memory segment}.
 	 */
 	private static final long SHARED_MEMORY_BYTES = 2L * 1024 * 1024 * 1024;
 

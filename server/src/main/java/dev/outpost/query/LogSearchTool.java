@@ -19,59 +19,24 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * The MCP Surface's {@code search_logs} Tool: the Log Record stream, filtered
- * the way the Logs page filters it and paged by the same keyset.
- *
- * <p>The statement is {@link LogController#buildLogQuery} — the reuse ADR-0016
- * asks for, which brings V11's ordering index and
- * {@code LogQueryPerformanceTest}'s guards with it. The window default in
- * {@link ToolSupport} is what keeps the reuse worth having: the log list treats
- * {@code from} as optional because a human always has a range picker set, and an
- * unbounded stream ordered by timestamp is the one shape here that reads every
- * partition ever created.
- *
- * <p><b>The statement is the log page's; the payload is not.</b> Reuse stops at
- * the SQL, and it stops there because the two readers want opposite things. A
- * human scrolling the Logs page wants every row the stream produced, because
- * collapsing or eliding any of them hides the stream they came to read. An agent
- * asking what is breaking is spending a context window per call, and the
- * difference between the two is the difference between a page of a hundred
- * near-identical rows being the answer and being the reason there is no room
- * left for one. So this Tool takes a {@link #DEFAULT_LIMIT} well under the page
- * size, drops the fields of a Log Record that no Tool on this surface can spend,
- * hoists into {@link Common} the ones every returned record agreed on, and
- * withholds Sentry-prefixed attributes unless the caller explicitly filters on
- * one.
- *
- * <p>Two truncations, both disclosed rather than silent. A Log Record's
- * {@code body} is capped at {@link #MAX_BODY_CHARS} because a body is frequently
- * a stack trace and a hundred of them is a context window; its
- * {@code attributes} are capped at {@link #MAX_ATTRIBUTES} keys for the same
- * reason. Neither is summarized — the kept part is the received text verbatim,
- * and the caveat says how much was dropped.
+ * The MCP Surface's {@code search_logs} Tool: the Log Record stream, filtered the way the Logs
+ * page filters it and paged by the same keyset ({@link LogController#buildLogQuery}, ADR-0016).
+ * The payload trims what the page returns — a lower default limit, dropped fields, Sentry-
+ * prefixed attributes withheld unless filtered on — since an agent spends a context window per
+ * call where a human just scrolls.
  */
 @Component
 public class LogSearchTool {
 
-	// next_cursor is absent rather than null when the page is the last one: the MCP
-	// transport validates results against the advertised output schema, and a null
-	// where a string is declared fails it. `common` is absent by the same mechanism
-	// when the records agreed on nothing.
+	// next_cursor and common must be absent, not null, when unset — schema validation rejects null where a value is declared.
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record LogSearchResult(ToolSupport.Window window, @Nullable Common common,
 			List<LogRecordPayload> log_records, @Nullable String next_cursor, List<String> caveats) {
 	}
 
 	/**
-	 * The fields every returned Log Record carried the same value for, reported
-	 * once instead of on each of them.
-	 *
-	 * <p>A structural fact stated as a field rather than as a caveat, for
-	 * ADR-0014's reason: the alternative is a sentence at the bottom of an array
-	 * telling the reader to go and merge two objects, which is both longer than the
-	 * repetition it replaces and the first thing a re-summarization drops. A field
-	 * named {@code common} that holds exactly the values the records omit needs no
-	 * sentence.
+	 * The fields every returned Log Record carried the same value for, reported once instead of on
+	 * each of them (ADR-0014).
 	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record Common(@Nullable String project_slug, @Nullable String environment, @Nullable String release) {
@@ -82,20 +47,9 @@ public class LogSearchTool {
 	}
 
 	/**
-	 * One Log Record.
-	 *
-	 * <p>No {@code id}: a Log Record's id is not a parameter of any Tool on this
-	 * surface — unlike an Event id, which {@code get_event_raw} spends — so
-	 * returning it costs a UUID per record for something the caller can only look
-	 * at. {@code trace_id} is the identifier that leads somewhere from here, via
-	 * {@code get_trace}.
-	 *
-	 * <p>No {@code severity_number} either: it is the numeric spelling of
-	 * {@code level}, and {@code level} is the spelling the filter parameter and the
-	 * caveats speak.
-	 *
-	 * <p>{@code project_slug}, {@code environment} and {@code release} are absent
-	 * on the record when every returned record shared them — see {@link Common}.
+	 * One Log Record. No {@code id} (no Tool here takes one — follow {@code trace_id} via {@code
+	 * get_trace} instead), and {@code project_slug}, {@code environment} and {@code release} are
+	 * omitted when they match {@link Common}.
 	 */
 	@JsonInclude(JsonInclude.Include.NON_NULL)
 	public record LogRecordPayload(String timestamp, @Nullable String project_slug, @Nullable String environment,
@@ -110,11 +64,8 @@ public class LogSearchTool {
 	static final int MAX_ATTRIBUTES = 25;
 
 	/**
-	 * Log Records returned when the caller names no limit. Far below the page size
-	 * the statement fetches, because these are the fattest rows on the surface — a
-	 * body alone runs to {@link #MAX_BODY_CHARS} — and a caller that wants more has
-	 * {@code next_cursor} to say so. The statement reads the same index either way,
-	 * so the limit trims the payload, not the work.
+	 * Log Records returned when the caller names no limit — far below the page size fetched, since
+	 * a body alone can run to {@link #MAX_BODY_CHARS} chars.
 	 */
 	static final int DEFAULT_LIMIT = 25;
 
@@ -122,12 +73,9 @@ public class LogSearchTool {
 	static final int MAX_LIMIT = LogController.PAGE_SIZE;
 
 	/**
-	 * Sentry-prefixed attributes withheld from the payload unless the caller names
-	 * one in {@code attribute_filters}.
-	 *
-	 * <p>Withheld from the <em>payload</em> only — {@code attribute_filters} still
-	 * matches on them, so a caller that genuinely wants to slice by SDK version
-	 * can, and a key it named is returned even when it appears here.
+	 * Sentry-prefixed attributes withheld from the payload unless named in {@code
+	 * attribute_filters}. Withheld from the payload only — filtering still matches on them, so a
+	 * named key is returned even though it starts with this prefix.
 	 */
 	private static final String WITHHELD_ATTRIBUTE_PREFIX = "sentry";
 
@@ -182,8 +130,7 @@ public class LogSearchTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
-		// Refused rather than bound, like an unknown slug: an exact-match filter for a
-		// value nothing carries returns an empty result that reads as "nothing matched".
+		// Refused rather than silently bound — an unknown value would otherwise return an empty result read as "nothing matched".
 		support.requireKnownEnvironments(environments);
 		support.requireKnownRelease(release);
 		ToolSupport.Window window = ToolSupport.window(from, to, caveats);
@@ -213,8 +160,7 @@ public class LogSearchTool {
 					+ "limit to at most " + MAX_LIMIT + ".");
 		}
 
-		// Hoisted only when there are records to agree with each other: splitting a
-		// single record across two objects saves nothing and costs the reader a merge.
+		// Only hoisted with 2+ rows — a single record split across two objects saves nothing and costs a merge.
 		Common common = page.rows().size() < 2 ? null
 				: new Common(constant(page.rows(), row -> projects.slug((Long) row.get("project_id"))),
 						constant(page.rows(), row -> (String) row.get("environment")),
@@ -257,9 +203,7 @@ public class LogSearchTool {
 			caveats.add("Sentry-prefixed attributes were withheld. Name one in attribute_filters to return it.");
 		}
 		if (records.isEmpty()) {
-			// Levels are the one filter that can be wrong without being refused —
-			// they are free text an SDK chose, so there is no catalogue to validate
-			// against, and 'warning' for 'warn' silently matches nothing.
+			// Levels aren't validated like environment/release — they're free text an SDK chose, so 'warning' vs 'warn' silently matches nothing.
 			caveats.add("No Log Record matched between " + window.from() + " and " + window.to() + "."
 					+ (levels == null || levels.isEmpty() ? ""
 							: " Levels are matched exactly against the text the SDK sent — 'warn' and 'warning' are "
@@ -270,10 +214,8 @@ public class LogSearchTool {
 	}
 
 	/**
-	 * The log stream as this Tool binds it: the controller's own factory, so the
-	 * plan and its guards are the log page's own. Named here so {@code QueryPlans}
-	 * can {@code EXPLAIN} the Tool's shape and {@code McpToolQueryReuseTest} can
-	 * assert it is not a copy.
+	 * The log stream, via the controller's own factory — kept as a named wrapper so {@code
+	 * McpToolQueryReuseTest} can assert this isn't a copy of the SQL.
 	 */
 	static SearchQuery buildLogSearchQuery(List<Long> project, List<String> environment, List<String> level,
 			String traceId, String release, String query, List<String> attr, Instant from, Instant to, String cursor) {
@@ -297,9 +239,8 @@ public class LogSearchTool {
 	}
 
 	/**
-	 * The attribute keys the caller filtered on, which are returned whatever else
-	 * is withheld: a filter the caller cannot see the result of reads as an
-	 * unfiltered one.
+	 * The attribute keys the caller filtered on; always returned even when otherwise withheld,
+	 * since a filter the caller can't see is not useful.
 	 */
 	private static Set<String> requestedAttributes(@Nullable List<String> filters) {
 		if (filters == null || filters.isEmpty()) {
@@ -321,11 +262,8 @@ public class LogSearchTool {
 	}
 
 	/**
-	 * Attributes flattened to strings, in the order they were stored, less the
-	 * Sentry-prefixed keys the caller did not ask for. Values are rendered
-	 * rather than typed because an Attribute holds whatever the SDK put there — a
-	 * number, a bool, an object — and a typed union would cost the caller a branch
-	 * on every read for information it can see in the text.
+	 * Attributes flattened to strings, in stored order, less Sentry-prefixed keys not asked for.
+	 * Rendered as text rather than typed, since an attribute may hold any JSON type.
 	 */
 	private static Attributes attributes(@Nullable JsonNode node, Set<String> requested) {
 		if (node == null || !node.isObject() || node.isEmpty()) {

@@ -21,10 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Uptime monitor management. Mutations are admin-only; reads are open to any
- * session user and are delegated to {@link UptimeStatusService}, which the MCP
- * Surface's {@code uptime_status} Tool reads through as well. The overview is a
- * fixed 90-day UTC window by design (status-page semantics, independent of the
- * global filters) — see that service for why the window is not a parameter.
+ * session user and delegate to {@link UptimeStatusService}, which the MCP
+ * Surface's {@code uptime_status} Tool also reads through.
  */
 @RestController
 @RequestMapping("/api/internal/uptime")
@@ -99,8 +97,7 @@ public class UptimeController {
 		if (!projectExists) {
 			return ResponseEntity.badRequest().body(Map.of("detail", "project does not exist"));
 		}
-		// Any edit restarts an in-progress failure streak and re-checks
-		// immediately — the simplest coherent behavior after a config change.
+		// Any edit restarts an in-progress failure streak and re-checks immediately.
 		int updated = jdbc.sql("""
 				UPDATE uptime_monitor SET project_id = ?, environment = ?, url = ?, interval_seconds = ?, timeout_seconds = ?,
 					consecutive_failures = 0, next_check_at = now()

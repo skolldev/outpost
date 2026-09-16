@@ -24,18 +24,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Persists processed error events: environment/release auto-upsert,
- * issue upsert with regression handling, per-environment stats, then a JDBC
- * batch insert of the event rows.
- *
- * <p>Crosses the publisher seam (#41) when an issue upsert inserts — a
- * fingerprint's first Event — but only after the storing transaction commits, so
- * a notification is never sent for an Issue that rolled back. Repeats and
- * regressions do not publish.
- *
- * <p>Redelivered events are dropped before anything is written (#95): an SDK
- * that retries a failed request sends the same {@code event_id} again, and the
- * aggregates must count what was stored, not what arrived.
+ * Persists processed error events: environment/release auto-upsert, issue
+ * upsert with regression handling, per-environment stats, then a JDBC batch
+ * insert. New-issue notifications publish only after the transaction commits;
+ * redelivered events (same {@code event_id}) are deduped before writing.
  */
 @Component
 public class EventStore {
@@ -49,9 +41,8 @@ public class EventStore {
 	private record EventKey(UUID id, Instant timestamp) {
 	}
 
-	// xmax = 0 marks a row this statement just inserted; a row updated via ON
-	// CONFLICT has a non-zero xmax. This distinguishes a fingerprint's first
-	// Event (a new Issue → notify) from a repeat or a regression (never notify).
+	// xmax = 0 marks a freshly inserted row (new issue → notify), vs an ON
+	// CONFLICT update (repeat/regression → no notify).
 	private static final String ISSUE_UPSERT = """
 			INSERT INTO issue (project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count)
 			VALUES (?, ?, ?, ?, ?, 'unresolved', ?, ?, 1)
@@ -73,10 +64,9 @@ public class EventStore {
 			ON CONFLICT DO NOTHING
 			""";
 
-	// project_id is denormalized from the Issue so the Releases page can count a
-	// Project's rows without joining `issue` once per row (#130). It is written on
-	// insert only: an Issue never changes Project, and letting the update touch it
-	// would make a wrong value self-healing rather than impossible.
+	// project_id is denormalized from the Issue so the Releases page can count
+	// a Project's rows without joining `issue`. Set on insert only — an Issue
+	// never changes Project, so the update deliberately leaves it alone.
 	private static final String RELEASE_STATS_UPSERT = """
 			INSERT INTO issue_release_stats (issue_id, project_id, release, event_count, last_seen)
 			VALUES (?, ?, ?, 1, ?)
@@ -85,9 +75,8 @@ public class EventStore {
 			    last_seen = GREATEST(issue_release_stats.last_seen, EXCLUDED.last_seen)
 			""";
 
-	// Which of the batch's events are already stored, probed on exactly the key
-	// EVENT_INSERT conflicts on — so "found here" and "would not insert there" are
-	// the same question, and each probe prunes to the one partition it can be in.
+	// Probes on exactly the key EVENT_INSERT conflicts on, so "found here" means
+	// "would not insert there"; each probe also prunes to a single partition.
 	private static final String STORED_EVENTS = """
 			SELECT e.id, e."timestamp"
 			FROM event e
@@ -137,11 +126,9 @@ public class EventStore {
 		PoisonIsolation.run(log, batch, events -> {
 			List<NotificationOccurrence> newIssues = new ArrayList<>();
 			transaction.executeWithoutResult(status -> storeAll(events, newIssues));
-			// Published after commit, so a rolled-back Issue never notifies — which
-			// is also why this sits inside the attempt: a failed try leaves its
-			// half-filled list behind with it. The seam is fire-and-forget (ADR
-			// 0005) and never throws, but guard anyway so a notification hiccup
-			// can't fail an already-stored batch.
+			// Published after commit so a rolled-back Issue never notifies. The
+			// publisher (ADR 0005) is fire-and-forget and shouldn't throw, but
+			// guard anyway so a notification hiccup can't fail a stored batch.
 			for (NotificationOccurrence occurrence : newIssues) {
 				try {
 					notifications.publish(occurrence);
@@ -158,8 +145,8 @@ public class EventStore {
 
 	private void storeAll(List<ProcessedEvent> unfiltered, List<NotificationOccurrence> newIssues) {
 		eventIssueLock.acquire(unfiltered.getFirst().projectId());
-		// Under the lock, so no concurrent writer can land an event between this
-		// lookup and the insert below: what is missing here does insert there.
+		// Under the lock: no concurrent writer can land an event between this
+		// lookup and the insert below.
 		List<ProcessedEvent> batch = firstDeliveries(unfiltered);
 		if (batch.isEmpty()) {
 			return;
@@ -183,8 +170,8 @@ public class EventStore {
 					    event_count = issue_env_stats.event_count + 1,
 					    last_seen = GREATEST(issue_env_stats.last_seen, EXCLUDED.last_seen)
 					""", issueId, event.environment(), Timestamp.from(event.timestamp()));
-			// Blank as well as null, per Releases.isNamed: a row for one could never be
-			// matched by the queries this rollup exists for.
+			// Skips blank as well as null releases (Releases.isNamed) — such a row
+			// could never match the queries this rollup serves.
 			if (Releases.isNamed(event.release())) {
 				releaseRows.add(
 						new Object[] { issueId, event.projectId(), event.release(), Timestamp.from(event.timestamp()) });
@@ -195,27 +182,17 @@ public class EventStore {
 					event.symbolicationStatus() };
 		}).toList();
 
-		// One round trip for the whole batch, not one per event. The environment
-		// rollup above still pays per event, and docs/performance/measuring-ingest.md
-		// measures what that costs; adding a second per-event round trip here cost
-		// a third of peak error throughput (1 743 → 1 172 events/s), and batching
-		// gives it back. Statement-per-row, deliberately: a single multi-row VALUES
-		// cannot carry two Events of the same Issue and Release, which every batch
-		// from one deploy is full of — ON CONFLICT refuses to affect a row twice in
-		// one statement, while a JDBC batch applies each row in its own.
+		// Statement-per-row, deliberately, not one multi-row VALUES: ON CONFLICT
+		// can't affect the same row twice in one statement, and a batch commonly
+		// repeats (issue_id, release) pairs within one deploy.
 		jdbc.batchUpdate(RELEASE_STATS_UPSERT, releaseRows);
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);
 	}
 
 	/**
-	 * The batch minus every event already stored, and minus repeats within the
-	 * batch itself. Everything downstream — the issue counter, the per-environment
-	 * stats, the regression flip — keys off this list, so an aggregate can only
-	 * move for an event that actually inserts.
-	 *
-	 * <p>A redelivery is absorbed rather than raised: by the time a worker stores,
-	 * the SDK has long had its 200 and there is no caller left to fail. The
-	 * duplicate counter is where it shows up.
+	 * The batch minus events already stored and minus repeats within the batch
+	 * itself; downstream aggregates only move for events in this list.
+	 * Redeliveries are dropped silently, not raised, and counted as duplicates.
 	 */
 	private List<ProcessedEvent> firstDeliveries(List<ProcessedEvent> batch) {
 		Set<EventKey> seen = storedKeys(batch);

@@ -79,10 +79,6 @@ public class IssueController {
 		return body;
 	}
 
-	/**
-	 * The keyset the list is paged by. Package-visible so a guard can walk real
-	 * cursors to a deep page instead of synthesizing one — see {@link KeysetPage}.
-	 */
 	static KeysetPage issuePage(String sort) {
 		return "count".equals(sort) ? BY_EVENT_COUNT : BY_LAST_SEEN;
 	}
@@ -92,11 +88,9 @@ public class IssueController {
 	}
 
 	/**
-	 * The lower bound the sparkline is built from. Package-visible for the same
-	 * reason {@link #pageSize()} is: it is the bind parameter that decides which
-	 * partitions the aggregate reads, so a guard that computed its own would
-	 * {@code EXPLAIN} a different plan than the controller runs — and would keep
-	 * passing after this window changed.
+	 * The lower bound the sparkline is built from. Package-visible so callers bind
+	 * this exact value rather than recompute it, since it decides which partitions
+	 * the aggregate query reads.
 	 */
 	static Instant sparklineSince() {
 		return sparklineSince(LocalDate.now(ZoneOffset.UTC));
@@ -151,11 +145,9 @@ public class IssueController {
 	}
 
 	/**
-	 * Daily event counts for the page's issues over the sparkline window. Split out
-	 * from {@link #attachAggregates} so a guard can {@code EXPLAIN} it alone: it is
-	 * one of the two per-page-load aggregates over {@code event}, and the two have
-	 * very different plans — this one is time-bounded, {@link
-	 * #buildUsersAffectedQuery} is not.
+	 * Daily event counts for the page's issues over the sparkline window. Kept
+	 * separate from {@link #buildUsersAffectedQuery}, which carries no time bound
+	 * and therefore has a very different query plan.
 	 */
 	static SearchQuery buildSparklineQuery(List<Long> issueIds, Instant since) {
 		List<Object> params = new ArrayList<>(issueIds);
@@ -168,9 +160,8 @@ public class IssueController {
 	}
 
 	/**
-	 * Distinct users per issue for the page. Deliberately EXPLAIN-able alone: it
-	 * carries no time bound, so it reads every partition ever created for every
-	 * issue on the page, on the most-visited screen in the product.
+	 * Distinct users per issue for the page. Carries no time bound, so it reads
+	 * every partition ever created for every issue on the page.
 	 */
 	static SearchQuery buildUsersAffectedQuery(List<Long> issueIds) {
 		return new SearchQuery(
@@ -179,12 +170,6 @@ public class IssueController {
 				new ArrayList<>(issueIds));
 	}
 
-	/**
-	 * Per-environment event counts for the page's issues. Extracted alongside the
-	 * other two so a guard or benchmark can {@code EXPLAIN} the whole page load: an
-	 * issue-list request is four statements, and summing three of them would report
-	 * a cost nobody waits for.
-	 */
 	static SearchQuery buildEnvironmentRollupQuery(List<Long> issueIds) {
 		return new SearchQuery(
 				"SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
@@ -299,10 +284,8 @@ public class IssueController {
 	}
 
 	/**
-	 * Event detail's three statements, named rather than inlined so a guard can
-	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. The
-	 * neighbour lookups are what make this page cost more than one row: each is a
-	 * separate probe across every partition of {@code event}.
+	 * Event detail's three statements. The neighbour lookups each probe every
+	 * partition of {@code event}, which is what makes this page cost more than one row.
 	 */
 	static final String EVENT_BY_ID = """
 			SELECT id, project_id, issue_id, environment, release, "timestamp", trace_id, level, message,

@@ -161,9 +161,7 @@ describe('AccountPage change password', () => {
 
 describe('AccountPage reachability', () => {
   it('lets a Member navigate to /account through the real route table', async () => {
-    // The whole /settings tree is Admin-only; this asserts /account is not, by
-    // driving the actual routes with a non-admin Session rather than trusting
-    // the route config by inspection.
+    // The /settings tree is Admin-only; /account is not, verified via a non-admin Session against the real route table.
     server.use(
       http.get(`${BASE}/projects`, () => HttpResponse.json([])),
       http.get(`${BASE}/projects/environments`, () => HttpResponse.json([])),

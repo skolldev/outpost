@@ -108,14 +108,12 @@ async function renderPerformance(
   // Sort and Release are read from the URL, so a shared link is set up by arriving at one.
   queryParams: Record<string, string> = {},
 ) {
-  // The constructor also loads projects for the legend, and the Releases of the one
-  // Project the Release filter resolves to; without handlers those fetches reject and
-  // fail assertions that have nothing to do with them.
+  // The constructor also loads projects and the Releases of the resolved Project;
+  // without handlers those fetches reject and fail unrelated assertions.
   server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(projects)));
   server.use(http.get(`${BASE}/releases`, () => HttpResponse.json(RELEASES)));
-  // Joined by hand rather than through URLSearchParams: a version like `shop@2.0.0` is
-  // legal unencoded in a query string, and percent-encoding it here arrives as a
-  // literal `%40` in the param the page reads back.
+  // Joined by hand, not URLSearchParams: encoding would turn `shop@2.0.0` into a
+  // literal `%40` the page can't read back.
   const query = Object.entries(queryParams)
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
@@ -125,8 +123,7 @@ async function renderPerformance(
       provideRouter([]),
       { provide: GlobalFilters, useValue: filters },
     ],
-    // The detail route is real here because a row navigating to it is what a row is
-    // for; without it a click would fail to route and prove nothing about the link.
+    // The detail route is real here so a row click actually routes, proving the link works.
     routes: [
       { path: '', children: [] },
       { path: 'performance/group', children: [] },
@@ -260,9 +257,9 @@ describe('PerformancePage', () => {
   });
 
   /**
-   * The warning outlives the table. A Project emitting a Transaction Group per URL has
-   * groups of one or two Transactions, which the sample floor excludes — so the list
-   * comes back empty in exactly the case the explanation is needed.
+   * The warning outlives the table: a Project emitting one Group per URL has groups
+   * below the sample floor, so the list comes back empty exactly when the explanation
+   * is needed.
    */
   it('still warns about cardinality when every group fell below the sample floor', async () => {
     server.use(
@@ -277,9 +274,8 @@ describe('PerformancePage', () => {
   });
 
   /**
-   * The notice counts the rows it is standing next to rather than naming the server's
-   * cap, which is not on the wire and would drift silently the day the cap moved. Two
-   * groups here, so it says two — no real response pairs `truncated` with a short list.
+   * The notice counts the rows it's next to, not the server's cap (which isn't on the
+   * wire and could drift silently). Two groups here, so it says two.
    */
   it('says the list was cut, and how much of it is on screen', async () => {
     server.use(
@@ -314,10 +310,8 @@ describe('PerformancePage', () => {
   });
 
   /**
-   * Every ranking the control offers is one the server accepts. The values are its
-   * whitelist — it rejects anything else outright rather than falling back to the
-   * default — so an option added to the page without its counterpart on the server
-   * would produce a 400 rather than a differently sorted list.
+   * Every ranking the control offers must be one the server accepts — it rejects
+   * anything else with a 400 rather than falling back to a default.
    */
   it('asks for every ranking it offers', async () => {
     const seen = recordParam('sort', page([CHECKOUT]));
@@ -360,9 +354,8 @@ describe('PerformancePage', () => {
   });
 
   /**
-   * A version belongs to one Project, so there is no honest list to offer across
-   * several. The control stays on screen and says why, rather than disappearing and
-   * leaving the user to wonder where the Release filter went.
+   * A version belongs to one Project, so there's no honest list to offer across
+   * several — the control stays on screen and says why, rather than disappearing.
    */
   it('cannot list Releases while the view spans more than one Project', async () => {
     server.use(http.get(`${BASE}/transaction-groups`, () => HttpResponse.json(page([CHECKOUT]))));
@@ -374,10 +367,9 @@ describe('PerformancePage', () => {
   });
 
   /**
-   * A link shared from another Project's view carries a Release this Project may not
-   * have. It filters the request either way — the server is what applies it — so the
-   * control has to show it, or it is a filter narrowing the list that the user can
-   * neither see nor switch off.
+   * A link from another Project's view can carry a Release this Project doesn't have;
+   * the server still applies it, so the control must show it rather than hide a filter
+   * the user can't see or switch off.
    */
   it('shows a Release it cannot list, so a shared link can still be cleared', async () => {
     const seen = recordParam('release', page([CHECKOUT]));

@@ -73,22 +73,18 @@ export class OutpostUsersSettings {
       this.usersResource.reload();
       this.feedback.success('User deleted.');
     } catch (error) {
-      // The server refuses self-deletion and the last admin with a 409; the
-      // reason is the whole message, so pass it through rather than flattening
-      // both to "could not delete".
+      // Server returns 409 for self-deletion or the last admin, with the reason as the whole message; pass it through instead of flattening it.
       const detail = (error as HttpErrorResponse | undefined)?.error?.detail;
       this.feedback.error(typeof detail === 'string' ? detail : 'Could not delete user.');
     }
   }
 
-  // Single source of truth for the role picker; the trigger label is derived
-  // from it. member/admin are the only roles an Outpost User can hold.
+  // member/admin are the only roles an Outpost User can hold.
   readonly roles = [
     { value: 'member', label: 'member' },
     { value: 'admin', label: 'admin' },
   ];
 
-  /** Maps a role value to its display label for the select trigger. */
   readonly roleLabel = (value: string): string =>
     this.roles.find((role) => role.value === value)?.label ?? value;
 }

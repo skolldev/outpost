@@ -89,9 +89,8 @@ async function renderDetail(
   filters: GlobalFilters = fakeFilters(),
 ) {
   server.use(http.get(`${BASE}/projects`, () => HttpResponse.json(PROJECTS)));
-  // Joined by hand rather than through URLSearchParams: the render helper splits the
-  // query string itself and hands the parts to the router unencoded, so a transaction
-  // name percent-encoded here arrives as a literal `%2F` in the param the page reads.
+  // Joined by hand, not URLSearchParams: the render helper splits the query string
+  // unencoded, so percent-encoding here would arrive as a literal `%2F`.
   const query = Object.entries(queryParams)
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
@@ -101,9 +100,8 @@ async function renderDetail(
       provideRouter([]),
       { provide: GlobalFilters, useValue: filters },
     ],
-    // `/traces` is a real route here because the deep links are half of what this page
-    // does: without it a click would fail to navigate and the assertions would be about
-    // the test's own routing rather than about the link.
+    // `/traces` is a real route here so a click actually navigates, rather than the
+    // assertions testing the test's own routing.
     routes: [
       { path: '', children: [] },
       { path: 'traces', children: [] },
@@ -151,10 +149,9 @@ describe('TransactionGroupDetailPage', () => {
   });
 
   /**
-   * The chart is what turns the statistics above it into a report: a p95 is a ranking,
-   * a p95 that stepped up on a given afternoon is a bug. Asserted through its
-   * accessible name and its axis, which is what a reader actually gets — not through
-   * the geometry, which is the component's business.
+   * The chart turns the statistics into a report — a p95 that stepped up on a given
+   * afternoon is a bug, not just a ranking. Asserted through its accessible name and
+   * axis text, not the geometry, which is the component's own business.
    */
   it('charts p50 and p95 over the window the statistics were computed for', async () => {
     server.use(
@@ -167,13 +164,11 @@ describe('TransactionGroupDetailPage', () => {
       await screen.findByRole('img', { name: /p50 and p95 duration per 6 hours/i }),
     ).toBeVisible();
     expect(screen.getByRole('img', { name: /peak p95 640ms/i })).toBeVisible();
-    // The axis is scaled to a round number above that peak rather than to the peak
-    // itself, so a flat series does not fill the plot and a step change has room to show.
+    // The axis scales to a round number above the peak, so a step change has headroom to show.
     expect(screen.getByText('750ms')).toBeInTheDocument();
     expect(screen.getByText('375ms')).toBeInTheDocument();
   });
 
-  /** Each bucket names its own interval, both percentiles and how many samples they came from. */
   it('names both percentiles and the sample count of a bucket', async () => {
     server.use(
       http.get(`${BASE}/transaction-groups/detail`, () => HttpResponse.json(detail(CHECKOUT))),
@@ -186,9 +181,8 @@ describe('TransactionGroupDetailPage', () => {
   });
 
   /**
-   * A group can exist over the window while every bucket in it is empty of the filtered
-   * Transactions. An empty plot with axes on it would read as "all zero"; the words say
-   * what is true.
+   * A group can exist over the window while every bucket is empty of filtered
+   * Transactions. An empty plot with axes would read as "all zero"; the words say what's true.
    */
   it('says so when there is nothing to chart', async () => {
     server.use(
@@ -331,9 +325,9 @@ describe('TransactionGroupDetailPage', () => {
   });
 
   /**
-   * And the typical link is bounded on both sides: the median up to where the tail
-   * begins. Without the upper bound "typical" would include every cache hit in the
-   * window, which diffs against a slow request no more usefully than another slow one.
+   * The typical link is bounded on both sides: median up to where the tail begins.
+   * Without the upper bound, "typical" would include every cache hit, no more useful
+   * to diff against a slow request than another slow one.
    */
   it('links to the Traces page filtered to this group’s typical Traces', async () => {
     server.use(
@@ -364,10 +358,9 @@ describe('TransactionGroupDetailPage', () => {
   });
 
   /**
-   * The Traces page has to open on the slice the user was just reading, and nothing
-   * else: Project, Environment Name and range come with them, while `name` and `op`
-   * identify a Transaction Group and mean nothing there — merged params outlive the
-   * page that set them.
+   * The Traces page must open on the slice the user was reading — Project, environment
+   * and range carry over, while `name` and `op` identify a Transaction Group and mean
+   * nothing there.
    */
   it('carries the current Project, environment and range through to the Traces page', async () => {
     server.use(

@@ -82,14 +82,10 @@ public class TraceController {
 
 	/**
 	 * Extracted so {@code TraceSearchPerformanceTest} can {@code EXPLAIN} the exact
-	 * query the controller runs — see {@link SearchQuery}.
-	 *
-	 * <p>One row per trace_id. A distributed trace has many transactions sharing a
-	 * trace_id (browser pageload + backend request…); each trace is represented by
-	 * its root transaction, or — when a filter only matches a continuation — by the
-	 * best-matching transaction, so filtering by the backend project still surfaces
-	 * the trace. Filters apply per-transaction; span/error counts span the whole
-	 * trace.
+	 * query the controller runs. One row per trace_id, represented by its root
+	 * transaction — or by the best-matching transaction when a filter only matches
+	 * a continuation, so filtering by the backend project still surfaces the trace;
+	 * filters apply per-transaction, while span/error counts span the whole trace.
 	 */
 	static SearchQuery buildSearchQuery(List<Long> project, List<String> environment, String release, String query,
 			Double minDuration, Double maxDuration, Boolean hasErrors, Instant from, Instant to, String cursor) {
@@ -131,8 +127,7 @@ public class TraceController {
 			inner.append(" AND t.start_ts <= ?");
 			params.add(java.sql.Timestamp.from(to));
 		}
-		// DISTINCT ON must lead its ORDER BY with trace_id; prefer the root, then the
-		// earliest transaction, as the representative row for each trace.
+		// DISTINCT ON requires trace_id first in ORDER BY; prefer the root, then earliest transaction.
 		inner.append(" ORDER BY t.trace_id, (t.parent_span_id IS NULL) DESC, t.start_ts");
 
 		StringBuilder page = new StringBuilder("SELECT * FROM (").append(inner).append(") traces WHERE 1=1");
@@ -140,10 +135,7 @@ public class TraceController {
 		page.append(tail.sql());
 		params.addAll(tail.params());
 
-		// Count spans/errors only for the paginated rows: inside the DISTINCT ON scan
-		// both correlated subqueries would run once per candidate transaction
-		// (thousands) just to discard all but one row per trace. Order is re-asserted
-		// because the outer SELECT does not inherit the subquery's ordering.
+		// Counts only the paginated rows — inside the DISTINCT ON scan these subqueries would run per candidate transaction, not per trace; order is re-asserted since the outer SELECT doesn't inherit it.
 		String sql = "SELECT p.*,\n"
 				+ "       (SELECT count(*) FROM span s WHERE s.trace_id = p.trace_id) AS span_count,\n"
 				+ "       (SELECT count(*) FROM event e WHERE e.trace_id = p.trace_id) AS error_count\n"
@@ -153,9 +145,8 @@ public class TraceController {
 	}
 
 	/**
-	 * The four fan-out statements, named rather than inlined so a guard can
-	 * {@code EXPLAIN} what the controller runs — see {@link SearchQuery}. None of
-	 * them carries a time predicate, so each probes every partition of its table.
+	 * The four fan-out statements, named rather than inlined — see {@link SearchQuery}.
+	 * None carries a time predicate, so each probes every partition of its table.
 	 */
 	static final String TRANSACTIONS_BY_TRACE = """
 			SELECT id, project_id, environment, release, trace_id, span_id, parent_span_id, name, op,
@@ -212,8 +203,7 @@ public class TraceController {
 		}, traceId);
 
 		if (transactions.isEmpty()) {
-			// A trace is only "known" once at least one transaction has arrived. Errors
-			// or logs may reference a trace_id with no transaction; treat as not found.
+			// A trace exists only once a transaction has arrived; errors/logs referencing an unknown trace_id are treated as not found.
 			boolean referenced = !jdbc.queryForList("SELECT 1 FROM event WHERE trace_id = ? LIMIT 1", traceId).isEmpty()
 					|| !jdbc.queryForList("SELECT 1 FROM span WHERE trace_id = ? LIMIT 1", traceId).isEmpty();
 			if (!referenced) {

@@ -158,7 +158,6 @@ export class Api {
     });
   }
 
-  // API tokens (sentry-cli)
   tokens(): Observable<ApiToken[]> {
     return this.http.get<ApiToken[]>(`${this.base}/tokens`);
   }
@@ -175,7 +174,6 @@ export class Api {
     return this.http.delete<void>(`${this.base}/tokens/${id}`);
   }
 
-  // Uptime monitoring
   uptimeMonitors(): Observable<UptimeMonitor[]> {
     return this.http.get<UptimeMonitor[]>(`${this.base}/uptime/monitors`);
   }

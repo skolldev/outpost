@@ -4,9 +4,7 @@ import { CanActivateFn, Router } from '@angular/router';
 import { Session } from './session';
 
 /**
- * Gates a route to Admins. UX only — the real boundary is server-side (admin
- * mutations are API-enforced); this just keeps Members off a screen they can do
- * nothing useful on and bounces them to the default view.
+ * Gates a route to Admins for UX only — the real boundary is server-side; this just keeps Members off a screen they can't use.
  */
 export const adminGuard: CanActivateFn = async () => {
   const session = inject(Session);

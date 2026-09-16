@@ -29,22 +29,12 @@ import org.springframework.web.client.RestTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * What the Releases page's {@code issue_count} is worth, as opposed to what it
- * costs. #130 moved the count off {@code event} and onto the
- * {@code issue_release_stats} rollup, and the whole risk of that trade is that a
- * rollup can be fast and wrong: {@link ReleaseQueryPerformanceTest} only
- * {@code EXPLAIN}s the SQL, and a plan that returns a stale, doubled or empty
- * number explains exactly as well as a correct one.
- *
- * <p>So every case where "distinct Issues on this Release" and "rows somebody
- * incremented" could come apart has a test here: an Issue seen many times on one
- * Release, a Release nothing has ever hit, a redelivered Event, two Projects
- * shipping the same version string, and an Event ageing out from under a rollup
- * row whose Issue survives.
- *
- * <p>Events are stored through {@link EventStore} rather than posted as
- * envelopes. Whether two Events land in one worker batch is a timing accident;
- * none of the invariants below is.
+ * Correctness of the Releases page's {@code issue_count}, which #130 moved from
+ * counting {@code event} rows onto the {@code issue_release_stats} rollup — the
+ * cases where "distinct Issues on this Release" and "rows somebody incremented"
+ * could diverge (duplicate hits, an untouched Release, a redelivered Event,
+ * shared version strings across Projects, and expired Events). Events are stored
+ * through {@link EventStore} rather than posted as envelopes.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -126,11 +116,10 @@ class ReleaseIssueCountIntegrationTest {
 	}
 
 	/**
-	 * An SDK retrying a failed request sends the same {@code event_id} again. The
-	 * second copy stores no Event, so it must not add a rollup row either — and
-	 * because the count is now {@code count(*)} over those rows rather than
-	 * {@code count(DISTINCT issue_id)} over Events, a rollup that gained a duplicate
-	 * row per redelivery would report it.
+	 * An SDK retrying a failed request resends the same {@code event_id}; the second
+	 * copy stores no Event and must not add a rollup row either. The count is
+	 * {@code count(*)} over rollup rows, not {@code count(DISTINCT issue_id)} over
+	 * Events, so a duplicate rollup row per redelivery would be counted.
 	 */
 	@Test
 	void aRedeliveredEventDoesNotInflateTheCount() {
@@ -159,10 +148,9 @@ class ReleaseIssueCountIntegrationTest {
 	}
 
 	/**
-	 * Retention deletes Events, and the count has to follow them down. The Issue
-	 * here <em>survives</em> the sweep — it still has a recent Event on
-	 * {@link #OTHER_RELEASE} — so its rollup rows are rebuilt rather than cascaded
-	 * away with it, which is the path that can leave a stale row behind.
+	 * Retention deletes Events, and the rollup count must follow. The Issue survives
+	 * the sweep here — it still has a recent Event on {@link #OTHER_RELEASE} — so
+	 * its rollup rows are rebuilt rather than cascade-deleted with it.
 	 */
 	@Test
 	void aReleaseWhoseEventsExpiredCountsZeroAgain() {

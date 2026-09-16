@@ -43,7 +43,6 @@ class LogPipelineTest {
 		assertThat(record.severityNumber()).isEqualTo(13);
 		assertThat(record.body()).isEqualTo("cart total mismatch for order 42");
 		assertThat(record.timestamp()).isEqualTo(Instant.ofEpochMilli(1783166399500L));
-		// Typed attribute objects are flattened to their plain values.
 		assertThat(record.attributes().get("cart.size").asInt()).isEqualTo(3);
 		assertThat(record.attributes().get("cart.gift").asBoolean()).isTrue();
 		assertThat(record.attributes().get("sentry.environment").asText()).isEqualTo("prod");

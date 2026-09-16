@@ -39,9 +39,7 @@ export const routes: Routes = [
           import('./pages/performance/performance').then((m) => m.PerformancePage),
       },
       {
-        // The Transaction Group is identified by query params, not by a path segment:
-        // transaction names contain slashes, and (Project, name, op) is a tuple rather
-        // than an id. An absent `op` means the group whose op is null.
+        // Query params, not a path segment: transaction names contain slashes; an absent op means the null-op group.
         path: 'performance/group',
         loadComponent: () =>
           import('./pages/performance/transaction-group-detail').then(
@@ -57,11 +55,7 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/uptime/uptime').then((m) => m.UptimePage),
       },
       {
-        // The signed-in user's own account. Authenticated but deliberately not
-        // Admin-guarded, and deliberately not a Settings tab: Settings is where
-        // an Installation is managed, and a Member reaches exactly one tab of it
-        // (API tokens — see settings.routes.ts). A password change belongs to the
-        // person, not to the Installation, so it stays a top-level route.
+        // Deliberately not Admin-guarded or under Settings: this is the user's own account, not an Installation setting.
         path: 'account',
         loadComponent: () => import('./pages/account/account').then((m) => m.AccountPage),
       },

@@ -34,36 +34,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * Answers "how does the read path behave at production scale, and which query
- * gives out first". Opt-in: {@code ./gradlew retrievalBenchmark}. Excluded from
- * the {@code test} task, so it never runs in CI.
- *
- * <p>Every request goes over real HTTP through the session filter, the
- * controller, and Postgres — the whole thing a user waits for, not a query
- * measured in isolation.
- *
- * <h2>What it asserts, and what it only reports</h2>
- *
- * Wall-clock latency has no threshold here, or anywhere. What the run <em>does</em>
- * gate is its own validity, and it fails rather than reporting a fast number:
- * every response must be a 200, a page must be the size the endpoint promises, a
- * cursor must be well-formed where one is expected, and — for the paginated
- * scenarios — <b>no row id may repeat across adjacent pages</b>. A benchmark
- * measuring a query that returns page 1 fifty times is fast, worthless, and
- * silent about it. The pass/fail half that runs in CI lives in
- * {@code dev.outpost.query}'s guards and contains no wall clock at all.
- *
- * <h2>Deep pagination</h2>
- *
- * Cursors are <b>walked</b>, not synthesized: page by page, exactly as a user
- * gets there. It measures the true cost of getting deep, it is the journey that
- * actually happens, and it needs no production visibility widened to reach it.
- *
- * <h2>Scale</h2>
- *
- * {@code -Pbench.scale=0.1} for a fast smoke run. The scale factor moves row
- * counts only: cardinalities and the retention window are what make the dataset
- * production-shaped, and shrinking those alongside the volume would produce a
- * small dataset that is also the wrong shape.
+ * gives out first" over real HTTP. Opt-in ({@code ./gradlew retrievalBenchmark},
+ * excluded from {@code test}): it asserts run validity (status, page size,
+ * well-formed cursors, no row id repeating across adjacent pages) rather than a
+ * latency threshold, and scales row counts via {@code -Pbench.scale}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -74,24 +48,16 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 @Tag("retrieval")
 class RetrievalBenchmark {
 
-	/**
-	 * Reads are a latency-at-scale question, not a throughput one, so most scenarios
-	 * sit at a rate the server can comfortably serve and the interesting number is
-	 * what a single request costs. The saturation ladder is the one place that asks
-	 * the other question.
-	 */
+	/** Plateau duration for latency scenarios; the saturation ladder is the only one asking a throughput question. */
 	private static final Duration STEP_DURATION = Duration.ofSeconds(10);
 
 	private static final int MAX_SCENARIO_RATE = 20;
 
 	/**
-	 * Requests a scenario may have outstanding at once. The rate is derived from
-	 * this and the endpoint's own measured latency rather than fixed, because a
-	 * fixed rate is only safe for endpoints that keep up with it: the releases page
-	 * takes seconds at full scale, and offering it 20/s open-loop would bury it
-	 * under a backlog, blow the driver's request timeout, and fail the run for a
-	 * reason that has nothing to do with the query. The point is to measure what one
-	 * request costs, and a small stable concurrency does that at any speed.
+	 * Requests a scenario may have outstanding at once; the offered rate is derived
+	 * from this and the endpoint's own measured latency, since a fixed rate would
+	 * bury a slow endpoint like the releases page under a backlog and fail the run
+	 * for a reason unrelated to the query.
 	 */
 	private static final double TARGET_CONCURRENCY = 4;
 
@@ -99,11 +65,9 @@ class RetrievalBenchmark {
 	private static final int MIN_SAMPLES = 20;
 
 	/**
-	 * An endpoint slower than half the driver's per-request timeout cannot be driven
-	 * at all: every request in the step would time out and the run would fail on an
-	 * endpoint being slow — deleting the whole report to tell us something the
-	 * report was going to say anyway. Those are measured once and reported as a
-	 * single sample, loudly marked.
+	 * An endpoint slower than half the driver's timeout can't be driven — every
+	 * request would time out — so it's measured once and reported as a single,
+	 * loudly-marked sample.
 	 */
 	private static final long DRIVABLE_MILLIS = LoadDriver.REQUEST_TIMEOUT.toMillis() / 2;
 
@@ -115,16 +79,12 @@ class RetrievalBenchmark {
 
 	/**
 	 * The one throughput question worth asking, as multiples of what a single
-	 * connection sustains. {@code application.yaml} sets no HikariCP tuning, so the
-	 * pool is Spring Boot's default 10 connections while one issue-list request
-	 * issues four queries; the knee should land inside this ladder whatever the
-	 * dataset.
-	 *
-	 * <p>Multiples rather than absolute rates because the endpoint's own speed moves
-	 * by an order of magnitude with the dataset. A ladder fixed at rates calibrated
-	 * against a tenth-scale run offers a full-scale server a hundred times its
-	 * capacity, which does not find a knee — it builds a backlog that outlives the
-	 * step and contaminates whatever runs next.
+	 * connection sustains — Spring Boot's default pool is 10 connections and one
+	 * issue-list request issues four queries, so the knee should land inside this
+	 * ladder whatever the dataset. Multiples rather than absolute rates because the
+	 * endpoint's speed moves by an order of magnitude with the dataset; a ladder
+	 * fixed at tenth-scale rates would just build a backlog against a full-scale
+	 * server instead of finding a knee.
 	 */
 	private static final int[] SATURATION_MULTIPLES = { 1, 2, 4, 8, 16 };
 
@@ -145,10 +105,9 @@ class RetrievalBenchmark {
 	private static final int UI_WINDOW_DAYS = 14;
 
 	/**
-	 * A page whose size the endpoint does not promise. Page 1 of an unfiltered list
-	 * is always full and asserting that catches a broken {@code LIMIT}; a filtered
-	 * result legitimately returns whatever matched, so only "not empty" is
-	 * meaningful there — and the row count is in the table either way.
+	 * A page whose size the endpoint does not promise — only "not empty" is
+	 * meaningful for a filtered result, unlike page 1 of an unfiltered list, which
+	 * is always full.
 	 */
 	private static final int ANY_SIZE = -1;
 
@@ -177,10 +136,8 @@ class RetrievalBenchmark {
 	long datasetRows;
 
 	/**
-	 * Seeded once, for the whole class. The ingest benchmark clears telemetry
-	 * between tests because each of its plateaus has to start from a drained queue;
-	 * here the dataset <em>is</em> the fixture, and rebuilding it per test would
-	 * spend the entire run seeding.
+	 * Seeded once for the whole class: here the dataset is the fixture, unlike the
+	 * ingest benchmark, which clears telemetry between tests.
 	 */
 	@BeforeAll
 	void seedOnce() {
@@ -232,22 +189,15 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * An issue-list page load is four queries, not one: the list, a 14-day
-	 * sparkline, a distinct-user count, and the environment rollup. Reporting the
-	 * list query's plan next to the whole page's latency would put 558 blocks beside
-	 * half a second and make the machine look slow — the aggregates are where the
-	 * time goes, and the columns have to say so.
-	 *
-	 * <p>The ids come from {@code list} itself, not from an unfiltered stand-in: a
-	 * filtered scenario returns different issues, and pairing its latency with the
-	 * aggregate cost of somebody else's page would be a plan for a query the run
-	 * never made. The window comes from the controller for the same reason — see
-	 * {@link QueryPlans#sparklineSince()}.
+	 * An issue-list page load is four queries — the list, a 14-day sparkline, a
+	 * distinct-user count, and the environment rollup — so all four are summed
+	 * rather than just the list query's plan. Ids come from {@code list} itself
+	 * (not an unfiltered stand-in), since a filtered scenario returns different
+	 * issues.
 	 */
 	private PlanFacts issuePagePlan(QueryPlans.Built list) {
 		List<Long> ids = QueryPlans.issueIdsOnPage(jdbc, list);
-		// The aggregates take an IN list, so an empty page has no plan to report — and
-		// a scenario matching no issues is not measuring anything either way.
+		// The aggregates take an IN list, so an empty page has no plan to report.
 		assertThat(ids).as("issues matched by the scenario's own list query").isNotEmpty();
 		return sum(List.of(list, QueryPlans.sparkline(ids, QueryPlans.sparklineSince()), QueryPlans.usersAffected(ids),
 				QueryPlans.environmentRollup(ids)));
@@ -267,10 +217,9 @@ class RetrievalBenchmark {
 
 	/**
 	 * The unfiltered rows below are the "All time" end of the range picker, not the
-	 * default. #128's acceptance was explicit that a fix must be measured at the
-	 * shapes the UI actually sends, so the default 14-day window and its
-	 * project-scoped variant are measured at benchmark scale too — the guard tier
-	 * pins their plan shape, but only this tier has the rows to price them.
+	 * default; the default 14-day window and its project-scoped variant are also
+	 * measured here since only this tier has the rows to price their plan shape
+	 * (#128).
 	 */
 	@Test
 	void logStream() throws Exception {
@@ -297,9 +246,7 @@ class RetrievalBenchmark {
 				pageSizeReached(walk, LOG_PAGE_SIZE),
 				QueryPlans.logs(null, null, null, null, null, null, null, null, null, walk.cursor()));
 
-		// Walked under the default filters rather than reached unfiltered and then
-		// filtered: a project-scoped stream gets deep over a different span of time,
-		// so a cursor borrowed from the global walk names a page nobody lands on.
+		// A project-scoped stream gets deep over a different span of time, so the global walk's cursor doesn't apply here.
 		Instant from = uiWindowStart();
 		CursorWalk scoped = walk(logsInWindow(from), "logs", DEEP_LOG_PAGE);
 		measure("logs", "page " + scoped.depth() + ", 14d, project=",
@@ -357,15 +304,14 @@ class RetrievalBenchmark {
 	// -------------------------------------------------------------- saturation
 
 	/**
-	 * The one throughput ladder. Each issue-list request issues four queries against
-	 * a ten-connection pool, so the knee here is about the pool and the aggregates
-	 * behind it rather than about any single query.
+	 * The one throughput ladder: each issue-list request issues four queries
+	 * against a ten-connection pool, so the knee is about the pool and the
+	 * aggregates, not any single query.
 	 */
 	@Test
 	@Order(Integer.MAX_VALUE)
 	void issueListSaturationLadder() throws Exception {
-		// The whole page load, as every other issue row reports it — the ladder is
-		// driving /issues, not the list query on its own.
+		// The whole page load, as every other issue row reports it — the ladder drives /issues, not just the list query.
 		PlanFacts plan = issuePagePlan(QueryPlans.issueList(null, null, null, null, null, null, null, "last_seen", null));
 		Probe probe = validate("issues saturation", "/issues", "issues", ISSUE_PAGE_SIZE);
 		int base = Math.max(1, (int) Math.round(1000.0 / Math.max(probe.millis(), 1)));
@@ -373,8 +319,7 @@ class RetrievalBenchmark {
 		for (int multiple : SATURATION_MULTIPLES) {
 			int rate = base * multiple;
 			LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), () -> request("/issues"));
-			// Reported, not asserted: past the knee a saturated step is the finding, and
-			// failing the run on it would delete the answer.
+			// Reported, not asserted: past the knee, a saturated step is the finding, not a failure.
 			System.out.printf("issue list @ %4d/s → p50 %8.1f ms, p99 %8.1f ms, %d non-200%n", rate, result.p50Millis(),
 					result.p99Millis(), result.offered() - result.status(200));
 			REPORT.add(new RetrievalReport.Row("issues saturation", rate + "/s", result, datasetRows, ISSUE_PAGE_SIZE,
@@ -384,13 +329,10 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * Waits for the server to finish whatever the last step left it holding.
-	 *
-	 * <p>{@link LoadDriver} gives up on its in-flight tail after two minutes and
-	 * reports what is outstanding, but the server keeps working through it — so a
-	 * saturated step hands its backlog to the next scenario, which then measures the
-	 * backlog. The ingest benchmark has the same hazard and drains the queue between
-	 * plateaus; there is no queue to read here, so responsiveness is the signal.
+	 * Waits for the server to finish whatever the last step left it holding, so a
+	 * saturated step's backlog isn't measured by the next scenario. There's no
+	 * queue to poll here (unlike the ingest benchmark), so responsiveness is the
+	 * signal.
 	 */
 	private void quiesce(Probe reference) throws Exception {
 		long deadline = System.nanoTime() + QUIESCE_TIMEOUT.toNanos();
@@ -473,14 +415,10 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * One unhurried request, checked before it is timed.
-	 *
-	 * <p>{@code alsoNonEmpty} names the other lists a response has to have filled
-	 * in. Trace detail fans out into four, and a run where three of them came back
-	 * empty would measure three queries finding nothing and report it as the cost of
-	 * a trace — the seeder plants a trace with guaranteed fan-out precisely so that
-	 * cannot pass quietly. A body that is a bare array is held to the same bar; the
-	 * releases page returns one, and an empty releases page is fast and meaningless.
+	 * One unhurried request, checked before it is timed. {@code alsoNonEmpty} names
+	 * the other lists a response must have filled in — trace detail fans into four,
+	 * and one coming back empty would silently measure nothing as if it were the
+	 * cost of a trace.
 	 */
 	private Probe validate(String what, String path, String listKey, int expectedRows, String... alsoNonEmpty)
 			throws Exception {
@@ -538,10 +476,8 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * The page size to hold a walked page to. A walk that ran out of rows ends on
-	 * the dataset's last page, which is legitimately short — asserting a full page
-	 * there would fail a smoke run for having less data, which is the one thing a
-	 * smoke run is meant to have.
+	 * The page size to hold a walked page to, or {@link #ANY_SIZE} if the walk ran
+	 * out of rows and landed on a legitimately short last page.
 	 */
 	private static int pageSizeReached(CursorWalk walk, int pageSize) {
 		return walk.pageIsFull() ? pageSize : ANY_SIZE;
@@ -563,13 +499,9 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * A request for a probe or a cursor walk, with room to be slow.
-	 *
-	 * <p>The driver's timeout exists to stop one stalled request from wrecking a
-	 * plateau's percentiles, and it is the wrong bound here: a probe that takes
-	 * thirty seconds is not a stall, it is the finding, and timing it out would fail
-	 * the run instead of reporting it. {@link #DRIVABLE_MILLIS} is what acts on the
-	 * answer.
+	 * A request for a probe or a cursor walk, with room to be slow. The driver's
+	 * timeout is the wrong bound here — a probe taking thirty seconds is the
+	 * finding, not a stall — so {@link #DRIVABLE_MILLIS} is what acts on it instead.
 	 */
 	private HttpRequest probeRequest(String path) {
 		return requestWithin(path, PROBE_TIMEOUT);

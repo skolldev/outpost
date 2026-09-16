@@ -23,11 +23,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Chunk staging + synchronous artifact-bundle assembly: concatenate
- * staged chunks, verify the SHA-1, unpack the zip, and store one artifact row
- * per manifest entry keyed by (debug_id, type). The raw bundle is kept for
- * re-processing; bundles are deduped by checksum. Publishes
- * {@link BundleAssembledEvent} so re-symbolication can pick up flagged events.
+ * Chunk staging and synchronous artifact-bundle assembly: concatenates staged
+ * chunks, verifies the SHA-1, unpacks the zip, and stores one artifact row per
+ * manifest entry keyed by (debug_id, type). Bundles are deduped by checksum;
+ * publishes {@link BundleAssembledEvent} so re-symbolication can pick up flagged events.
  */
 @Service
 public class ArtifactBundleService {
@@ -66,9 +65,7 @@ public class ArtifactBundleService {
 	@Transactional
 	public AssembleResult assemble(String checksum, List<String> chunks, List<String> projectSlugs, String release) {
 		checksum = checksum.toLowerCase(Locale.ROOT);
-		// Known bundle → done, before even looking at chunks: staged chunks are
-		// deleted after assembly, and the CLI probes with assemble to skip
-		// re-uploads of bundles the server already has.
+		// Known bundle: return early — staged chunks are gone after assembly, and the CLI probes to skip re-uploads.
 		Optional<Long> existing = jdbc.sql("SELECT id FROM artifact_bundle WHERE checksum = ?")
 			.param(checksum)
 			.query(Long.class)
@@ -200,8 +197,7 @@ public class ArtifactBundleService {
 	}
 
 	private static Map<String, byte[]> unzip(byte[] bundle) throws IOException {
-		// sentry-cli ships a "source bundle": the zip is prefixed with an 8-byte
-		// header (magic "SYSB" + u32 version) that stream-based unzipping chokes on.
+		// sentry-cli source bundles prefix the zip with an 8-byte SYSB header; skip it before unzipping.
 		int offset = bundle.length >= 8 && bundle[0] == 'S' && bundle[1] == 'Y' && bundle[2] == 'S'
 				&& bundle[3] == 'B' ? 8 : 0;
 		Map<String, byte[]> files = new LinkedHashMap<>();

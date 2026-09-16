@@ -234,8 +234,6 @@ export interface IssueFilters {
   cursor?: string;
 }
 
-// --- Tracing ---
-
 /** A row in the trace search list — one distributed trace, keyed by trace_id. */
 export interface TraceSummary {
   id: string;
@@ -328,17 +326,11 @@ export interface TraceDetail {
   logs: LogRecord[];
 }
 
-// --- Performance ---
-
 /**
- * One Transaction Group on the Performance leaderboard: the recurring activity
+ * One Transaction Group on the Performance leaderboard — the recurring activity
  * that Transactions sharing a Project, name and op are instances of.
- *
- * Every figure describes the Transactions Outpost **received**, not the requests
- * the Project served — SDKs sample traces and Outpost stores no sample rate, so
- * nothing here is extrapolated (ADR-0014). There is no `min_ms`: the fastest
- * Transaction in a group is a cache hit, and no failure signal appears at all —
- * "is it broken" is answered by Issues.
+ * Figures describe only Transactions Outpost received, not requests served, and
+ * are never extrapolated (ADR-0014); failures are reported by Issues, not here.
  */
 export interface TransactionGroup {
   project_id: number;
@@ -355,17 +347,10 @@ export interface TransactionGroup {
 
 /**
  * The leaderboard plus the window it was actually computed over. `range_clamped`
- * is set when the server narrowed the requested window to the 30-day cap
- * (ADR-0015) — the page has to say so, or the numbers quietly disagree with the
- * range filter the user can see. There is no cursor: keyset pagination is
- * impossible on an aggregate.
- *
- * `distinct_groups` counts every (Project, name, op) in the window, including the
- * ones too small to be ranked and the ones past the limit. That is what makes it
- * worth reporting: a Project whose SDK does not parameterize its URLs emits a
- * Transaction Group per URL, each holding one or two Transactions, so the count is
- * enormous while `groups` is short. Names are never rewritten to fix that
- * (ADR-0014); the gap is disclosed instead.
+ * marks when the server narrowed the request to the 30-day cap (ADR-0015).
+ * `distinct_groups` counts every group in the window, including ones not
+ * returned — a Project with unparameterized URLs will show a huge count here
+ * while `groups` stays short.
  */
 export interface TransactionGroupPage {
   from: string;
@@ -376,16 +361,7 @@ export interface TransactionGroupPage {
   groups: TransactionGroup[];
 }
 
-/**
- * `release` matches a version exactly and `query` a case-insensitive substring of
- * the transaction name, as they do on the Traces page. Neither joins the grouping
- * key: they narrow the Transactions a Transaction Group is computed from, so the
- * same group filtered to a Release reports what it cost on that version.
- *
- * `sort` is a server-side whitelist — `total_ms` (the default), `p95`, `p50` or
- * `count`. Anything else is rejected by the server rather than coerced, so this
- * type stays a union rather than a bare string.
- */
+/** Server-side whitelist — anything else is rejected rather than coerced, so this stays a union rather than a bare string. */
 export type TransactionGroupSort = 'total_ms' | 'p95' | 'p50' | 'count';
 
 export interface TransactionGroupFilters {
@@ -398,12 +374,9 @@ export interface TransactionGroupFilters {
 }
 
 /**
- * One bucket of the duration trend. `p99_ms` is deliberately absent where the
- * header carries it: over one bucket it is computed from a fraction of the
- * samples, so it would be the jumpiest line on the chart while saying the least.
- *
- * `count` is what says how much a point is worth — a bucket holding four
- * Transactions has a p95 that is one of them.
+ * One bucket of the duration trend. `p99_ms` is omitted here — over one bucket
+ * it's computed from too few samples to be meaningful — and `count` says how
+ * much a point is worth: a bucket of four Transactions has a p95 that's one of them.
  */
 export interface TransactionGroupTrendPoint {
   start: string;
@@ -413,17 +386,10 @@ export interface TransactionGroupTrendPoint {
 }
 
 /**
- * The bucketed series behind the detail view's chart. **`from` is not the
- * response's `from`**: `date_bin` bins against a fixed origin, so points are
- * placed by `(start - trend.from) / bucket_seconds` and that only comes out whole
- * against the grid — this is the window's start floored onto it, earlier by less
- * than one bucket.
- *
- * The window itself is not widened to meet it, which is the opposite of what the
- * log timeline does: the chart and the statistics above it describe exactly the
- * same Transactions, at the cost of a partial bucket at each edge (visible in its
- * `count`). Empty buckets are absent rather than zero — a bucket with no
- * Transactions has no p50, and a zero would draw a dive to the axis.
+ * The bucketed series behind the detail view's chart. `from` here is the window's
+ * start floored onto the bucket grid, not the response's `from` — points are
+ * placed by `(start - trend.from) / bucket_seconds`, and empty buckets are
+ * omitted rather than zero since a bucket with no Transactions has no p50.
  */
 export interface TransactionGroupTrend {
   from: string;
@@ -432,14 +398,10 @@ export interface TransactionGroupTrend {
 }
 
 /**
- * One Transaction Group's statistics, for the detail view a leaderboard row opens
- * into. Same figures, same window, echoed the same way — the header is read beside
- * the row it was opened from, so a `range_clamped` the detail view swallowed would
- * disagree with the number the user just clicked.
- *
- * The trend rides along rather than coming from a second endpoint — the opposite of
- * the split ADR-0011 chose for the log timeline, because this view does not
- * paginate and so never refetches the list without the chart.
+ * One Transaction Group's statistics for the detail view a leaderboard row opens
+ * into — same figures, same window, so `range_clamped` here can't disagree with
+ * what the row showed. The trend rides along rather than a separate endpoint,
+ * since this view never paginates and so never refetches without the chart.
  */
 export interface TransactionGroupDetail {
   from: string;
@@ -458,11 +420,10 @@ export interface TransactionGroupDetailNotFound {
 }
 
 /**
- * The identity of one Transaction Group, plus the filters its statistics are computed
- * under. `name` matches exactly here — the leaderboard's substring `query` is how the
- * group is *found*, not how it is identified — and **an absent `op` means `op` is
- * null**, because (project, name, op) is the whole key and "any op" names a set of
- * Transaction Groups rather than one.
+ * The identity of one Transaction Group plus the filters its statistics are
+ * computed under. `name` matches exactly (the leaderboard's `query` is how the
+ * group is found, not identified); an absent `op` means `op` is null, since
+ * (project, name, op) is the whole key.
  */
 export interface TransactionGroupDetailFilters {
   project: number;
@@ -472,8 +433,6 @@ export interface TransactionGroupDetailFilters {
   release?: string;
   from?: string;
 }
-
-// Uptime monitoring
 
 export interface UptimeMonitor {
   id: number;
@@ -525,8 +484,6 @@ export interface UptimeOverview {
   monitors: UptimeMonitorOverview[];
 }
 
-// Notification channels
-
 export type NotificationChannelType = 'teams' | 'generic_json';
 export type NotificationTrigger = 'new_issue' | 'incident_started' | 'incident_resolved';
 
@@ -552,7 +509,6 @@ export type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed' | 'suppre
 /** The trigger recorded on a history row — the channel triggers plus the test action. */
 export type NotificationHistoryTrigger = NotificationTrigger | 'test';
 
-/** One Notification in a channel's recent-delivery history. */
 export interface NotificationHistoryEntry {
   id: number;
   trigger_type: NotificationHistoryTrigger;

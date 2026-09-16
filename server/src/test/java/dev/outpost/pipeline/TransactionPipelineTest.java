@@ -46,8 +46,7 @@ class TransactionPipelineTest {
 	void stripsRedundantSpansArrayFromTransactionData() {
 		ProcessedTransaction txn = process(PAYLOAD);
 
-		// Child spans are their own rows; re-embedding spans[] in the payload just
-		// doubles storage, so it must be gone. The rest of the payload stays.
+		// Spans are stored as their own rows, so re-embedding spans[] here would duplicate storage.
 		assertThat(txn.data().has("spans")).isFalse();
 		assertThat(txn.data().path("transaction").asText()).isEqualTo("GET /api/tree/{id}");
 		assertThat(txn.data().path("contexts").path("trace").path("op").asText()).isEqualTo("http.server");
@@ -58,16 +57,13 @@ class TransactionPipelineTest {
 	void stripsPromotedColumnsFromSpanDataButKeepsAttributes() {
 		ProcessedSpan span = process(PAYLOAD).spans().get(0);
 
-		// Fields that became columns must not linger in the payload.
 		for (String promoted : new String[] { "span_id", "trace_id", "parent_span_id", "op", "description", "status",
 				"timestamp", "start_timestamp" }) {
 			assertThat(span.data().has(promoted)).as("promoted key %s", promoted).isFalse();
 		}
-		// The useful part survives: the OTel attribute bag and origin.
 		assertThat(span.data().path("origin").asText()).isEqualTo("auto.http.browser");
 		assertThat(span.data().path("data").path("http.method").asText()).isEqualTo("GET");
 
-		// …and the columns still carry those values.
 		assertThat(span.spanId()).isEqualTo("aaaa000011112222");
 		assertThat(span.op()).isEqualTo("http.client");
 		assertThat(span.description()).isEqualTo("GET http://localhost:8081/api/tree");

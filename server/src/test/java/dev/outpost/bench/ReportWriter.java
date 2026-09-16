@@ -14,15 +14,8 @@ import java.util.Map;
 /**
  * Everything a benchmark report needs that is not its columns: the conditions
  * block, UTC stamping, the directory, the Markdown/JSON pair, and number
- * formatting.
- *
- * <p>The seam is deliberate. Two benchmarks measure completely different things —
- * ingest reports throughput, queue depth and allocation; retrieval reports
- * latency percentiles and plan facts — but the argument for <em>how</em> a
- * benchmark report should read is the same for both: a table detached from its
- * conditions is worse than no table, and a number whose formatting depends on the
- * default locale emits invalid JSON. Columns belong to each benchmark; this
- * belongs to neither.
+ * formatting. Shared by {@link BenchReport} and {@link RetrievalReport}, which
+ * own only their columns.
  */
 public final class ReportWriter {
 
@@ -115,10 +108,10 @@ public final class ReportWriter {
 	}
 
 	/**
-	 * Control characters are escaped alongside the obvious two: condition values
-	 * come from Postgres settings and scenario labels from callers, and a single
-	 * newline in either would produce a report file no JSON reader can open —
-	 * which is the one thing this class exists to prevent.
+	 * Escapes control characters alongside the obvious two (quote, backslash):
+	 * condition values come from Postgres settings and scenario labels from
+	 * callers, and a stray newline in either would produce a report no JSON reader
+	 * can open.
 	 */
 	public static String quote(String value) {
 		StringBuilder quoted = new StringBuilder(value.length() + 2).append('"');

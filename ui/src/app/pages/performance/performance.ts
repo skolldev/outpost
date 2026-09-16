@@ -42,24 +42,14 @@ const BASE = API_BASE;
 
 /**
  * Distinct Transaction Groups past which the page stops assuming the instrumentation
- * is fine.
- *
- * The two populations this has to tell apart are three orders of magnitude apart, so
- * the exact number matters less than sitting between them. A well-instrumented
- * Project has tens to low hundreds of Transaction Groups — a route per endpoint,
- * times an op or two — and the unfiltered view sums that across every Project, so a
- * large Installation can reach a few thousand honestly. A Project that does not
- * parameterize its URLs emits one Transaction Group per distinct URL and reaches
- * hundreds of thousands in a month. 5 000 is the middle of that gap: high enough
- * that a real Installation does not trip it by growing, low enough that no amount of
- * honest routing gets there.
+ * is fine. A well-instrumented Project has low hundreds of groups; one with
+ * unparameterized URLs reaches hundreds of thousands — 5 000 sits safely between.
  */
 const HIGH_CARDINALITY_GROUPS = 5_000;
 
 /**
- * The rankings the server whitelists, with the question each one answers. The values
- * are the server's own sort keys: it rejects anything else rather than coercing it, so
- * a label added here without its counterpart in the controller fails loudly.
+ * Sort options the server whitelists. Values are its own sort keys, so a label added
+ * here without a matching one server-side is rejected rather than coerced.
  */
 const SORTS: { value: TransactionGroupSort; label: string }[] = [
   { value: 'total_ms', label: 'Sort: total time' },
@@ -71,29 +61,9 @@ const SORTS: { value: TransactionGroupSort; label: string }[] = [
 const DEFAULT_SORT: TransactionGroupSort = 'total_ms';
 
 /**
- * Performance page: Transaction Groups ranked by the total time each accounts
- * for, so the top of the list is where fixing something pays off most.
- *
- * Total time is the default and not the only question. p95 finds the endpoints with
- * the worst tail, p50 the ones that are uniformly slow, received the hottest paths —
- * so the ranking is a control, and it is the server's whitelist rather than this
- * page's opinion. Beside it, a search narrows by transaction name and a Release
- * filter re-states a group's statistics for one version, which is how a duration
- * change gets attributed to a deploy.
- *
- * There is no "load more" and there will not be: the list is a top-N over an
- * aggregate, which has no key to page on (ADR-0015). The window is capped at 30
- * days, and when the server narrows the global range filter to reach it the page
- * says so — numbers that silently disagree with the filter on screen are the
- * failure this notice exists to prevent.
- *
- * The same principle covers the other two notices. Groups too small to have a
- * percentile are excluded from the ranking, and groups past the limit are cut from
- * it; both exclusions are stated rather than left for the user to infer from a list
- * that looks wrong. The cardinality warning goes further and names the likely cause,
- * because "you have 400 000 Transaction Groups" is not actionable on its own and the
- * action — parameterize the URLs in the SDK's routing integration — is in the user's
- * application, not in Outpost.
+ * Performance page: Transaction Groups ranked by total time, so fixing the top of
+ * the list pays off most. There is no "load more" — the list is a top-N over an
+ * aggregate with no key to page on (ADR-0015).
  */
 @Component({
   selector: 'app-performance',
@@ -134,10 +104,7 @@ export class PerformancePage {
     initialValue: this.route.snapshot.queryParams,
   });
 
-  // Sort and Release live in the URL — shareable, and back/forward moves them — while
-  // the search box is a local signal for instant feedback, mirrored to the URL once it
-  // settles. This is the split the Issues page settled on, and none of the three is a
-  // form: a filter box is not a form (ADR-0008).
+  // Sort and release live in the URL; search is a local signal mirrored to the URL once debounced (ADR-0008 — filter boxes aren't forms).
   readonly sort = computed<TransactionGroupSort>(() => {
     const sort = this.queryParams()['sort'];
     return SORTS.some((option) => option.value === sort) ? sort : DEFAULT_SORT;
@@ -149,12 +116,9 @@ export class PerformancePage {
   readonly debouncedQuery = debounced(this.search, 300);
 
   /**
-   * The Project whose Releases the filter can offer. A version string only means
-   * something inside one Project — the same `1.4.0` belongs to a different codebase
-   * next door — which is why `GET /releases` takes a Project and why the Releases page
-   * owns a single-Project selector of its own. So the filter is offered when the view
-   * is narrowed to one Project, and on an Installation that only has one, where "all
-   * Projects" and "that Project" are the same slice.
+   * The Project whose Releases the filter can offer — a version string is only
+   * meaningful within one Project. Available when the view is narrowed to one
+   * Project, or when the Installation has only one.
    */
   readonly releaseProject = computed<number | undefined>(() => {
     const selected = this.filters.project();
@@ -173,14 +137,10 @@ export class PerformancePage {
   );
 
   /**
-   * The versions to choose from, plus whichever one is already filtering if it is not
-   * among them — which happens on a link shared from another Project's view, and while
-   * the list is still in flight.
-   *
-   * A filter the control cannot show is a filter the user cannot clear, and dropping it
-   * from the URL instead would mean deciding "this Release does not exist here" from an
-   * empty list that also means "not fetched yet". Carrying it as an option needs no such
-   * guess: it stays visible, and selecting "All releases" removes it.
+   * Versions to choose from, plus the currently-filtering one if it's not among them
+   * (a link shared from another Project, or the list still in flight). Kept visible
+   * rather than dropped, since an empty list is ambiguous between "no such release"
+   * and "not fetched yet".
    */
   readonly releases = computed<string[]>(() => {
     const versions = this.releaseList.value().map((release) => release.version);

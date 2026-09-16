@@ -14,13 +14,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserService {
 
 	/**
-	 * Minimum password length. NIST SP 800-63B puts the verifier floor at 8 and
-	 * recommends 15 for a password used as the only factor, which is what login is
-	 * here; we take the floor, because an Installation runs inside the operator's
-	 * own network and its accounts are few and human-administered. What we do keep
-	 * from the same document is the part that matters more: no composition rules,
-	 * no forced rotation. Raising this invalidates no existing hash — it is checked
-	 * only when a password is set.
+	 * Minimum password length, per NIST SP 800-63B's floor of 8 rather than its
+	 * recommended 15 (Installations are small, operator-network accounts).
+	 * Raising this doesn't invalidate existing hashes since it's checked only
+	 * at password-set time.
 	 */
 	public static final int MIN_PASSWORD_LENGTH = 8;
 
@@ -28,9 +25,9 @@ public class UserService {
 	}
 
 	/**
-	 * The one password policy — callers phrase their own message around it. Length
-	 * is counted in code points, so eight emoji are eight characters rather than
-	 * the sixteen UTF-16 units {@code String.length} would report.
+	 * The password-length policy; callers phrase their own message around it.
+	 * Length is counted in code points, not {@code String.length()}, so
+	 * surrogate pairs (e.g. emoji) aren't double-counted.
 	 */
 	public static boolean isAcceptablePassword(String password) {
 		return password != null && password.codePointCount(0, password.length()) >= MIN_PASSWORD_LENGTH;
@@ -77,13 +74,11 @@ public class UserService {
 	}
 
 	/**
-	 * Re-verifies {@code currentPassword} and replaces the hash, returning false —
-	 * and touching nothing — when it does not match or the account is gone. Both
-	 * halves happen in one transaction with the row locked, so two changes racing
-	 * each other cannot both verify against the same hash and have the loser
-	 * overwrite a password the owner has already been told is theirs. Callers still
-	 * decide <em>whose</em> account this is; per ADR-0012 any Session already issued
-	 * survives the change.
+	 * Re-verifies {@code currentPassword} and replaces the hash; returns false,
+	 * touching nothing, if it doesn't match or the account is gone.
+	 * Verify-and-write happen in one locked transaction so concurrent changes
+	 * can't both verify against the same hash; per ADR-0012 existing Sessions
+	 * survive the change.
 	 */
 	@Transactional
 	public boolean changePassword(String email, String currentPassword, String newPassword) {
@@ -103,9 +98,9 @@ public class UserService {
 	}
 
 	/**
-	 * Resolves an account by email, which is what a Session carries as its
-	 * principal — callers holding an {@code Authentication} and needing the row's
-	 * id (token ownership, for one) go through here.
+	 * Resolves an account by email, the Session principal. Used by callers
+	 * holding an {@code Authentication} that need the row's id, e.g. for token
+	 * ownership.
 	 */
 	public Optional<User> findByEmail(String email) {
 		return jdbc.sql("SELECT id, email, role, created_at FROM app_user WHERE lower(email) = lower(?)")
@@ -122,23 +117,11 @@ public class UserService {
 	}
 
 	/**
-	 * Hard-deletes an account, refusing to remove the last remaining Admin.
-	 * Returns false when the row survived that guard, or was already gone.
-	 *
-	 * <p>The guard is not made redundant by the controller's no-self-deletion
-	 * check: two Admins, each holding a live Session, can delete each other in
-	 * turn. {@code AdminBootstrap} only seeds when {@code app_user} is completely
-	 * empty, and no endpoint can promote a Member, so an Installation left with
-	 * Members and no Admin is unadministrable forever — recoverable only by
-	 * database surgery. Do not remove this.
-	 *
-	 * <p>Guard and delete are one statement, and the surviving Admin is locked
-	 * with {@code FOR UPDATE} so two concurrent deletions cannot each observe the
-	 * other's Admin and both proceed — under read committed the plain subquery
-	 * count the guard reads as would let exactly that happen. The lock lets two
-	 * Admins deleting each other at the same instant deadlock, which surfaces as
-	 * a 500 rather than the 409 one of them deserves; that is the better failure,
-	 * because the alternative outcome is an Installation with no Admin at all.
+	 * Hard-deletes an account, refusing to remove the last Admin; returns false
+	 * if the guard blocked it or the row was already gone. Guard and delete are
+	 * one {@code FOR UPDATE}-locked statement so two Admins deleting each other
+	 * concurrently can't both pass the check and leave the Installation with
+	 * none.
 	 */
 	public boolean delete(long id) {
 		return jdbc.sql("""

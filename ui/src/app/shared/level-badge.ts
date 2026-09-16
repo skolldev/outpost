@@ -18,15 +18,12 @@ const LEVEL_ALIASES: Record<string, Level> = {
 };
 
 /**
- * The canonical bucket a raw level string falls in. Exported so anything colouring
- * by level — the badge here, the timeline's stacked bars — agrees on which levels
- * share a colour, rather than each keeping its own alias table.
+ * Canonical bucket for a raw level string. Exported so callers share one
+ * alias table rather than each keeping its own.
  */
 export function resolveLevel(level: string | null | undefined): Level {
-  // Own-property check, not `?? 'muted'`: these strings come from ingested records
-  // and from timeline bucket keys, so a level named `constructor` or `toString`
-  // would otherwise resolve to the truthy inherited function and pass through as
-  // something that is not a Level.
+  // hasOwn, not `?? 'muted'` — an ingested level named "constructor" would
+  // otherwise match the inherited prototype method.
   const key = level?.toLowerCase() ?? '';
   return Object.hasOwn(LEVEL_ALIASES, key) ? LEVEL_ALIASES[key] : 'muted';
 }

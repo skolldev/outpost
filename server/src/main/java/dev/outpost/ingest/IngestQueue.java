@@ -10,13 +10,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * The entire "message queue": a bounded in-memory buffer of fixed-size spool
- * references between the envelope endpoint and the digest workers. Full queue
- * → caller responds 429 and the SDKs back off.
- *
- * <p>An accepted entry owns exactly one spool file, so the queue owns releasing
- * it: {@link #release} drops the file and the outstanding count together rather
- * than leaving each caller to remember both.
+ * A bounded in-memory buffer of fixed-size spool references between the
+ * envelope endpoint and the digest workers; a full queue makes the caller
+ * respond 429. {@link #release} drops an accepted entry's spool file together
+ * with the outstanding count.
  */
 @Component
 public class IngestQueue {
@@ -34,9 +31,7 @@ public class IngestQueue {
 		this.queue = new ArrayBlockingQueue<>(capacity);
 		this.capacity = capacity;
 		this.spool = spool;
-		// Depth against capacity is the leading indicator of a 429: by the time
-		// the endpoint starts rejecting, depth has been pinned at capacity for a
-		// while. Gauged rather than counted so a scrape sees the current buffer.
+		// Gauged (not counted) so a scrape reads the current buffer depth.
 		metrics.gauge("outpost.ingest.queue.depth", "Items currently buffered", this, IngestQueue::size);
 		metrics.gauge("outpost.ingest.queue.capacity", "Maximum items the buffer holds", this,
 				IngestQueue::capacity);
@@ -76,9 +71,8 @@ public class IngestQueue {
 	}
 
 	/**
-	 * Finishes with accepted entries: their spool files go and outstanding work
-	 * comes down together. Normal digestion, a processing failure, a store failure
-	 * and shutdown all end here, so neither half can be done without the other.
+	 * Deletes each entry's spool file and decrements outstanding work together.
+	 * Called on normal digestion, a processing or store failure, and shutdown.
 	 */
 	void release(List<QueuedEnvelope> entries) {
 		for (QueuedEnvelope entry : entries) {

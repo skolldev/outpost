@@ -10,16 +10,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 /**
- * The bucket ladder, which is what every time-series chart in the product rests on:
- * a bucket a person can name ("the 14:05 bar") rather than one that falls where the
- * window width happens to put it. Two surfaces bind it — the Log Timeline and the
- * Transaction Group duration trend — so it is asserted once, here, beside the helper
- * rather than beside either caller.
- *
- * <p>These are unit tests because the ladder is a pure function of the window. The
- * cost of the groupings it produces is a different question, guarded against real
- * datasets in {@link LogTimelinePerformanceTest} and
- * {@link TransactionGroupPerformanceTest}.
+ * The bucket ladder that every time-series chart rests on, producing buckets a
+ * person can name (the "14:05 bar"), shared by the Log Timeline and the
+ * Transaction Group duration trend. These are unit tests since the ladder is a
+ * pure function of the window; grouping cost is covered separately in
+ * {@link LogTimelinePerformanceTest} and {@link TransactionGroupPerformanceTest}.
  */
 class TimeBucketsTest {
 
@@ -29,17 +24,10 @@ class TimeBucketsTest {
 	private static final Instant ALIGNED_NOW = Instant.parse("2026-08-05T00:00:00Z");
 
 	/**
-	 * Each entry of the range picker in {@code ui/src/app/core/filters.ts}, and the
-	 * rung it draws at. Pinned as a table because the alternative — asserting only
-	 * that the bucket count is in band — passes for a ladder that picks a different
-	 * rung for every window, which is the property the ladder exists to prevent.
-	 *
-	 * <p>Measured from an aligned instant so the counts are the table's. A window
-	 * starting mid-bucket spans one more; that is
-	 * {@link #anUnalignedWindowSpansOneMoreBucketThanItsLength}, not a different ladder.
-	 *
-	 * <p>The last row is the one the Performance trend gets: the 30-day cap ADR-0015
-	 * puts on Transaction Group statistics draws at 6 hours, ~120 points.
+	 * Each entry of the range picker in {@code ui/src/app/core/filters.ts} and the
+	 * rung it draws at, pinned exactly rather than checked "in band" so a ladder
+	 * that picks a different rung for every window would fail. The last row is the
+	 * Performance trend's 30-day cap (ADR-0015), drawn at 6 hours, ~120 points.
 	 */
 	@ParameterizedTest(name = "{0}h draws {2} buckets of {1}")
 	@CsvSource({ "1, PT1M, 60", "24, PT15M, 96", "168, PT2H, 84", "336, PT4H, 84", "720, PT6H, 120" })
@@ -78,10 +66,9 @@ class TimeBucketsTest {
 	}
 
 	/**
-	 * Aligning is idempotent and never moves an instant forward — the two properties
-	 * every client's index arithmetic assumes. A grid start after the window's own
-	 * start would put the first bucket at a negative index, which is the defect
-	 * aligning exists to prevent.
+	 * Aligning is idempotent and never moves an instant forward — properties every
+	 * client's index arithmetic assumes. A grid start after the window's own start
+	 * would put the first bucket at a negative index.
 	 */
 	@ParameterizedTest
 	@CsvSource({ "PT1M", "PT15M", "PT6H", "P1D", "P7D" })
@@ -105,10 +92,9 @@ class TimeBucketsTest {
 	}
 
 	/**
-	 * Past the last rung the bucket count grows rather than the bucket widening. A
-	 * four-year retention drawing 200 thin bars is a legible failure; one silently
-	 * bucketing by the month is a chart that says something untrue about when things
-	 * happened.
+	 * Past the last rung the bucket count grows rather than the bucket widening
+	 * further — a four-year window draws more, thinner bars instead of silently
+	 * bucketing by the month.
 	 */
 	@Test
 	void aHistoryLongerThanTheLadderGetsMoreBucketsRatherThanACoarserOne() {

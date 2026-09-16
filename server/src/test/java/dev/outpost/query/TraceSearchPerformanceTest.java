@@ -17,29 +17,12 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Performance regression guard for trace search. The original query
- * computed {@code span_count} / {@code error_count} as correlated subqueries
- * inside the {@code DISTINCT ON} scan, so both ran once per candidate
- * transaction (thousands) and were then discarded by dedup + LIMIT — ~2.4s and
- * 634k shared-buffer hits on a production-sized dataset, versus ~20ms / ~1.8k
- * once the counts were moved after pagination.
- *
- * <p>The guard seeds a production-shaped dataset, then {@code EXPLAIN}s the
- * <b>controller's own SQL</b> (via {@link TraceController#buildSearchQuery}, not
- * a copy — a copy would keep passing if the real query regressed) and asserts the
- * blocks it touched stay under a ceiling. Logical I/O is chosen over wall-clock
- * deliberately: it is machine-independent, so a slow or loaded CI box cannot
- * flake it, and it is the quantity that actually blew up in the regression
- * (350x). Both {@code has_errors} branches are guarded: the default path and the
- * one that adds the {@code EXISTS} filter (which Postgres de-correlates into a
- * hash semi-join, so it stays cheap — this locks that in).
- *
- * <p>This test predates the rest of {@code dev.outpost.query}'s guards and keeps
- * its own hand-written seeding: the dataset was built to make an O(rows)
- * subquery unmistakable, and swapping it for {@link
- * dev.outpost.support.TelemetrySeeder} would change what the 50 000 means.
- * Parsing moved onto {@link PlanFacts} — same numbers, no regex, and the
- * partition and temp-I/O facts the other guards need come along for free.
+ * Performance regression guard for trace search: {@code EXPLAIN}s the
+ * controller's own SQL (via {@link TraceController#buildSearchQuery}, never a
+ * copy) and asserts the shared blocks touched stay under a ceiling, chosen over
+ * wall-clock since it's machine-independent. Both {@code has_errors} branches
+ * are guarded — the default path and the one adding the {@code EXISTS} filter,
+ * which Postgres de-correlates into a cheap hash semi-join.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -47,15 +30,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class TraceSearchPerformanceTest {
 
 	/**
-	 * Healthy is ~1.8k shared hits; the regression was ~634k. 50k sits ~12x above
-	 * healthy (absorbing dataset/plan drift) and ~12x below the bug, so it fails
-	 * loudly on an O(rows) reintroduction without flaking on a well-behaved query.
-	 *
-	 * <p>The constant is unchanged from when it was derived against that regression;
-	 * re-deriving it from a formula would trade evidence for tidiness. What did
-	 * change is that {@link PlanFacts#logicalIo()} counts blocks <em>read</em>
-	 * alongside blocks hit, which is strictly more conservative — a cold cache can no
-	 * longer turn a runaway plan into a passing guard.
+	 * Healthy is ~1.8k shared hits; 50k leaves headroom while still catching a
+	 * regression, and counts blocks read as well as hit so a cold cache can't turn
+	 * a runaway plan into a passing guard.
 	 */
 	private static final long MAX_SHARED_BUFFER_HITS = 50_000;
 
@@ -73,9 +50,7 @@ class TraceSearchPerformanceTest {
 
 	@BeforeEach
 	void seed() {
-		// Through TelemetrySeeder rather than a local DELETE list: it truncates, and a
-		// DELETE would leave whatever a neighbouring guard seeded occupying its pages,
-		// so this test's buffer counts would carry another test's dataset.
+		// Truncates via TelemetrySeeder.clear() rather than DELETE, so a neighboring guard's rows don't occupy pages here.
 		new TelemetrySeeder(jdbc, partitions).clear();
 
 		long project = jdbc.sql("INSERT INTO project (slug, name) VALUES ('perf', 'Perf') RETURNING id")

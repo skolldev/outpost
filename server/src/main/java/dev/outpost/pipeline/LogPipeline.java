@@ -14,12 +14,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Unpacks a {@code log} envelope item (Sentry logs protocol): one
- * {@link ProcessedLog} per record. Attributes arrive typed
- * ({@code {"key": {"value": v, "type": t}}}) and are flattened to plain
- * {@code {"key": v}} — the type tag adds nothing to a Kibana-lite search.
- * Environment, release and span id live in well-known {@code sentry.*}
- * attributes. No grouping — logs are an append-only stream.
+ * Unpacks a {@code log} envelope item into one {@link ProcessedLog} per
+ * record, flattening typed attributes ({@code {"key": {"value": v}}}) to
+ * plain {@code {"key": v}}. Environment, release and span id come from
+ * well-known {@code sentry.*} attributes.
  */
 @Component
 public class LogPipeline {

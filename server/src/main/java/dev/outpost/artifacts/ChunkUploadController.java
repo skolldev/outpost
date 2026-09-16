@@ -19,11 +19,10 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
 
 /**
- * sentry-cli chunk upload: capability discovery + chunk staging.
- * {@code {org}} is accepted but ignored (single tenant). The CLI hashes each
- * chunk with SHA-1 (part filename), optionally gzips the part body (part name
- * {@code file_gzip} instead of {@code file}), and re-uploads anything the
- * assemble endpoint reports missing.
+ * sentry-cli chunk upload: capability discovery and chunk staging ({@code {org}}
+ * accepted but ignored — single tenant). The CLI hashes each chunk with SHA-1 as
+ * the part filename, optionally gzip-compressed under part name {@code file_gzip},
+ * and re-uploads whatever assemble reports missing.
  */
 @RestController
 public class ChunkUploadController {
@@ -38,21 +37,11 @@ public class ChunkUploadController {
 	}
 
 	/**
-	 * Capability discovery. camelCase keys are part of the wire contract, hence the
-	 * explicit map — the app default is snake_case.
-	 *
-	 * <p>{@code release_files} must be advertised even though we never assemble
-	 * release files: sentry-cli's {@code FileUpload::upload} only takes the chunked
-	 * path when the server accepts release_files, and only then selects the
-	 * artifact-bundle assemble endpoint via artifact_bundles. Without it the CLI
-	 * falls back to its legacy upload and aborts with "a release is required for
-	 * this upload" (observed with sentry-cli 2.58.6).
-	 *
-	 * <p>{@code url} is a bare path on purpose: sentry-cli resolves paths against
-	 * its {@code --url} base and attaches auth. An absolute URL from
-	 * OUTPOST_PUBLIC_URL breaks any uploader whose network view differs from the
-	 * public URL (e.g. a container reaching Outpost as http://outpost:8080 while the
-	 * public URL says http://localhost:8080).
+	 * Capability discovery; the explicit camelCase map is the wire contract (the app
+	 * default is snake_case). {@code release_files} must stay in {@code accept} or
+	 * sentry-cli skips the chunked/artifact-bundle path and falls back to a failing
+	 * legacy upload, and {@code url} must stay a bare path so the CLI resolves it
+	 * against its own {@code --url} rather than a public URL a differently-networked client can't reach.
 	 */
 	@GetMapping("/api/0/organizations/{org}/chunk-upload/")
 	public Map<String, Object> capabilities(@PathVariable String org) {

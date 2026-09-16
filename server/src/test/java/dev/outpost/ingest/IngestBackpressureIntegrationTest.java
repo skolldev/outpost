@@ -30,20 +30,10 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Guards the only load-shedding mechanism ingest has: when the bounded buffer
- * fills, the endpoint must 429 with the headers Sentry SDKs actually read, and
- * the buffer must be observable while it happens.
- *
- * <p>Deterministic by construction rather than by timing — {@code
- * outpost.ingest.workers=0} makes {@code IngestWorkers.start()} spawn no threads,
- * so nothing drains and the queue holds exactly what was posted. That keeps this
- * in the spirit of {@code TraceSearchPerformanceTest}: a perf-adjacent assertion
- * with no wall clock in it, so a loaded CI box cannot flake it. The throughput
- * question — how many envelopes per second before this fires — is answered by the
- * opt-in benchmark in {@code dev.outpost.bench}, which is excluded from CI.
- *
- * <p>Note this property set is unique across the suite, so it gets its own Spring
- * context and Postgres container. That is the cost of holding the queue still.
+ * Guards ingest's only load-shedding mechanism: when the bounded queue fills,
+ * the endpoint must 429 with the headers Sentry SDKs read, with the queue
+ * observable throughout. {@code outpost.ingest.workers=0} keeps the queue from
+ * draining, so this needs no wall-clock timing.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -115,8 +105,7 @@ class IngestBackpressureIntegrationTest {
 		ResponseEntity<String> rejected = post(envelopes.error("prod"));
 		assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
 		assertThat(rejected.getBody()).contains("ingest buffer full");
-		// The two headers the SDKs honour. Retry-After is the generic fallback;
-		// X-Sentry-Rate-Limits is what sentry SDKs parse to suppress sends.
+		// Retry-After is the generic fallback; X-Sentry-Rate-Limits is what Sentry SDKs actually parse.
 		assertThat(rejected.getHeaders().getFirst("Retry-After")).isEqualTo("30");
 		assertThat(rejected.getHeaders().getFirst("X-Sentry-Rate-Limits")).isEqualTo("30:all:organization");
 	}
@@ -135,8 +124,7 @@ class IngestBackpressureIntegrationTest {
 
 	@Test
 	void everyEnvelopeOutcomeIsCounted() {
-		// Counters are cumulative and the context is shared across tests in this
-		// class, so every assertion here is a delta.
+		// Counters are cumulative and shared across tests in this class, so assert deltas.
 		double acceptedBefore = envelopeCount("accepted");
 		double rejectedBefore = envelopeCount("rejected");
 		double forbiddenBefore = envelopeCount("forbidden");

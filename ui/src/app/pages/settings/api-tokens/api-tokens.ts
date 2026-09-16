@@ -43,10 +43,7 @@ export class ApiTokensSettings {
   private readonly feedback = inject(Feedback);
   readonly session = inject(Session);
 
-  /**
-   * The list is already scoped server-side — an Admin gets every token, a Member
-   * only their own — so nothing here filters it a second time.
-   */
+  /** Already scoped server-side — an Admin gets every token, a Member only their own. */
   private readonly tokensResource = httpResource<ApiToken[]>(() => `${API_BASE}/tokens`, {
     defaultValue: [],
   });
@@ -56,9 +53,8 @@ export class ApiTokensSettings {
   readonly copied = signal<string | null>(null);
 
   /**
-   * Scopes offered, by role: `artifacts:write` writes to Installation resources
-   * and is Admin-only, and the server rejects a Member who asks for it anyway.
-   * Offering only what the caller may grant keeps the two in step.
+   * Scopes offered, by role: `artifacts:write` is Admin-only, and the server
+   * rejects a Member who requests it anyway.
    */
   readonly scopeOptions = computed(() =>
     this.session.isAdmin() ? ALL_SCOPES : ALL_SCOPES.filter((scope) => !scope.adminOnly),
@@ -78,8 +74,7 @@ export class ApiTokensSettings {
     this.model,
     (path) => {
       required(path.name, { message: 'Token name is required.' });
-      // A token carrying no scope authenticates nothing. The tree validator keeps
-      // the error on the fieldset rather than on either checkbox.
+      // Requires at least one scope; the tree validator attaches the error to the fieldset, not a checkbox.
       validateTree(path.scopes, ({ value }) =>
         Object.values(value()).some(Boolean)
           ? null
@@ -139,10 +134,8 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
   }
 
   /**
-   * A paste-ready MCP client configuration for the token just revealed. The URL
-   * comes from the creation response rather than `location.origin`, which loses a
-   * reverse-proxy sub-path and is the piece people most often assemble wrongly by
-   * hand. Computed rather than a method: the template reads it three times.
+   * MCP client configuration for the token just revealed. Uses the creation
+   * response's URL, not `location.origin`, which drops a reverse-proxy sub-path.
    */
   readonly mcpSnippet = computed(() => {
     const created = this.createdToken();
@@ -173,8 +166,8 @@ sentry-cli sourcemaps upload --release "<app>@$VERSION" ./dist/<app>/browser`;
 }
 
 /**
- * A fresh create form: `telemetry:read` and a Personal Token, because that is the
- * agent-onboarding path; an Admin minting a CI credential switches both.
+ * Default create form: `telemetry:read` scope, Personal ownership — the
+ * agent-onboarding path. An Admin switches both when minting a CI credential.
  */
 function blankToken(): {
   name: string;

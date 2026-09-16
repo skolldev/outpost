@@ -5,11 +5,9 @@ import { adminGuard } from '../../core/admin.guard';
 import { Session } from '../../core/session';
 
 /**
- * Settings manages installation-wide resources, so every tab is Admin-only —
- * except API tokens, which a Member reaches to mint a Personal Token for their
- * own agent (ADR-0017). The guard therefore sits on each Admin tab rather than
- * on the parent, and the landing tab depends on the role. `authGuard` on the
- * app shell has already resolved the Session by the time the redirect runs.
+ * Every tab is Admin-only except API tokens (Member territory, ADR-0017), so
+ * the guard sits on each tab rather than the parent. `authGuard` upstream has
+ * already resolved the Session by the time the redirectTo below runs.
  */
 export const SETTINGS_ROUTES: Routes = [
   {

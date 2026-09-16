@@ -13,15 +13,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * Opaque bearer tokens for sentry-cli / CI and the MCP Surface: shown once at
- * creation, SHA-256-hashed at rest (the tokens are 192-bit random, so a fast
- * hash is fine — unlike passwords), scoped ({@code artifacts:write} for uploads,
- * {@code telemetry:read} for the MCP Surface).
- *
- * <p>Per ADR-0017 a token either belongs to an Outpost User — a Personal Token,
- * which the {@code ON DELETE CASCADE} on {@code owner_user_id} revokes the
- * instant that account is deleted — or to nobody, an Installation Token that
- * outlives whoever created it.
+ * Opaque bearer tokens for sentry-cli/CI and the MCP Surface: shown once at
+ * creation, SHA-256-hashed at rest (fast hashing is fine since tokens are
+ * 192-bit random, unlike passwords). Per ADR-0017 a token belongs to an
+ * Outpost User as a Personal Token (revoked via cascade delete) or to nobody
+ * as an Installation Token.
  */
 @Service
 public class ApiTokenService {
@@ -29,19 +25,14 @@ public class ApiTokenService {
 	public static final String SCOPE_ARTIFACTS_WRITE = "artifacts:write";
 
 	/**
-	 * Read access to telemetry, carried today by the tokens the MCP Surface accepts.
-	 * Named for the capability rather than for the surface — {@code mcp:read} would
-	 * have to be minted a second time the day a documented public read API lands,
-	 * and two scopes granting the same permission is a decision nobody could undo.
+	 * Read access to telemetry. Named for the capability rather than the MCP
+	 * surface, so a future public read API can reuse the same scope.
 	 */
 	public static final String SCOPE_TELEMETRY_READ = "telemetry:read";
 
 	/**
-	 * A token row. {@code ownerUserId} and {@code ownerEmail} are both null for an
-	 * Installation Token and both populated for a Personal Token — the email is
-	 * joined in rather than resolved by the caller so that a list of tokens costs
-	 * one statement, and it is carried on the same record as the id so no caller
-	 * has to remember which of two shapes it holds.
+	 * A token row; {@code ownerUserId} and {@code ownerEmail} are both null for
+	 * an Installation Token, both populated for a Personal Token.
 	 */
 	public record ApiToken(long id, String name, List<String> scopes, Instant createdAt, @Nullable Long ownerUserId,
 			@Nullable String ownerEmail) {
@@ -103,9 +94,9 @@ public class ApiTokenService {
 	}
 
 	/**
-	 * Revokes a token only if it is the given user's own. Returns false for a token
-	 * that belongs to somebody else exactly as it does for one that does not exist,
-	 * so callers cannot use the outcome to probe for other people's tokens.
+	 * Revokes a token only if it belongs to the given user. Returns false both
+	 * when the token belongs to someone else and when it doesn't exist, so
+	 * callers can't probe for other users' tokens.
 	 */
 	public boolean deleteOwnedBy(long id, long ownerUserId) {
 		return jdbc.sql("DELETE FROM api_token WHERE id = ? AND owner_user_id = ?")
@@ -115,10 +106,8 @@ public class ApiTokenService {
 	}
 
 	/**
-	 * Resolves a presented bearer token, or empty if unknown. Runs on every request
-	 * to {@code /api/0/**} and {@code /mcp}: a unique-index hit on {@code token_hash}
-	 * plus a primary-key join for the owner, which the filter does not read but
-	 * which keeps one token shape rather than a second, half-populated one.
+	 * Resolves a presented bearer token, or empty if unknown. Called on every
+	 * request to {@code /api/0/**} and {@code /mcp}.
 	 */
 	public Optional<ApiToken> authenticate(String bearerToken) {
 		return jdbc.sql(SELECT + "WHERE t.token_hash = ?")
@@ -128,8 +117,7 @@ public class ApiTokenService {
 	}
 
 	private static ApiToken mapToken(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
-		// wasNull() reports on the most recent read, so the owner has to be resolved
-		// before any other column is touched.
+		// wasNull() reflects the most recent read, so owner must be resolved first.
 		long ownerUserId = rs.getLong("owner_user_id");
 		Long owner = rs.wasNull() ? null : ownerUserId;
 		return new ApiToken(rs.getLong("id"), rs.getString("name"),

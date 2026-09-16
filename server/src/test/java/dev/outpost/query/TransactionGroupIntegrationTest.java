@@ -30,19 +30,12 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * {@code GET /transaction-groups} end to end (#159, #160): the Performance
- * leaderboard's wire shape, its statistics against a hand-computed fixture, and the
- * rules the client cannot enforce for itself — that (Project, name, op) is the whole
- * grouping key, that the window is capped at 30 days and says so when it bites, and
- * that a group too small to have a percentile is excluded from the ranking while
- * still being counted in the cardinality the page warns on.
- *
- * <p>The durations are chosen so every percentile is exact rather than
- * approximately right. {@code percentile_cont} interpolates: over ten values
- * 100…1000 the p95 sits 55% of the way between the ninth and tenth, which is 955
- * and nothing else. A fixture of round numbers would have made 900 and 1000 both
- * look plausible, and a percentile guard that cannot distinguish
- * {@code percentile_cont} from {@code percentile_disc} is not guarding much.
+ * {@code GET /transaction-groups} end to end (#159, #160): wire shape, statistics
+ * against a hand-computed fixture, and rules the client can't enforce itself — the
+ * (Project, name, op) grouping key, the 30-day window cap, and the sample floor
+ * that excludes a group from ranking but not from the cardinality count.
+ * Durations are non-round so {@code percentile_cont} interpolation is exact
+ * (e.g. p95 of 100..1000 is 955), distinguishing it from {@code percentile_disc}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -52,20 +45,18 @@ class TransactionGroupIntegrationTest {
 	private static final String GROUPS = "/api/internal/transaction-groups";
 
 	/**
-	 * The key travels in query params rather than in the path: a transaction name
-	 * contains slashes — {@code GET /api/checkout/{id}} is a name, not a path — so it
-	 * cannot be a path segment without encoding the same string into a second shape on
-	 * the wire.
+	 * The key travels in query params, not the path — a transaction name like
+	 * {@code GET /api/checkout/{id}} contains slashes and can't be a path segment
+	 * without double-encoding.
 	 */
 	private static final String GROUP = "/api/internal/transaction-groups/detail";
 
 	private static final String CHECKOUT = "GET /api/checkout/{id}";
 
 	/**
-	 * The sort and Release fixtures live in Environment Names of their own so they can
-	 * be filtered to exactly, and so the tests that count the groups the base fixture
-	 * holds are not rewritten every time one is added. Both are seeded per test rather
-	 * than in {@code setUp}, for the same reason.
+	 * The sort and Release fixtures live in their own Environment Names so they
+	 * filter cleanly and don't perturb the base fixture's group counts; both are
+	 * seeded per test rather than in {@code setUp} for the same reason.
 	 */
 	private static final String SORT_FIXTURE = "sort-fixture";
 
@@ -84,9 +75,8 @@ class TransactionGroupIntegrationTest {
 	private static final String SLOW_RELEASE = "shop@2.0.0";
 
 	/**
-	 * The controller's minimum-sample floor, restated rather than imported: it is part
-	 * of the contract this test speaks for, and a test that read the constant would
-	 * still pass if someone changed it to 1.
+	 * The controller's minimum-sample floor, restated rather than imported —
+	 * importing it would let the test keep passing even if the floor changed.
 	 */
 	private static final int SAMPLE_FLOOR = 5;
 
@@ -94,18 +84,16 @@ class TransactionGroupIntegrationTest {
 	private static final org.assertj.core.data.Offset<Double> TOLERANCE = within(1e-6);
 
 	/**
-	 * Comfortably inside the 30-day cap, so an unclamped request covers the fixture.
-	 * Truncated to the second because two tests round-trip it through a query param
-	 * and back out of the response, and sub-second precision only invites a
-	 * formatting difference to fail an assertion that is not about formatting.
+	 * Comfortably inside the 30-day cap, so an unclamped request covers the
+	 * fixture. Truncated to the second because it round-trips through a query
+	 * param and back, and sub-second precision would only fail a formatting
+	 * mismatch unrelated to the assertion.
 	 */
 	private static final Instant ANCHOR = Instant.now().minus(2, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
 
 	/**
-	 * Where the trend fixture is seeded. Truncated to the hour, which puts it on the
-	 * grid of every sub-day rung of the ladder, so the bucket boundaries the assertions
-	 * name are the ones {@code date_bin} produces — the alignment tests are the ones
-	 * that exercise an off-grid window, and they say so.
+	 * Truncated to the hour so it sits on every sub-day bucket boundary the
+	 * ladder produces; tests that need an off-grid window say so explicitly.
 	 */
 	private static final Instant TREND_ANCHOR = ANCHOR.truncatedTo(ChronoUnit.HOURS);
 
@@ -145,12 +133,9 @@ class TransactionGroupIntegrationTest {
 			.single();
 		partitions.ensurePartition(PartitionManager.TXN, ANCHOR);
 
-		// Every group meant to be ranked carries at least SAMPLE_FLOOR Transactions;
-		// anything smaller is excluded, and a fixture that ignored that would be testing
-		// the floor rather than what it was written to test.
+		// Every group meant to be ranked carries at least SAMPLE_FLOOR Transactions, or the fixture would be testing the floor instead.
 
-		// Group A — ten Transactions, 100…1000 ms. Every statistic below is read off
-		// this list by hand: total 5500, avg 550, max 1000, p50 550, p95 955, p99 991.
+		// Group A — ten Transactions, 100..1000 ms: total 5500, avg 550, max 1000, p50 550, p95 955, p99 991.
 		for (int i = 1; i <= 10; i++) {
 			seed(project, CHECKOUT, "http.server", "production", i * 100.0);
 		}
@@ -162,9 +147,7 @@ class TransactionGroupIntegrationTest {
 		for (int i = 1; i <= SAMPLE_FLOOR; i++) {
 			seed(project, "GET /api/cart", null, "production", i * 10.0);
 		}
-		// Group D — one Transaction, half a minute long. Its total, max and every
-		// percentile would top all three of the above, and none of them is a statistic:
-		// they are one duration wearing different labels.
+		// Group D — one 30s Transaction: it would top every statistic above, because they're all the same one duration.
 		seed(project, "GET /api/orders/98217", "http.server", "production", 30_000.0);
 		// Elsewhere: another Project, and another Environment Name in this one.
 		for (int i = 0; i < SAMPLE_FLOOR; i++) {
@@ -199,8 +182,7 @@ class TransactionGroupIntegrationTest {
 			.containsEntry("total_ms", 5500.0)
 			.containsEntry("avg_ms", 550.0)
 			.containsEntry("max_ms", 1000.0);
-		// Interpolated, so compared within a tolerance: p95 of ten values lands 55% of
-		// the way from 900 to 1000, and the double that comes back is 954.999…
+		// Interpolated: p95 of ten values lands 55% from 900 to 1000, i.e. 954.999... compared within tolerance.
 		assertThat(ms(checkout, "p50_ms")).isCloseTo(550.0, TOLERANCE);
 		assertThat(ms(checkout, "p95_ms")).isCloseTo(955.0, TOLERANCE);
 		assertThat(ms(checkout, "p99_ms")).isCloseTo(991.0, TOLERANCE);
@@ -217,9 +199,8 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The sample floor, at the point where it matters most: Group D's single 30-second
-	 * Transaction beats every other group in the fixture on total time, on max, and on
-	 * all three percentiles, so if it can be ranked at all it is ranked first.
+	 * Group D's single 30-second Transaction beats every other group on every
+	 * statistic, so if the sample floor didn't exclude it, it would rank first.
 	 */
 	@Test
 	void aGroupBelowTheSampleFloorCannotOutrankRealOnesHoweverExtremeItIs() {
@@ -241,11 +222,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The cardinality count is taken <em>before</em> the floor, and that is the whole
-	 * reason it is useful. The Project this warning exists for emits a Transaction
-	 * Group per unparameterized URL, each holding one or two Transactions — precisely
-	 * what the floor removes — so a count taken after it would come back near zero on
-	 * the only data that needs to be reported.
+	 * The cardinality count is taken before the floor — a Project emitting a
+	 * Transaction Group per unparameterized URL (1-2 Transactions each) is
+	 * exactly what the floor removes, so a post-floor count would read near zero
+	 * on the data that most needs reporting.
 	 */
 	@Test
 	void theDistinctGroupCountIncludesGroupsTheFloorExcluded() {
@@ -257,11 +237,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * Each sort ranks the same three groups differently, and the fixture is built so
-	 * that <b>no two of the four orders agree</b> — see {@link #seedSortFixture()}. A
-	 * controller that ignored {@code sort}, or mapped two of them to the same
-	 * expression, therefore fails here rather than passing on a list that happened to
-	 * come out the same way.
+	 * Each sort ranks the same three groups differently — no two of the four
+	 * orders agree (see {@link #seedSortFixture()}) — so a controller that
+	 * ignored {@code sort} or aliased two of them would fail here rather than
+	 * coincidentally pass.
 	 */
 	@Test
 	void eachSortRanksTheListAsItClaims() {
@@ -276,10 +255,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * An unrecognised sort is rejected, and the message says what the endpoint does
-	 * accept — a client that guessed wrong can only fix itself if it is told the set.
-	 * Coercing it to the default instead would hand back a different ranking than the
-	 * one asked for, which the client would then read as the one it asked for.
+	 * An unrecognised sort is rejected with the accepted set named in the
+	 * message, rather than coerced to the default — silently returning a
+	 * different ranking than the one asked for is worse than an error.
 	 */
 	@Test
 	void anUnrecognisedSortIsRejected() {
@@ -290,10 +268,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * And a sort carrying SQL is rejected by the same whitelist rather than reaching a
-	 * statement. The order is chosen from a map of literals written in the controller;
-	 * a request supplies a key, never an expression, so there is nothing here to
-	 * escape and nothing to get wrong.
+	 * A sort carrying SQL is rejected by the same whitelist before it reaches a
+	 * statement. The order expression is chosen from a fixed map in the
+	 * controller — a request supplies only a key, never an expression.
 	 */
 	@Test
 	void aSortCarryingSqlIsRejectedRatherThanInterpolated() {
@@ -330,26 +307,23 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The cardinality count is taken over the searched slice too. It annotates the
-	 * list, so a count over a wider set than the list it sits beside would warn about
-	 * names the user has just filtered away.
+	 * The cardinality count is taken over the searched slice too — counting the
+	 * wider unfiltered set would warn about names the user just filtered away.
 	 */
 	@Test
 	void theNameSearchNarrowsTheCardinalityCountWithIt() {
 		Map<String, Object> body = leaderboard("&project=" + project + "&environment=production&query=checkout");
 
-		// The two ops of the checkout group, and nothing else — not the four the
-		// unsearched window holds.
+		// The two ops of the checkout group only, not the four the unsearched window holds.
 		assertThat(body).containsEntry("distinct_groups", 2);
 	}
 
 	/**
-	 * The Release filter narrows the Transactions that are aggregated, and that is the
-	 * whole point of it: Release is <b>not</b> part of the Transaction Group key, so
-	 * one group spanning two versions stays one group, and filtering to a version
-	 * re-states its statistics for that version. This is what "attribute a change in
-	 * duration to a specific version" means in practice — the same group, twice, at a
-	 * fifth of the duration.
+	 * The Release filter narrows the Transactions aggregated, not the grouping
+	 * key — Release isn't part of (Project, name, op), so a group spanning two
+	 * versions stays one group and filtering just re-states its statistics for
+	 * that version. This is how a duration regression gets attributed to a
+	 * specific release.
 	 */
 	@Test
 	void theReleaseFilterNarrowsTheTransactionsAGroupIsComputedFrom() {
@@ -379,10 +353,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * "All time" is what the global range picker offers and what this endpoint
-	 * cannot answer (ADR-0015). It is clamped to 30 days, and the response says
-	 * which window it used and that it narrowed one — silent clamping is the shape
-	 * that produces "the numbers are wrong" reports.
+	 * "All time" (from the global range picker) is clamped to 30 days per
+	 * ADR-0015, and the response discloses the window and the clamp — silent
+	 * clamping is how "the numbers are wrong" reports happen.
 	 */
 	@Test
 	void anAllTimeRequestIsClampedToThirtyDaysAndSaysSo() {
@@ -408,10 +381,7 @@ class TransactionGroupIntegrationTest {
 		assertThat(window(body)).isEqualTo(30 * 24 * 60);
 		// 5 x 9999 ms would top a total-time ranking if the clamp had not excluded it.
 		assertThat(names(body)).doesNotContain("GET /api/ancient");
-		// And the cardinality count is taken over the clamped window too, or it would
-		// warn about names that are not in the list for a reason other than truncation.
-		// Five, not four: with no environment filter the staging group counts, because
-		// environment filters the input and is not part of the grouping key.
+		// Cardinality is taken over the clamped window too; five includes the staging group since environment filters input, not the key.
 		assertThat(body).containsEntry("distinct_groups", 5);
 	}
 
@@ -450,11 +420,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The list stops at 100 groups and offers no cursor — an aggregate has no key to
-	 * seek on (ADR-0015), so "there is no next page" is part of the contract rather
-	 * than an omission. What replaces the cursor is a flag saying the list was cut and
-	 * a count of everything it was cut from, so the user knows they are reading the
-	 * top of a longer list rather than all of it.
+	 * The list stops at 100 groups with no cursor — an aggregate has no key to
+	 * seek on (ADR-0015), so "no next page" is contractual, not an omission. In
+	 * its place, a flag says the list was cut and a count says how much it was
+	 * cut from.
 	 */
 	@Test
 	void theListStopsAtOneHundredGroupsAndSaysItWasCut() {
@@ -479,9 +448,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The boundary the {@code LIMIT MAX_GROUPS + 1} probe decides: exactly 100 ranked
-	 * groups is a complete list, not a cut one. Off by one here means every full page
-	 * tells the user there is more to see when there is not.
+	 * The {@code LIMIT MAX_GROUPS + 1} boundary: exactly 100 ranked groups is a
+	 * complete list, not a cut one — off by one here would make every full page
+	 * falsely claim more.
 	 */
 	@Test
 	void exactlyOneHundredGroupsIsNotTruncated() {
@@ -498,9 +467,9 @@ class TransactionGroupIntegrationTest {
 	// ------------------------------------------------------------------- detail
 
 	/**
-	 * The detail view a leaderboard row opens into carries the same statistics for the
-	 * one group, computed the same way — this is the assertion that the two screens the
-	 * user reads in sequence cannot disagree.
+	 * The detail view a leaderboard row opens into must carry the same
+	 * statistics, computed the same way — the two screens the user reads in
+	 * sequence cannot disagree.
 	 */
 	@Test
 	void theDetailViewCarriesTheSameStatisticsAsTheRow() {
@@ -515,9 +484,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * (Project, name, op) is the whole key, so an absent {@code op} means the group
-	 * whose op is <em>null</em> — not "any op", which names a set of Transaction Groups
-	 * rather than one and would average the very things the key exists to separate.
+	 * (Project, name, op) is the whole key, so an absent {@code op} means the
+	 * group whose op is null, not "any op" — which would average the very
+	 * things the key exists to separate.
 	 */
 	@Test
 	void anAbsentOpResolvesToTheGroupWhoseOpIsNull() {
@@ -528,9 +497,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * And it is that group only. The same name under an op is a different Transaction
-	 * Group, and asking for one must not collect the other — a detail view that summed
-	 * both would report statistics no row on the leaderboard shows.
+	 * The same name under a different op is a different Transaction Group — a
+	 * detail view that summed both would report statistics no leaderboard row
+	 * shows.
 	 */
 	@Test
 	void aNameCarriedByTwoOpsResolvesToTheOneAskedFor() {
@@ -541,10 +510,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The name matches exactly, not as a substring. The leaderboard's {@code query} is a
-	 * substring search because it is how a long list is narrowed to find a group; once
-	 * found, the group is identified by the name it actually has, and a substring here
-	 * would silently fold every route sharing a prefix into one set of statistics.
+	 * The name matches exactly here, unlike the leaderboard's {@code query}
+	 * substring search used to narrow a long list. Once found, a group is
+	 * identified by its actual name — a substring match here would silently
+	 * fold every route sharing a prefix into one set of statistics.
 	 */
 	@Test
 	void theNameMatchesExactlyRatherThanAsASubstring() {
@@ -553,10 +522,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * A Transaction Group too small to be ranked still has a detail view. The sample
-	 * floor keeps a one-sample group from taking a slot in a <em>ranking</em>; nothing
-	 * is ranked here, the request names the group, and the count travels beside the
-	 * percentiles so the user can see what they are worth.
+	 * A Transaction Group too small to be ranked still has a detail view — the
+	 * sample floor only keeps it out of the ranking; here the request names the
+	 * group directly, and the count travels beside the percentiles so the user
+	 * can judge them.
 	 */
 	@Test
 	void aGroupBelowTheSampleFloorStillHasADetailView() {
@@ -588,10 +557,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The 30-day cap applies here too, and says so. The header is read beside the row it
-	 * was opened from, over the same global range filter — a detail view that quietly
-	 * covered a different window than the list would disagree with the number the user
-	 * just clicked.
+	 * The 30-day cap applies here too — the header is read beside the row it
+	 * opened from, over the same global range filter, so it must agree with
+	 * the number the user just clicked.
 	 */
 	@Test
 	void anAllTimeDetailRequestIsClampedToThirtyDaysAndSaysSo() {
@@ -612,16 +580,14 @@ class TransactionGroupIntegrationTest {
 
 		String key = "&project=" + project + "&name=" + encode("GET /api/ancient") + "&op=http.server";
 
-		// Every Transaction it holds is outside the clamped window, so there is no group
-		// left to describe.
+		// Every Transaction here is outside the clamped window, so there's no group left to describe.
 		ResponseEntity<Map> empty = get(
 				GROUP + "?" + (key + "&from=" + ANCHOR.minus(90, ChronoUnit.DAYS)).replaceFirst("^&", ""),
 				adminCookie);
 		assertThat(empty.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 		assertThat(empty.getBody()).containsEntry("range_clamped", true).containsKeys("from", "to");
 		assertThat(window(empty.getBody())).isEqualTo(30 * 24 * 60);
-		// And the clamp is what excluded it, not a fixture that was never there: a window
-		// inside the cap, over the same rows, finds it.
+		// The clamp excluded it, not a missing fixture — the same rows are found inside the cap.
 		assertThat(detail(key + "&from=" + old.minus(1, ChronoUnit.DAYS) + "&to=" + old.plus(1, ChronoUnit.DAYS)))
 			.containsEntry("count", SAMPLE_FLOOR);
 	}
@@ -681,14 +647,11 @@ class TransactionGroupIntegrationTest {
 	// -------------------------------------------------------------------- trend
 
 	/**
-	 * The width comes from the shared ladder, so the range decides it and the endpoint
-	 * does not. Pinned as a table for the reason {@code TimeBucketsTest} pins its own:
-	 * asserting only that the point count is reasonable would pass for a rule that
-	 * picked a different width for every window.
-	 *
-	 * <p>The clamped row is the one the product actually shows. ADR-0015 caps this
-	 * window at 30 days, so 6 hours is the widest bucket a user can reach here, and
-	 * {@code 1w} — the last rung of the ladder — is unreachable from this endpoint.
+	 * Bucket width comes from the shared ladder, keyed to the range, pinned as
+	 * an exact table (not just a point count) per {@code TimeBucketsTest}'s
+	 * reasoning. ADR-0015 caps this window at 30 days, so 6 hours is the widest
+	 * bucket reachable here, and {@code 1w} — the ladder's last rung — is
+	 * unreachable from this endpoint.
 	 */
 	@Test
 	void theBucketWidthIsChosenByTheLadderForTheRequestedRange() {
@@ -701,13 +664,10 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The bucketed statistics themselves, against a fixture whose three intervals are a
-	 * flat stretch, a spike in the tail alone, and a step change in both series — the
-	 * three shapes the chart exists to tell apart.
-	 *
-	 * <p>Empty intervals are absent rather than zero. A bucket holding no Transactions
-	 * has no p50, and a zero there would draw a dive to the axis where the truth is that
-	 * nothing happened.
+	 * Bucketed statistics against a fixture with three shapes the chart must
+	 * tell apart: a flat stretch, a tail-only spike, and a step change in both
+	 * series. Empty intervals are absent rather than zero — a bucket with no
+	 * Transactions has no p50, and a zero would draw a false dive to the axis.
 	 */
 	@Test
 	void theTrendCarriesBucketedPercentilesAndCounts() {
@@ -726,24 +686,21 @@ class TransactionGroupIntegrationTest {
 		// Flat: five identical Transactions, so both series sit on the same value.
 		assertThat(ms(points.get(0), "p50_ms")).isCloseTo(100.0, TOLERANCE);
 		assertThat(ms(points.get(0), "p95_ms")).isCloseTo(100.0, TOLERANCE);
-		// Tail only: one slow Transaction among four fast ones lifts p95 and not p50 —
-		// interpolated 80% of the way from 100 to 1000, which is 820 and nothing else.
+		// Tail only: one slow Transaction among four lifts p95 not p50 — interpolated 80% from 100 to 1000 = 820.
 		assertThat(ms(points.get(1), "p50_ms")).isCloseTo(100.0, TOLERANCE);
 		assertThat(ms(points.get(1), "p95_ms")).isCloseTo(820.0, TOLERANCE);
 		// Step change: everything got slower, so both series move together.
 		assertThat(ms(points.get(2), "p50_ms")).isCloseTo(500.0, TOLERANCE);
 		assertThat(ms(points.get(2), "p95_ms")).isCloseTo(500.0, TOLERANCE);
 
-		// p99 is on the header and deliberately not on the chart: over a bucket it is
-		// computed from a fraction of the samples and is mostly noise.
+		// p99 is on the header, not the chart — over a bucket it's computed from too few samples and is mostly noise.
 		assertThat(points.get(0)).doesNotContainKey("p99_ms");
 	}
 
 	/**
-	 * The buckets and the statistics above them describe the same Transactions. This is
-	 * the invariant the whole response shape is arranged around, and it is why the trend
-	 * query is bound by the window the header reports rather than widened onto the
-	 * bucket grid the way the Log Timeline widens its own.
+	 * Buckets and header statistics describe exactly the same Transactions —
+	 * the trend query is bound to the reported window rather than widened onto
+	 * the bucket grid, unlike the Log Timeline.
 	 */
 	@Test
 	void theTrendCoversExactlyTheTransactionsTheStatisticsDo() {
@@ -757,14 +714,12 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * The grid the points are placed on is the window's start floored onto the bucket
-	 * boundaries, and it is reported separately from the window itself — the client
-	 * indexes points off it, and that arithmetic only comes out whole against the grid
-	 * {@code date_bin} actually bins to.
-	 *
-	 * <p>The window is <em>not</em> moved to meet it. A request starting ninety seconds
-	 * into the fixture's first minute excludes that minute's Transactions from both the
-	 * statistics and the chart, while the grid start still floors back to it.
+	 * The grid points are placed on is the window's start floored onto bucket
+	 * boundaries, reported separately since the client indexes off
+	 * {@code date_bin}'s actual grid. The window itself is not moved to meet it
+	 * — a request starting 90s into a bucket excludes that bucket's
+	 * Transactions from both stats and chart, even though the grid start
+	 * floors back to it.
 	 */
 	@Test
 	void theTrendReportsItsGridWithoutWideningTheWindow() {
@@ -802,9 +757,8 @@ class TransactionGroupIntegrationTest {
 	// ------------------------------------------------------------------ helpers
 
 	/**
-	 * {@code count} distinct Transaction Groups, each just clearing the sample floor —
-	 * the shape a Project with unparameterized URLs produces, minus the part where its
-	 * groups are too small to rank.
+	 * {@code count} distinct Transaction Groups, each just clearing the sample
+	 * floor — the shape an unparameterized-URL Project produces, but rankable.
 	 */
 	private void seedWideProject(int count) {
 		for (int i = 0; i < count; i++) {
@@ -815,8 +769,8 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * Three Transaction Groups whose four rankings are four <em>different</em> orders,
-	 * which is what makes each sort assertion able to fail:
+	 * Three Transaction Groups whose four rankings are four different orders,
+	 * so each sort assertion can actually fail:
 	 *
 	 * <pre>
 	 *   group                              count  total  p50     p95
@@ -827,10 +781,6 @@ class TransactionGroupIntegrationTest {
 	 *   total_ms: search, reports, import     p50: reports, search, import
 	 *   count:    search, import, reports     p95: import, reports, search
 	 * </pre>
-	 *
-	 * The shapes are the three the sorts exist to tell apart: a hot path that is fine
-	 * but called constantly, an endpoint that is uniformly slow, and one that is fast
-	 * until it is not.
 	 */
 	private void seedSortFixture() {
 		for (int i = 0; i < 40; i++) {
@@ -846,10 +796,9 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * One Transaction Group that got five times slower between two Releases — the
-	 * question the Release filter exists to answer. It is one group, not two: Release
-	 * filters the input to the aggregate and is not part of the (Project, name, op)
-	 * key.
+	 * One Transaction Group that got five times slower between two Releases.
+	 * It's one group, not two — Release filters the aggregate's input and
+	 * isn't part of the (Project, name, op) key.
 	 */
 	private void seedReleaseFixture() {
 		for (int i = 0; i < SAMPLE_FLOOR; i++) {
@@ -859,8 +808,7 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * One Transaction Group across three one-minute intervals, ten minutes apart, whose
-	 * shapes are the three the two-series chart exists to distinguish:
+	 * One Transaction Group across three one-minute intervals, ten minutes apart:
 	 *
 	 * <pre>
 	 *   interval          durations                p50   p95
@@ -869,10 +817,7 @@ class TransactionGroupIntegrationTest {
 	 *   +20m  step        5 x 500ms                500   500
 	 * </pre>
 	 *
-	 * "Everything got slower" and "only the tail got worse" have different causes, and
-	 * a fixture where both series always move together could not tell whether the chart
-	 * distinguishes them. The intervals are spaced so the minutes between them are empty
-	 * and can be asserted absent.
+	 * The gaps between intervals are minutes with no Transactions, asserted absent.
 	 */
 	private void seedTrendFixture() {
 		for (int i = 0; i < SAMPLE_FLOOR; i++) {
@@ -998,10 +943,11 @@ class TransactionGroupIntegrationTest {
 	}
 
 	/**
-	 * Passed as a {@link java.net.URI} rather than a String: a String is a URI
-	 * <em>template</em> to {@code RestTemplate}, which expands {@code {id}} in a
-	 * transaction name and re-encodes the {@code %2F} of an already-encoded one. The
-	 * path arrives here encoded, and a URI is what stops it being encoded twice.
+	 * Passed as a {@link java.net.URI}, not a String — a String is a URI
+	 * template to {@code RestTemplate}, which would expand {@code {id}} in a
+	 * transaction name and re-encode an already-encoded {@code %2F}. The path
+	 * arrives here already encoded, and a URI is what stops it being encoded
+	 * twice.
 	 */
 	private ResponseEntity<Map> get(String path, String cookie) {
 		HttpHeaders headers = new HttpHeaders();

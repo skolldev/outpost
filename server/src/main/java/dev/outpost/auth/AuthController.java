@@ -52,11 +52,10 @@ public class AuthController {
 	}
 
 	/**
-	 * Self-service password change. Lives here rather than on the admin-gated
-	 * {@code UserController} so that a Member-reachable method never sits inside a
-	 * class annotated admin-only. The current password is re-verified so that an
-	 * unlocked laptop cannot lock the owner out — per ADR-0013 there is no recovery
-	 * short of an Admin deleting and recreating the account.
+	 * Self-service password change; kept off the admin-gated
+	 * {@code UserController} so this Member-reachable endpoint isn't inside an
+	 * admin-only class. Requires the current password (per ADR-0013, there is
+	 * no recovery besides an Admin recreating the account).
 	 */
 	@PostMapping("/password")
 	public ResponseEntity<Map<String, String>> changePassword(@RequestBody PasswordChange request,

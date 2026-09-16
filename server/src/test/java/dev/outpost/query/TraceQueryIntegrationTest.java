@@ -25,13 +25,10 @@ import org.springframework.web.client.RestTemplate;
 /**
  * A trace started in the browser (pageload transaction + fetch span) continues
  * into Spring Boot (request transaction whose parent_span_id is the browser fetch
- * span) with an error and a log on the same trace_id. {@code GET /traces/{id}}
+ * span), with an error and a log on the same trace_id. {@code GET /traces/{id}}
  * returns all four signals in one cross-project payload; {@code GET /traces}
  * search honors the common filters, duration range, "has errors", and keyset
- * cursor.
- *
- * <p>Interim: SDK-<b>shaped</b> transaction envelopes, not real ones. Swap for
- * real demo apps once they exist.
+ * cursor. Envelopes here are SDK-shaped, not from real demo apps.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -88,34 +85,27 @@ class TraceQueryIntegrationTest {
 
 	@Test
 	void traceWaterfallSpansBothServicesWithErrorsAndLogs() {
-		// Browser pageload transaction (frontend project) with a child fetch span.
 		postEnvelope(frontendProject, frontendKey, browserTransactionEnvelope());
-		// Backend request transaction (backend project) continuing the browser fetch span.
 		postEnvelope(backendProject, backendKey, backendTransactionEnvelope());
-		// An error and a log on the same trace, from the backend.
 		postEnvelope(backendProject, backendKey, errorEnvelope());
 		postEnvelope(backendProject, backendKey, logEnvelope());
 
 		Map<String, Object> trace = awaitTrace(2, 1, 1);
 
-		// Two transactions across two projects.
 		List<Map<String, Object>> transactions = cast(trace.get("transactions"));
 		assertThat(transactions).hasSize(2);
 		assertThat(transactions).extracting(t -> t.get("project_id"))
 			.containsExactlyInAnyOrder((int) frontendProject, (int) backendProject);
-		// The backend txn continues the browser fetch span (cross-service nesting).
 		assertThat(transactions).anySatisfy(t -> {
 			if (BACKEND_SPAN.equals(t.get("span_id"))) {
 				assertThat(t.get("parent_span_id")).isEqualTo(FETCH_SPAN);
 			}
 		});
 
-		// Spans: the browser fetch span + a backend JDBC span.
 		List<Map<String, Object>> spans = cast(trace.get("spans"));
 		assertThat(spans).extracting(s -> s.get("op")).contains("http.client", "db.sql.query");
 		assertThat(spans).anySatisfy(s -> assertThat(s.get("span_id")).isEqualTo(FETCH_SPAN));
 
-		// Error and log pinned to the trace.
 		List<Map<String, Object>> errors = cast(trace.get("errors"));
 		assertThat(errors).hasSize(1);
 		assertThat(errors.get(0).get("exception_type")).isEqualTo("IllegalStateException");
@@ -131,8 +121,8 @@ class TraceQueryIntegrationTest {
 		postEnvelope(backendProject, backendKey, errorEnvelope());
 		awaitTrace(2);
 
-		// One distributed trace, even though it has two transactions across two
-		// services. It is represented by its root (browser pageload).
+		// One distributed trace, represented by its root (the browser pageload),
+		// despite two transactions across two services.
 		List<Map<String, Object>> all = searchTraces("");
 		assertThat(all).hasSize(1);
 		assertThat(all.get(0).get("name")).isEqualTo("/checkout");
@@ -140,9 +130,7 @@ class TraceQueryIntegrationTest {
 		assertThat((int) all.get(0).get("span_count")).isEqualTo(2);
 		assertThat((int) all.get(0).get("error_count")).isEqualTo(1);
 
-		// The trace is reachable by filtering on EITHER project — the backend
-		// transaction is a continuation (non-root), so this is the property that a
-		// naive "roots only" query would break.
+		// Reachable via either project — the backend txn is a continuation, not the root.
 		assertThat(searchTraces("&project=" + frontendProject)).hasSize(1);
 		List<Map<String, Object>> viaBackend = searchTraces("&project=" + backendProject);
 		assertThat(viaBackend).hasSize(1);
@@ -151,11 +139,10 @@ class TraceQueryIntegrationTest {
 		// Root-name substring search (matches the browser root).
 		assertThat(searchTraces("&query=checkout")).hasSize(1);
 
-		// has_errors: the trace has an error event.
 		assertThat(searchTraces("&has_errors=true")).hasSize(1);
 
-		// Duration range filters per transaction, then dedupes to the trace: only the
-		// browser txn is ≥300ms; only the backend txn is ≤300ms.
+		// Duration filters per transaction then dedupe to the trace — only the browser
+		// txn is ≥300ms, only the backend is ≤300ms.
 		assertThat(searchTraces("&min_duration=300")).extracting(t -> t.get("name")).containsExactly("/checkout");
 		assertThat(searchTraces("&max_duration=300")).extracting(t -> t.get("name")).containsExactly("GET /api/checkout");
 	}

@@ -16,11 +16,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Pure tests for the keyset-pagination seam: the cursor codec (per column type),
- * the {@code n+1} trim boundary, and the build-phase SQL tail. No database — the
- * whole point of keeping {@link KeysetPage} pure is that this is the test
- * surface. The strongest checks round-trip a cursor: {@code paginate} encodes it
- * from the last row, {@code build} decodes it back into the bind params that
- * would re-anchor the next page.
+ * the {@code n+1} trim boundary, and the build-phase SQL tail. The strongest
+ * checks round-trip a cursor: {@code paginate} encodes it from the last row,
+ * {@code build} decodes it back into the bind params that re-anchor the next page.
  */
 class KeysetPageTest {
 
@@ -39,8 +37,7 @@ class KeysetPageTest {
 		assertThat(result.rows()).hasSize(2);
 		assertThat(result.nextCursor()).isNotNull();
 
-		// Feeding the cursor back must decode to the last retained row's (ts, id),
-		// bound as the SQL layer expects (Timestamp, UUID).
+		// The cursor must decode back to the last retained row's (ts, id), bound as (Timestamp, UUID).
 		KeysetPage.Tail tail = page.build(result.nextCursor());
 		assertThat(tail.params()).containsExactly(Timestamp.from(lastTs), lastId);
 	}
@@ -122,9 +119,8 @@ class KeysetPageTest {
 	// -------------------------------------------------- trim to a smaller page
 
 	/**
-	 * The MCP Surface's Tools fetch the list page's page size and return fewer. The
-	 * cursor has to come from the last row <em>returned</em>, not the last row
-	 * fetched, or the next page silently skips everything trimmed away.
+	 * The cursor must come from the last row returned, not the last row fetched,
+	 * or the next page silently skips everything trimmed away.
 	 */
 	@Test
 	void trimmingToASmallerPageCursorsFromTheLastRowReturned() {

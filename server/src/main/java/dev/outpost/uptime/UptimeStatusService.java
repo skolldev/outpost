@@ -11,50 +11,26 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * The read side of uptime monitoring: the Uptime Monitors, their current state,
- * the open Incidents against them, and the daily rollup of Uptime Checks the
- * status page is drawn from.
- *
- * <p>It exists as a service rather than staying inside {@link UptimeController}
- * because it acquired a second consumer: the MCP Surface's {@code uptime_status}
- * Tool answers the same question for an agent, and the alternative was either a
- * Tool injecting a {@code @RestController} or a second copy of these statements.
- * The repo's convention of declaring DTOs inside the controller that uses them
- * assumes one consumer; where there are two, the records move here with the
- * statements that produce them — {@code server/CLAUDE.md} records the amended
- * rule. The JSON on the wire is unchanged: these are the same records under the
- * same component names.
- *
- * <p><b>This type is public and reached from another package, which ADR-0016
- * declined to do for {@code dev.outpost.query}'s own {@code build…Query}
- * factories.</b> The difference is that those factories are the seam the
- * performance guards {@code EXPLAIN} through and widening them would have been
- * for a test's convenience; this is a second production consumer, which is the
- * case that ADR names as the reason to reconsider. The statements below stay in
- * one place either way.
- *
- * <p><b>Both callers pass their own {@link JdbcClient}, and that is the point.</b>
- * The MCP Surface's query path carries a statement timeout that must not reach
- * the UI's queries, so the caller decides which template runs the statement while
- * the statement itself stays shared. The alternative — the Tool holding its own
- * copy of this SQL so it could bind its own timeout — is exactly what this class
- * exists to prevent.
+ * The read side of uptime monitoring: Monitors, their current state, open
+ * Incidents, and the daily rollup of Uptime Checks the status page is drawn
+ * from. Public because it has two consumers — {@link UptimeController} and
+ * the MCP Surface's {@code uptime_status} Tool — each passing its own
+ * {@link JdbcClient} so the MCP path's statement timeout can't leak into UI
+ * queries.
  */
 @Service
 public class UptimeStatusService {
 
 	/**
-	 * The widest span the daily rollup covers, in whole UTC days including today,
-	 * and what the status page always asks for: a status page shows a fixed span,
-	 * independent of the global range filter.
+	 * The rollup's span in whole UTC days including today; the status page
+	 * always requests this fixed window, independent of the global range filter.
 	 */
 	public static final int WINDOW_DAYS = 90;
 
 	/**
-	 * A built statement and its ordered bind params. The same shape as
-	 * {@code dev.outpost.query.SearchQuery} and deliberately a separate type: that
-	 * one is package-private, and ADR-0016 records that the boundary was held even
-	 * for the test harness.
+	 * A built statement with its ordered bind params — the same shape as
+	 * {@code dev.outpost.query.SearchQuery}, kept as a separate type per
+	 * ADR-0016.
 	 */
 	public record UptimeQuery(String sql, List<Object> params) {
 	}
@@ -97,20 +73,12 @@ public class UptimeStatusService {
 	}
 
 	/**
-	 * Every Uptime Monitor in scope with its current state, its open Incident if it
-	 * has one, and its daily Uptime Check rollup over the last {@code days} days.
-	 *
-	 * <p>Both narrowings are <b>predicates, not post-filters</b>. Reading every
-	 * Monitor's ninety days and discarding most of it in Java would make the two
-	 * parameters trim the payload while the work stayed the same — and
-	 * {@code uptime_check} is a plain table holding one row per probe per interval,
-	 * so that work grows with retention. The MCP Surface is where an unattended
-	 * caller reaches this.
-	 *
-	 * <p>A Monitor with no Uptime Check recorded yet reads {@code unknown} rather
-	 * than {@code up}: nothing has been observed, which is not the same as having
-	 * observed success. The Incident is read regardless of {@code days}, because an
-	 * Incident that opened before the window is still open now.
+	 * Every Uptime Monitor in scope, its current state, its open Incident if
+	 * any, and its daily Uptime Check rollup over the last {@code days} days.
+	 * Both narrowings are predicates, not post-filters, since
+	 * {@code uptime_check} grows with retention; a Monitor with no Check yet
+	 * reads {@code unknown}, not {@code up}, and an Incident opened before the
+	 * window still shows.
 	 */
 	public Overview overview(JdbcClient jdbc, List<Long> projectIds, int days) {
 		List<Monitor> monitors = monitors(jdbc, projectIds);
@@ -157,12 +125,9 @@ public class UptimeStatusService {
 		return jdbc.sql(query.sql()).params(query.params()).query(UptimeStatusService::mapMonitor).list();
 	}
 
-	// ------------------------------------------------------------------ queries
-
 	/**
-	 * The Monitors in scope, optionally one by id. Extracted as a factory for the
-	 * reason the query controllers extract theirs: a guard has to {@code EXPLAIN}
-	 * the statement this runs rather than a copy of it.
+	 * The Monitors in scope, optionally narrowed to one by id. Extracted as a
+	 * factory so a guard can {@code EXPLAIN} this exact statement.
 	 */
 	public static UptimeQuery buildMonitorQuery(List<Long> project, Long id) {
 		StringBuilder sql = new StringBuilder("""
@@ -181,9 +146,9 @@ public class UptimeStatusService {
 	}
 
 	/**
-	 * The Incidents still open, which is what makes a Monitor read {@code down}.
-	 * Answered from the partial unique index on open Incidents, so it costs one
-	 * index scan whatever the history holds.
+	 * The still-open Incidents, which is what makes a Monitor read {@code down}.
+	 * Answered via the partial unique index on open Incidents, so it costs one
+	 * index scan regardless of history size.
 	 */
 	public static UptimeQuery buildOpenIncidentQuery(List<Long> project) {
 		StringBuilder sql = new StringBuilder("""
@@ -197,15 +162,10 @@ public class UptimeStatusService {
 	}
 
 	/**
-	 * Uptime Checks rolled up per Monitor per UTC day over the last {@code days}
-	 * days.
-	 *
-	 * <p><b>This is the one statement here whose cost is O(matching rows) rather
-	 * than O(monitors), and no index changes that</b> — an aggregate cannot stop
-	 * early. What bounds it is the window and the Project filter, which is why both
-	 * are predicates: at a 30-second interval one Monitor writes ~2 880 rows a day,
-	 * so the difference between ninety days of every Monitor and seven days of one
-	 * is the difference between the two questions being asked.
+	 * Uptime Checks rolled up per Monitor per UTC day over the last
+	 * {@code days} days. Cost is O(matching rows), not O(monitors) — an
+	 * aggregate can't stop early — which is why the window and Project filter
+	 * are predicates, not post-filters.
 	 */
 	public static UptimeQuery buildDailyRollupQuery(List<Long> project, int days) {
 		StringBuilder sql = new StringBuilder("""
@@ -224,10 +184,10 @@ public class UptimeStatusService {
 	}
 
 	/**
-	 * The most recent Uptime Check per Monitor, which is the state a Monitor with no
-	 * open Incident reports. {@code DISTINCT ON} walks
-	 * {@code idx_uptime_check_monitor_ts} backwards per Monitor and stops, so it
-	 * carries no time bound and does not need one.
+	 * The most recent Uptime Check per Monitor — the state reported when
+	 * there's no open Incident. {@code DISTINCT ON} walks
+	 * {@code idx_uptime_check_monitor_ts} backwards per Monitor and stops, so
+	 * it needs no time bound.
 	 */
 	public static UptimeQuery buildLastCheckQuery(List<Long> project) {
 		StringBuilder sql = new StringBuilder("""

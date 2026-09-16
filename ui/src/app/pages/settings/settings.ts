@@ -11,13 +11,9 @@ interface SettingsTab {
 }
 
 /**
- * Settings shell: a tab bar over the installation resources. Each tab is its own
- * routed component (see settings.routes.ts) and the active tab is driven by the
- * URL, so settings are deep-linkable and consistent with the rest of the app's
- * URL-as-state model.
- *
- * <p>A Member sees only API tokens — the one tab that is theirs, where they mint
- * a Personal Token for their own agent (ADR-0017).
+ * Settings shell: a tab bar over the installation resources, driven by the URL
+ * so tabs are deep-linkable. A Member sees only API tokens, to mint a Personal
+ * Token for their own agent (ADR-0017).
  */
 @Component({
   selector: 'app-settings',

@@ -24,15 +24,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * {@code GET /logs/timeline} end to end (#141): the wire shape the chart is drawn
- * from, and the two rules the client cannot enforce for itself — that the server
- * resolves the window it was not given, and that the window is half-open.
- *
- * <p>Records are seeded on exact bucket boundaries rather than at convenient
- * offsets, because the boundary is where every off-by-one in this feature lives: a
- * record on a bucket edge counted into both of the selections either side of it is
- * the defect the half-open window exists to prevent, and it is invisible to a
- * fixture whose timestamps all sit mid-bucket.
+ * {@code GET /logs/timeline} end to end (#141): the server resolves the window
+ * when the client omits it, and the window is half-open. Records are seeded on
+ * exact bucket boundaries, since off-by-one bugs there are invisible to
+ * fixtures with mid-bucket timestamps.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -103,14 +98,8 @@ class LogTimelineIntegrationTest {
 
 	/**
 	 * A window that does not start on a bucket boundary is snapped down to one, and
-	 * the snapped instant is what comes back.
-	 *
-	 * <p>This is the case every other test here was blind to, because every other
-	 * fixture instant is already aligned. {@code date_bin} bins from a fixed origin,
-	 * so with an unaligned {@code from} the client's
-	 * {@code (bucket.start - from) / width} puts every bucket one index low and floors
-	 * the first to {@code -1}, silently dropping it and shifting the chart a bar left
-	 * — while a spot check of "are the counts right?" passes, because the counts are.
+	 * the snapped instant is returned. An unaligned {@code from} would otherwise put
+	 * every client-computed bucket index one low, silently dropping the first bucket.
 	 */
 	@Test
 	void anUnalignedWindowIsSnappedOntoTheBucketGrid() {
@@ -142,9 +131,8 @@ class LogTimelineIntegrationTest {
 	}
 
 	/**
-	 * A backwards window is clamped to an empty one rather than rejected or quietly
-	 * inverted — a request the range picker cannot produce, but a hand-edited URL can,
-	 * and {@code date_bin} over an inverted window is not a shape worth finding out.
+	 * A backwards window is clamped to an empty one rather than rejected or inverted
+	 * — a request the range picker cannot produce, but a hand-edited URL can.
 	 */
 	@Test
 	void aReversedWindowCollapsesToAnEmptyOne() {

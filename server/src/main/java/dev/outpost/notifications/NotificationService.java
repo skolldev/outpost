@@ -20,25 +20,12 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The one deep module behind the publisher seam (#41). Owns everything existing
- * code must not know about: channel matching, history persistence, per-type
- * payload formatting, and asynchronous HTTP delivery with retries. Callers see
- * only {@link NotificationPublisher#publish}.
- *
- * <p>Delivery is fully decoupled from ingest and uptime (ADR 0005):
- * {@code publish} hands the occurrence to a virtual-thread executor and returns,
- * so a slow receiver or saturated executor can never backpressure the caller. A
- * {@code pending} history row is written up front and moved to
- * {@code sent}/{@code failed} once the send resolves; a shutdown mid-send leaves
- * the row stale rather than redelivering.
- *
- * <p>Per-type formatting lives behind the {@link NotificationFormatter} seam
- * (resolved by {@link NotificationFormatters}), so a new channel type slots in as
- * a formatter bean without touching this delivery path, the matching query, or
- * any caller.
- *
- * <p>Deliveries are rate-capped per channel (ADR 0010, #47) — see
- * {@link #reserveSlot}.
+ * The deep module behind the publisher seam: owns channel matching, history persistence,
+ * per-type payload formatting (via {@link NotificationFormatter}), and asynchronous HTTP
+ * delivery with retries, all invisible to {@link NotificationPublisher#publish} callers.
+ * Delivery is fully decoupled from callers (ADR 0005) — {@code publish} hands off to a
+ * virtual-thread executor and returns, and per-channel deliveries are rate-capped (ADR 0010, see
+ * {@link #reserveSlot}).
  */
 @Component
 public class NotificationService implements NotificationPublisher, SmartLifecycle {
@@ -79,8 +66,7 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	private final OutpostProperties properties;
 	private final TransactionTemplate rateLimitTransaction;
 
-	// Recreated on each start() so a SmartLifecycle stop()/start() cycle (e.g. the
-	// test-context pause) gets a live executor.
+	// Recreated on each start() so a stop()/start() cycle gets a live executor.
 	private ExecutorService deliveries;
 	private volatile boolean running;
 
@@ -106,8 +92,7 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	public synchronized void stop() {
 		running = false;
 		if (deliveries != null) {
-			// Fire-and-forget like uptime probes: don't await in-flight sends;
-			// a row left pending by shutdown is best-effort-acceptable (ADR 0005).
+			// Don't await in-flight sends; a stranded pending row is acceptable (ADR 0005).
 			deliveries.shutdownNow();
 		}
 	}
@@ -178,10 +163,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Match, format, and deliver an occurrence to every channel that fires on it.
-	 * The payload depends only on the channel's <em>type</em>, so it is formatted
-	 * once per distinct type — and always before any pending row is written, so a
-	 * formatting failure can't strand a row stuck at {@code pending}.
+	 * Matches, formats, and delivers an occurrence to every channel that fires on it. The payload
+	 * depends only on the channel's type, so it's formatted once per distinct type, and always
+	 * before any pending row is written — a formatting failure can't strand a row at
+	 * {@code pending}.
 	 */
 	private void deliverToMatches(NotificationOccurrence occurrence, NotificationContext context, long projectId,
 			String environment, String summary) {
@@ -203,13 +188,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Enforce the per-channel rate cap (ADR 0010) and, if there is room, reserve a
-	 * delivery slot — empty means the caller must skip the HTTP send.
-	 *
-	 * <p>A delivery is any non-{@code suppressed} row, since
-	 * {@code pending}/{@code sent}/{@code failed} each consumed an attempt. The
-	 * advisory lock serializes count-and-insert per channel so concurrent
-	 * virtual-thread deliveries cannot overshoot the cap.
+	 * Enforces the per-channel rate cap (ADR 0010); empty return means the caller must skip the
+	 * HTTP send. A delivery is any non-{@code suppressed} row, and the advisory lock serializes
+	 * count-and-insert per channel so concurrent virtual-thread deliveries can't overshoot the
+	 * cap.
 	 */
 	private OptionalLong reserveSlot(long channelId, String triggerType, String summary) {
 		return rateLimitTransaction.execute(status -> {
@@ -237,10 +219,8 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Keyed on the channel, so one channel's lock never blocks another's, and
-	 * transaction-scoped so it is released at commit — before any HTTP send, never
-	 * across the network. Same idiom as {@code EventIssueLock}, but a separate
-	 * concern, so it stays local to this module.
+	 * Keyed on the channel so one channel's lock never blocks another's; transaction-scoped so it
+	 * releases at commit, before the HTTP send, never held across the network.
 	 */
 	private void lockChannelForRate(long channelId) {
 		jdbc.sql("SELECT pg_advisory_xact_lock(?, ?)")
@@ -251,11 +231,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Admin test-send (#44): deliver to one named channel, bypassing matching but
-	 * respecting {@code enabled} and per-type formatting. Re-checks both after
-	 * {@link #testSend}'s pre-check, since the channel can change while the task
-	 * sits in the executor queue. Deliberately skips {@link #reserveSlot} — a
-	 * verification send must not be refused by the rate cap (ADR 0010).
+	 * Delivers to one named channel, bypassing matching but respecting {@code enabled} and
+	 * per-type formatting; re-checks both because the channel can change while the task sits in
+	 * the executor queue. Deliberately skips {@link #reserveSlot} — a verification send must not
+	 * be refused by the rate cap (ADR 0010).
 	 */
 	private TestSendResult deliverTest(NotificationOccurrence.Test occurrence) {
 		ChannelRow channel = loadChannel(occurrence.channelId());
@@ -276,11 +255,9 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Fire a test-send at one channel and wait for the outcome. Refusals are decided
-	 * up front so the endpoint answers without touching the network; the delivery
-	 * itself goes through the same executor as real notifications — that is what
-	 * makes a green test prove the whole path — and is awaited so the Admin sees the
-	 * outcome inline.
+	 * Fires a test-send at one channel and waits for the outcome. Refusals are decided up front
+	 * so the endpoint answers without touching the network; the delivery itself goes through the
+	 * same executor as real notifications and is awaited so the Admin sees the outcome inline.
 	 */
 	public TestSendResult testSend(long channelId) {
 		ChannelRow channel = loadChannel(channelId);
@@ -337,14 +314,10 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Channels that fire on this occurrence, of any type — the
-	 * {@link NotificationFormatter} seam formats per type at delivery. An empty
-	 * filter array matches everything.
-	 *
-	 * <p>A non-empty {@code environment_filter} never matches an occurrence with no
-	 * environment, because {@code null = ANY(...)} is not true — so only the
-	 * empty-filter branch admits it, which is the intended semantics rather than an
-	 * accident of the SQL.
+	 * Channels that fire on this occurrence, of any type ({@link NotificationFormatter} formats
+	 * per type at delivery); an empty filter array matches everything. A non-empty
+	 * {@code environment_filter} never matches a {@code null} environment, because
+	 * {@code null = ANY(...)} is not true in SQL — this is intended, not a bug.
 	 */
 	private List<MatchedChannel> matchChannels(String triggerType, long projectId, String environment) {
 		return jdbc.sql("""
@@ -382,9 +355,8 @@ public class NotificationService implements NotificationPublisher, SmartLifecycl
 	}
 
 	/**
-	 * Built from {@code outpost.public-url} like the DSN in
-	 * {@code ProjectController}, so a reverse-proxy sub-path prefix is preserved and
-	 * the link resolves through the same base the UI is served under.
+	 * Built from {@code outpost.public-url}, so a reverse-proxy sub-path prefix is preserved and
+	 * the link resolves under the same base the UI is served from.
 	 */
 	private String issueLink(long issueId) {
 		return properties.baseUrl() + "/issues/" + issueId;

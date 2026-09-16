@@ -18,11 +18,10 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * The UI and the API share one origin and one port now that nginx is gone, so
- * this pins the boundary between them: client-side routes get the app shell,
- * everything the server owns keeps its own status. The bundle under test is the
- * stand-in in {@code src/test/resources/static/} — the real one only exists
- * after an image build.
+ * Pins the boundary between client-side routes, which get the app shell, and
+ * server-owned paths, which keep their own status. The bundle under test is the
+ * stand-in in {@code src/test/resources/static/}; the real one only exists after
+ * an image build.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -53,8 +52,6 @@ class SpaRoutingIntegrationTest {
 
 	@Test
 	void coldLoadOfAClientRouteFallsBackToTheShell() {
-		// No file backs /issues/42 — without the fallback a deep link or a
-		// refresh anywhere but "/" would 404.
 		ResponseEntity<String> response = get("/issues/42");
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -77,9 +74,7 @@ class SpaRoutingIntegrationTest {
 
 	@Test
 	void theBundleIsCompressed() {
-		// The bundle is served as text/javascript, not application/javascript.
-		// Listing only the latter leaves the single largest asset uncompressed,
-		// which is invisible short of reading response headers.
+		// Served as text/javascript, not application/javascript — a config listing only the latter would silently skip it.
 		HttpHeaders request = new HttpHeaders();
 		request.set(HttpHeaders.ACCEPT_ENCODING, "gzip");
 
@@ -91,8 +86,7 @@ class SpaRoutingIntegrationTest {
 
 	@Test
 	void aMissingBundleIs404RatherThanHtml() {
-		// Returning the shell here would surface as an opaque MIME-type error in
-		// the browser instead of a missing file.
+		// Returning the shell here would surface as an opaque MIME-type error in the browser instead of a missing file.
 		ResponseEntity<String> response = get("/main-GONE.js");
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
@@ -100,10 +94,7 @@ class SpaRoutingIntegrationTest {
 
 	@Test
 	void unmappedApiPathsStay404() {
-		// The ingest surface is permitAll, so this reaches the resource handler
-		// the way an unmapped path does. Without the resolver's prefix guard it
-		// would come back as a 200 carrying the app shell, and an SDK posting to
-		// a mistyped endpoint would see success.
+		// Ingest paths are permitAll; without the resolver's prefix guard this would 200 with the shell instead of 404.
 		ResponseEntity<String> response = get("/api/99999/does-not-exist");
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);

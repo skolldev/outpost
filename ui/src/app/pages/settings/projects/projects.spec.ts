@@ -54,8 +54,7 @@ describe('ProjectsSettings', () => {
     expect(await screen.findByText(/No projects yet/)).toBeInTheDocument();
   });
 
-  // The platform picker is now the rich hlm-select (combobox trigger + listbox
-  // of options), not a native <select> — drive it through its ARIA roles.
+  /** hlm-select renders an ARIA combobox; open it, then pick an option by name. */
   async function selectPlatform(user: ReturnType<typeof userEvent.setup>, name: string) {
     await user.click(screen.getByRole('combobox'));
     await user.click(await screen.findByRole('option', { name }));
@@ -115,7 +114,7 @@ describe('ProjectsSettings', () => {
     expect(submit).toBeDisabled();
 
     await user.type(screen.getByLabelText('Slug'), 'new-app');
-    expect(submit).toBeDisabled(); // platform still unselected
+    expect(submit).toBeDisabled();
 
     await selectPlatform(user, 'Angular');
     expect(submit).toBeEnabled();

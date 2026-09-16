@@ -11,19 +11,11 @@ import java.util.List;
 
 /**
  * The <b>retrieval</b> benchmark's columns: latency percentiles beside the plan
- * facts of the same query.
- *
- * <p>Carrying both is the deliberate improvement over the ingest report. Latency
- * alone cannot distinguish an O(rows) plan from a pruning failure from a sort
- * spilling to disk from plain cold I/O — four different follow-up issues that all
- * read as "slow". Shared hits, shared reads, partitions scanned and temp I/O do
- * distinguish them, they are machine-independent, and they all come out of the
- * single {@code EXPLAIN} the guards already parse, so the extra columns cost
- * nothing.
- *
- * <p>The latency columns carry no threshold anywhere. They are for comparing a
- * before against an after on one machine, and the header says so — a percentile
- * table without that caveat gets quoted as a capacity claim.
+ * facts of the same query. Latency alone can't distinguish an O(rows) plan from
+ * a pruning failure from a sort spilling to disk from plain cold I/O — shared
+ * hits, shared reads, partitions scanned and temp I/O, all machine-independent,
+ * can. The latency columns carry no threshold; they're for a before/after on one
+ * machine, and the written header says so.
  */
 public final class RetrievalReport {
 
@@ -104,8 +96,7 @@ public final class RetrievalReport {
 			out.append(" | ").append(round(load.p99Millis()));
 			out.append(" | ").append(round(load.maxMillis()));
 			out.append(" | ").append(row.rowsReturned());
-			// An endpoint with no single statement behind it has no plan facts, and "0
-			// blocks" would read as the fastest row in the table rather than as a gap.
+			// An endpoint with no single statement behind it has no plan facts; "0 blocks" would read as fastest, not a gap.
 			boolean known = !plan.equals(PlanFacts.NONE);
 			out.append(" | ").append(known ? plan.sharedHits() : "—");
 			out.append(" | ").append(known ? plan.sharedReads() : "—");

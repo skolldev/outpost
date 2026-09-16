@@ -2,9 +2,7 @@ import { toast } from '@spartan-ng/brain/sonner';
 
 import { Feedback } from './feedback';
 
-// The only place that spies sonner's global `toast` directly: it pins the
-// mapping Feedback owns (success uses the default lifetime, error persists for
-// 10s). Every other spec spies the Feedback seam instead.
+// Spies sonner's `toast` directly to pin the lifetimes Feedback owns; other specs spy the Feedback seam.
 describe('Feedback', () => {
   it('emits a success toast with sonner’s default lifetime', () => {
     const success = vi.spyOn(toast, 'success').mockReturnValue(0);

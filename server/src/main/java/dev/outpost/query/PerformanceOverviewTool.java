@@ -14,43 +14,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * The MCP Surface's {@code performance_overview} Tool: the Transaction Group
- * leaderboard with the duration statistics the Performance view ranks by.
- *
- * <p>Both statements are {@link TransactionGroupController}'s own — the ranking
- * and the cardinality count beside it — so the 30-day window cap and
- * {@code TransactionGroupPerformanceTest}'s guards come with them (ADR-0016).
- * The window is resolved through the controller's own {@code Window} for the same
- * reason: a clamp computed here would be a second definition of the cap that
- * could drift from the one the statement is actually bound by.
- *
- * <p><b>This is the Tool whose caveats do the most work, and they are the reason
- * it is worth shipping at all.</b> The Performance view carries them as a banner
- * next to the numbers; a Tool result carries no banner, and every one of them is
- * a fact about what the numbers mean rather than decoration:
- *
- * <ul>
- * <li><b>Sampling.</b> Sentry SDKs sample traces and Outpost stores no sample
- * rate, so these are the Transactions received, not the requests served. Uniform
- * sampling scales every group equally and leaves a ranking intact; per-transaction
- * sampling does not, and nothing in the data says which case an installation is
- * in. The field name carries half of this — {@code transactions_received}, never
- * {@code count} — and the caveat carries the half a name cannot.
- * <li><b>Cardinality.</b> A Transaction Group's name is stored exactly as the SDK
- * sent it and is never normalized (ADR-0014), so a Project that does not
- * parameterize its URLs gets one group per URL.
- * {@code distinct_transaction_groups} is the honest disclosure, counted before
- * the sample floor and before the limit.
- * <li><b>The sample floor.</b> Groups below it are excluded from the ranking
- * because a percentile over one sample is that one duration wearing three labels,
- * but they are still counted in the cardinality — so the two numbers do not add
- * up, and the caveat says why rather than leaving it to look like a bug.
- * </ul>
- *
- * <p>Nothing derived from {@code txn.status} appears here, for the reason it does
- * not appear on the Performance view: "is it broken" is answered by Issues, from
- * error Events, and a second weaker answer would disagree with it. An agent asking
- * that question should call {@code find_issues}.
+ * The MCP Surface's {@code performance_overview} Tool: the Transaction Group leaderboard with
+ * duration statistics, via {@link TransactionGroupController}'s own leaderboard and cardinality
+ * statements (ADR-0016). Reports nothing derived from {@code txn.status} — "is it broken" is
+ * answered by {@code find_issues} from error Events, and a second, weaker answer here would
+ * risk disagreeing with it.
  */
 @Component
 public class PerformanceOverviewTool {
@@ -67,14 +35,9 @@ public class PerformanceOverviewTool {
 	}
 
 	/**
-	 * The rankings this Tool offers, each mapped to the key
-	 * {@link TransactionGroupController#buildLeaderboardQuery} whitelists.
-	 *
-	 * <p>The names on the left are the payload's own: a caller ranking by a number it
-	 * can read off a row should not have to learn a second name for that number, and
-	 * {@code p95} without its unit is precisely the shape ADR-0014 rules out. The map
-	 * is also the whitelist — an unrecognised key is rejected here and never reaches
-	 * the statement.
+	 * The rankings this Tool offers, mapped to the key {@link
+	 * TransactionGroupController#buildLeaderboardQuery} whitelists. Also the whitelist itself — an
+	 * unrecognised key is rejected here and never reaches the statement.
 	 */
 	private static final Map<String, String> SORTS = sorts();
 
@@ -91,9 +54,8 @@ public class PerformanceOverviewTool {
 	private static final String DEFAULT_SORT = "total_ms";
 
 	/**
-	 * The rankings this Tool accepts, as the JSON Schema advertises them. Constants
-	 * are named in payload spelling so the schema's {@code enum} and the value a
-	 * caller sends are the same string, and {@link #SORTS} is keyed by that spelling.
+	 * The rankings this Tool accepts, named in payload spelling so the schema's {@code enum}
+	 * matches {@link #SORTS}'s keys.
 	 */
 	public enum Sort {
 
@@ -102,10 +64,8 @@ public class PerformanceOverviewTool {
 	}
 
 	/**
-	 * Transaction Groups returned when the caller names no limit. Far below the
-	 * hundred the Performance view renders: a screen scrolls and a context window
-	 * does not, and the statement costs the same either way — the limit here trims
-	 * the payload, not the work.
+	 * Transaction Groups returned when the caller names no limit — far below what the Performance
+	 * view renders, since a context window can't scroll.
 	 */
 	static final int DEFAULT_LIMIT = 20;
 
@@ -153,16 +113,14 @@ public class PerformanceOverviewTool {
 		List<String> caveats = new ArrayList<>();
 		ToolSupport.Projects projects = support.projects();
 		List<Long> projectIds = projects.resolve(project_slugs);
-		// Refused rather than bound, like an unknown slug: an exact-match filter for a
-		// value nothing carries returns an empty result that reads as "nothing matched".
+		// Refused rather than silently bound — an unknown value would otherwise return an empty result read as "nothing matched".
 		support.requireKnownEnvironments(environments);
 		support.requireKnownRelease(release);
 		ToolSupport.Window requested = ToolSupport.window(from, to, caveats);
 		String sortedBy = sort(sort);
 		int size = limit(limit);
 
-		// The controller's own resolution, so the 30-day cap this Tool discloses is the
-		// one the statement below is actually bound by.
+		// Controller's own resolution, so the disclosed 30-day cap matches what the statement is actually bound by.
 		TransactionGroupController.Window window = TransactionGroupController.window(requested.fromInstant(),
 				requested.toInstant());
 		if (window.clamped()) {
@@ -175,8 +133,7 @@ public class PerformanceOverviewTool {
 		SearchQuery search = buildPerformanceOverviewQuery(projectIds, environments, release, query,
 				SORTS.get(sortedBy), window.from(), window.to());
 		List<TransactionGroupPayload> groups = jdbc.query(search.sql(), (rs, row) -> {
-			// percentile_cont(ARRAY[…]) returns one array per group, in probe order:
-			// p50, p95, p99.
+			// percentile_cont(ARRAY[...]) returns values in probe order: p50, p95, p99.
 			Array percentiles = rs.getArray("percentiles");
 			Double[] p = (Double[]) percentiles.getArray();
 			return new TransactionGroupPayload(projects.slug(rs.getLong("project_id")), rs.getString("name"),
@@ -184,10 +141,7 @@ public class PerformanceOverviewTool {
 					rs.getDouble("max_ms"), p[0], p[1], p[2]);
 		}, search.params().toArray());
 
-		// The statement asks for one more group than the view returns, so "was there
-		// anything past the limit" is answered by the rows in hand. Both cuts are
-		// reported as one flag: from the caller's side there is no difference between
-		// the statement's limit and this Tool's.
+		// Statement fetches one more group than returned, so "more" is answered from the rows in hand without a second query.
 		boolean more = groups.size() > TransactionGroupController.maxGroups() || groups.size() > size;
 		groups = groups.subList(0, Math.min(groups.size(), size));
 
@@ -223,10 +177,8 @@ public class PerformanceOverviewTool {
 	}
 
 	/**
-	 * The leaderboard as this Tool binds it: the controller's own factory, so the
-	 * plan and its guards are the Performance view's own. Named here so
-	 * {@code QueryPlans} can {@code EXPLAIN} the Tool's shape and
-	 * {@code McpToolQueryReuseTest} can assert it is not a copy.
+	 * The leaderboard, via the controller's own factory — kept as a named wrapper so {@code
+	 * McpToolQueryReuseTest} can assert this isn't a copy of the SQL.
 	 */
 	static SearchQuery buildPerformanceOverviewQuery(List<Long> project, List<String> environment, String release,
 			String query, String sort, Instant from, Instant to) {

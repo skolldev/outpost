@@ -21,87 +21,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * Performance guards for the Performance leaderboard (#159, #160, #161), the
- * Transaction Group detail view it opens into (#162) and the duration trend on that
- * view (#163). Baselines
- * measured 2026-08-19 (2026-08-20 for the trend) against {@link TelemetrySeeder.Scale#GUARD}: 8 004 transactions in
- * 433 Transaction Groups over nine weekly partitions, where a full scan of {@code txn}
- * costs 2 691 blocks.
- *
- * <p>This is the <b>second</b> query in the codebase whose cost is O(matching rows)
- * rather than O(page), after the log timeline {@link LogTimelinePerformanceTest}
- * guards — and it is the more dangerous of the two, because an ordered-set aggregate
- * cannot be hashed. {@code percentile_cont} disqualifies hashed grouping outright, so
- * Postgres must deliver the input sorted by (project_id, name, op); given any index
- * that does not already produce that order it sorts the whole window, and past
- * {@code work_mem} that sort goes to disk. {@code V15} exists to make the sort
- * unnecessary, and the numbers that decided its column order are in the migration.
- *
- * <p>One request runs <b>two</b> statements over the same window: the ranked list, and
- * the distinct-Transaction-Group count the cardinality warning reads (#160). They are
- * separate because the count has to be taken before the minimum-sample floor — the
- * Project it warns about is the one whose groups the floor removes — and folding that
- * into one statement means a twice-referenced CTE spooling every group into a
- * tuplestore, which spills for the same reason the sort {@code V15} removed did. The
- * page's cost is therefore the sum of the two columns below, and guarding only the
- * first would understate it by nearly half.
- *
- * <pre>
- *   shape                       list   count
- *   30d (the cap)                713     571    index-only, no sequential scan
- *   14d (the product default)    508     407
- *   30d, one project             378     303
- *   30d, one environment         713     571
- *   30d, project + environment   378     303
- *   1h                           167     126
- *   30d, one release             713     571    V16 put `release` in the index
- *   30d, name search             713     571
- *   30d, release + name search   713     571
- *   30d, sort=p95 / sort=p50     855     571
- *   30d, sort=count              713     571
- *
- *   30d, one group's detail       42           the key bounds it, not the window
- *   30d, that group's trend       60           the same rows, grouped into 120 buckets
- *   30d, a null-op group's trend  56
- * </pre>
- *
- * <p>The count is cheaper than the list on every shape without being cheap: it reads no
- * {@code duration_ms} and builds no per-group tuplesort, but it still walks the same
- * span of {@code idx_txn_performance}, and nothing about a leaderboard's cost is
- * bounded by how few groups come back. It is also flat across the filters and every
- * sort, which is the point: they narrow or reorder what the same index scan produces,
- * they do not change what it has to read.
- *
- * <p><b>Neither filter costs anything, and one of them used to cost everything.</b> A
- * name search is a predicate on a column the index leads with. A Release filter is a
- * predicate on a column {@code V15} did not carry at all, which took the whole query off
- * the index and onto the heap — 4 614 blocks for the list and 3 067 for the count, both
- * by sequentially scanning every in-window partition. {@code V16} put {@code release} in
- * the index's INCLUDE list, and the shape is here so that removing it fails this class
- * rather than a user's page.
- *
- * <p><b>The percentile sorts cost ~140 blocks more than the rest, and that is the whole
- * price of the feature.</b> Ordering by {@code total_ms} lets Postgres flatten the
- * subquery the statement wraps its aggregate in; ordering by a percentile subscript
- * cannot be flattened, so a subquery-scan node stays and its output is fed to a top-N
- * heapsort. The aggregate underneath is identical — same index-only scans, same merge
- * append, same single ordered-set aggregate — which is why every sort reads the same
- * groups for the same count of blocks below that node.
- *
- * <p><b>What each assertion here can and cannot catch.</b> Dropping {@code V15} is
- * caught twice over: the planner falls straight back to sequentially scanning every
- * in-window partition, which {@link #noShapeSequentiallyScansTheTransactionTable}
- * rejects, and the 30-day shape goes 713 -> ~4 600 blocks, which is over the ceiling.
- *
- * <p><b>The spill assertion is the weak one, and deliberately kept anyway.</b> At
- * 8 004 rows the input sort fits in {@code work_mem} whether or not {@code V15} is
- * present — measured 0 temp blocks both ways — so
- * {@link #theAggregateDoesNotSpill} cannot fail here for the reason it exists. That
- * reason is visible only at volume: at 500 004 transactions the same 30-day request
- * writes 21 704 temp blocks on every filter-leading index and 0 on this one. It is
- * asserted regardless because it is free, it fails on a regression that makes the
- * grouping itself larger (a key that stopped being (project, name, op) would), and a
- * guard that is silent about its own blind spot is worse than one that names it —
- * the same limit {@code LogTimelinePerformanceTest} records for its index-only claim.
+ * Transaction Group detail view it opens into (#162), and the duration trend on
+ * that view (#163). The leaderboard's percentile ranking is an ordered-set
+ * aggregate, which cannot be hashed, so Postgres must receive rows pre-sorted by
+ * (project_id, name, op) or spill the whole window to disk — {@code V15} exists to
+ * make that unnecessary.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -110,39 +34,22 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class TransactionGroupPerformanceTest {
 
 	/**
-	 * The widest window the endpoint answers is 30 days, and the most expensive thing
-	 * it can be asked for over that window is a percentile ranking: 855 blocks for the
-	 * list and 571 for the count. 2 000 is ~2.3x that rather than the standard 10x,
-	 * because 10x would be above the 2 691 a full scan of {@code txn} costs and
-	 * therefore unable to fail. It still sits well under the ~4 600 the same request
-	 * costs with {@code V15} dropped, or with a Release filter and {@code V16}
-	 * dropped, which are the two regressions it is here to catch.
-	 *
-	 * <p>One ceiling covers both statements rather than a tighter one each: they read
-	 * the same span of the same index for the same reasons, so a regression that lifts
-	 * one lifts the other, and a second constant would only be a second thing to
-	 * re-calibrate.
+	 * The most expensive 30-day leaderboard shape (a percentile ranking) measures
+	 * ~855 blocks; this ceiling sits well under the ~4 600 the same request costs
+	 * with {@code V15} dropped, or with a Release filter and {@code V16} dropped, but
+	 * below the full-scan cost of {@code txn} so it can still fail. One ceiling
+	 * covers both the ranked list and the cardinality count, since both read the same
+	 * span of the same index.
 	 */
 	private static final long MAX_LEADERBOARD_BLOCKS = 2_000;
 
 	/**
-	 * The detail view (#162) binds the whole Transaction Group key to constants, so it
-	 * reads one group's slice of {@code idx_txn_performance} rather than the window's:
-	 * 42 blocks measured, against the 713 the list costs over the same 30 days. The
-	 * trend (#163) reads that same slice under the same ceiling — 60 blocks, the extra
-	 * 18 being the sort that {@code GROUP BY date_bin(start_ts)} needs and the summary,
-	 * which does not group at all, does not.
-	 *
-	 * <p>200 rather than a tight multiple of 42, because the <b>first</b> {@code EXPLAIN}
-	 * of a session touches ~65 blocks more than every later one — catalogue and index
-	 * pages that are hits by the second call — and a ceiling under that is a flake
-	 * waiting for whichever test happens to run first. What it catches is a detail view
-	 * that stopped being bounded by its key at all: a 30-day aggregate over the whole
-	 * window is 713, and a sequential scan of {@code txn} is 2 691.
-	 *
-	 * <p>What it cannot catch is
-	 * {@link #everyPredicateOnTheDetailViewIsAnIndexCondition}'s regression, which costs
-	 * nothing at this scale. That is asserted on the plan instead.
+	 * The detail view (#162) and trend (#163) bind the whole Transaction Group key to
+	 * constants and measure ~42-60 blocks, against 713 for the list over the same 30
+	 * days; 200 rather than a tighter multiple of 42 because a session's first
+	 * {@code EXPLAIN} touches ~65 blocks more than every later one. It cannot catch
+	 * {@link #everyPredicateOnTheDetailViewIsAnIndexCondition}'s regression, which
+	 * costs nothing at this scale and is asserted on the plan instead.
 	 */
 	private static final long MAX_DETAIL_BLOCKS = 200;
 
@@ -177,22 +84,11 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * The leaderboards the Performance page can produce. {@code range=all} is absent
-	 * because the endpoint does not answer it — ADR-0015 caps the window at 30 days,
-	 * so the widest shape here <em>is</em> the widest shape in production.
-	 *
-	 * <p>The sorts are enumerated from the controller's own whitelist rather than
-	 * listed here, so a fifth ranking cannot be added without this guard explaining
-	 * its plan. They are applied at the widest window because that is where an
-	 * ordering that stopped being a bounded top-N would show: sorting by a percentile
-	 * ranks the same groups the default does, over the same aggregate, and the only
-	 * thing that can differ is what happens above it.
-	 *
-	 * <p>The two filter shapes are here because they are the two that can change the
-	 * <em>scan</em>. A name search stays inside {@code idx_txn_performance}, which
-	 * covers {@code name}; a Release filter reads a column that index does not carry
-	 * — {@code V16} is what keeps it index-only, and dropping that column from the
-	 * INCLUDE list sends this shape to the heap for every Transaction in the window.
+	 * The leaderboards the Performance page can produce, at the widest window since
+	 * ADR-0015 caps it at 30 days; sorts come from the controller's own whitelist so a
+	 * new ranking is covered automatically. The two filter shapes are the ones that can
+	 * change the scan — a Release filter reads a column {@code idx_txn_performance}
+	 * carries only via {@code V16}'s INCLUDE list.
 	 */
 	private List<Shape> uiShapes() {
 		List<Long> oneProject = List.of(seeded.projectId());
@@ -213,13 +109,10 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * No shape reads a populated partition end to end.
-	 *
-	 * <p>This is the assertion {@link LogTimelinePerformanceTest} explains it cannot
-	 * make, and the difference is the fixture rather than the query: {@code txn} rows
-	 * carry a ~1.4 KB payload, so even a small partition is far more expensive to read
-	 * than the 96-byte index entries {@code V15} covers it with, and the planner
-	 * prefers the index at every size this guard sees.
+	 * No shape reads a populated partition end to end. {@code txn} rows carry a
+	 * ~1.4 KB payload, far more expensive to read than the 96-byte index entries
+	 * {@code V15} covers it with, so the planner prefers the index at every size this
+	 * guard sees.
 	 */
 	@Test
 	void noShapeSequentiallyScansTheTransactionTable() {
@@ -258,8 +151,9 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * Nothing spills. See the class javadoc for what this can and cannot catch at
-	 * guard scale — the fact it guards is real, its ability to fail here is not.
+	 * Nothing spills. At this fixture's scale the sort fits in {@code work_mem}
+	 * whether or not {@code V15} is present, so this assertion cannot fail here — the
+	 * regression it guards against only shows at higher row counts.
 	 */
 	@Test
 	void theAggregateDoesNotSpill() {
@@ -271,10 +165,9 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * No subquery is evaluated per output row. Cost cannot express this — an index
-	 * makes 100 probes cheap enough to hide under any ceiling a fixture can honestly
-	 * set — and it is the shape behind both #130 and the trace-search regression, so
-	 * it is asserted directly.
+	 * No subquery is evaluated per output row (#130). Cost cannot express this, since
+	 * an index makes 100 probes cheap enough to hide under any ceiling a fixture can
+	 * honestly set, so it is asserted directly.
 	 */
 	@Test
 	void nothingIsEvaluatedOncePerGroup() {
@@ -289,12 +182,9 @@ class TransactionGroupPerformanceTest {
 
 	/**
 	 * The floor does not gut the fixture, and the fixture does exercise truncation.
-	 *
-	 * <p>Both halves matter to every other assertion in this class. A guard whose
-	 * groups had fallen below {@link TransactionGroupController} 's minimum sample
-	 * count would be explaining a query that returns nothing — and "reads no blocks"
-	 * passes a ceiling for the wrong reason. A guard that never filled the limit would
-	 * be explaining a plan no busy Installation gets.
+	 * Both halves matter to every other assertion in this class: below the minimum
+	 * sample count the guards would be explaining a query that returns nothing, and
+	 * "reads no blocks" passes a ceiling for the wrong reason.
 	 */
 	@Test
 	void theFixtureStillFillsTheLimitOnceTheSampleFloorApplies() {
@@ -303,8 +193,7 @@ class TransactionGroupPerformanceTest {
 		int ranked = leaderboard(widest).rows(jdbc).size();
 		long distinct = (long) cardinality(widest).rows(jdbc).get(0).get("count");
 
-		// The statement stops at MAX_GROUPS + 1, so "more than 100" is the only way it can
-		// say "there was more past the limit" — this asserts the list came back full.
+		// The statement stops at MAX_GROUPS + 1, so this asserts the list came back full.
 		assertThat(ranked).as("ranked groups at the 30-day cap — the floor left too few to certify a plan")
 			.isGreaterThan(100);
 		assertThat(distinct).as("distinct Transaction Groups in the window").isGreaterThan(100);
@@ -326,15 +215,11 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * The detail view a leaderboard row opens into (#162) pays the same guards, over the
-	 * same window, for both shapes of its op predicate.
-	 *
-	 * <p>It is bounded by an equality on the leading columns of
-	 * {@code idx_txn_performance} rather than by the window alone, so it costs a
-	 * seventeenth of the list it opens from — but it is the same aggregate over the same
-	 * table, and nothing stops a change to the shared statistics select list from
-	 * landing here. Both ops are covered because they are two different index
-	 * conditions, {@code = ?} and {@code IS NULL}, and therefore two plans.
+	 * The detail view a leaderboard row opens into (#162) pays the same guards, over
+	 * the same window, for both shapes of its op predicate. It is bounded by an
+	 * equality on the leading columns of {@code idx_txn_performance} rather than by
+	 * the window alone, and both {@code = ?} and {@code IS NULL} are covered since
+	 * they are different index conditions and therefore different plans.
 	 */
 	@Test
 	void theDetailViewIsGuardedLikeTheListItOpensFrom() {
@@ -343,8 +228,7 @@ class TransactionGroupPerformanceTest {
 			PlanFacts facts = built.explain(jdbc);
 			String what = "detail — " + group.label();
 
-			// A plan explained over a key that matches nothing reads nothing, and passes
-			// every assertion below for the wrong reason.
+			// A plan explained over a key matching nothing reads nothing, passing everything below for the wrong reason.
 			assertThat((Long) built.rows(jdbc).get(0).get("txn_count")).as("Transactions in %s", what)
 				.isGreaterThan(0);
 			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
@@ -358,19 +242,11 @@ class TransactionGroupPerformanceTest {
 
 	/**
 	 * The bucketed trend the detail view returns alongside its statistics (#163) pays
-	 * every assertion the leaderboard does, temp blocks included.
-	 *
-	 * <p>Temp blocks are the one that earns its place here. The summary aggregate has no
-	 * {@code GROUP BY} at all — one ordered-set aggregate over one group's durations —
-	 * while this statement groups by {@code date_bin(start_ts)}, an expression no index
-	 * can be read in the order of, so Postgres sorts. What bounds that sort is the key:
-	 * it is one Transaction Group's Transactions, not the window's, which is the same
-	 * thing that makes the summary cheap. A change that widened either — a trend over
-	 * the whole leaderboard, a key that stopped being (project, name, op) — spills here
-	 * first.
-	 *
-	 * <p>Both op branches, for the reason the summary covers both: {@code = ?} and
-	 * {@code IS NULL} are two index conditions and therefore two plans.
+	 * every assertion the leaderboard does, temp blocks included: it groups by
+	 * {@code date_bin(start_ts)}, an expression no index can be read in the order of,
+	 * so Postgres sorts, and what bounds that sort is the key — one Transaction
+	 * Group's Transactions, not the window's. Both op branches are covered, since
+	 * {@code = ?} and {@code IS NULL} are different index conditions.
 	 */
 	@Test
 	void theTrendIsGuardedLikeTheStatisticsItAccompanies() {
@@ -379,8 +255,7 @@ class TransactionGroupPerformanceTest {
 			PlanFacts facts = built.explain(jdbc);
 			String what = "trend — " + group.label();
 
-			// Explaining a grouping that produced no buckets passes everything below for
-			// the wrong reason.
+			// Explaining a grouping that produced no buckets passes everything below for the wrong reason.
 			assertThat(built.rows(jdbc)).as("buckets returned by %s", what).isNotEmpty();
 			QueryGuard.assertNoSequentialScanOfTelemetry(jdbc, facts, what);
 			QueryGuard.assertUnderCeiling(facts, MAX_DETAIL_BLOCKS, what);
@@ -402,31 +277,18 @@ class TransactionGroupPerformanceTest {
 	}
 
 	/**
-	 * Every predicate the detail view carries is an index <em>condition</em>, and none
-	 * of them is a filter the scan re-checks per row.
-	 *
-	 * <p>This is the assertion the ceiling above cannot make. The regression it guards —
-	 * an op predicate written as {@code op IS NOT DISTINCT FROM ?}, which says "equal,
-	 * or both null" in one expression and is not indexable — costs exactly the same 42
-	 * blocks here as the indexable form, because at guard scale a name's three ops share
-	 * the index pages their one op would have read. Measured both ways on 2026-08-19:
-	 * identical block counts, and the only difference in the plan is that the widened
-	 * form moves {@code op} out of {@code Index Cond} into {@code Filter} and reports
-	 * rows removed by it. What is free on 8 004 Transactions is a scan three times wider
-	 * on a real one, so the plan is asserted rather than the cost.
-	 *
-	 * <p>It holds because these shapes carry no Release filter. {@code release} is an
-	 * INCLUDE column, so filtering on it is a {@code Filter} evaluated inside the
-	 * index-only scan — legitimately, and by {@code V16}'s design — and adding one to a
-	 * shape here would fail this assertion for a reason that is not a regression. That
-	 * cost is guarded where it belongs, by the ceiling on the leaderboard's own release
-	 * shape.
+	 * Every predicate the detail view carries is an index <em>condition</em>, not a
+	 * {@code Filter} the scan re-checks per row — asserted on the plan because a
+	 * non-indexable op predicate (e.g. {@code op IS NOT DISTINCT FROM ?}) costs the
+	 * same as the indexable form at this fixture's scale. These shapes carry no
+	 * Release filter deliberately: {@code release} is a legitimate {@code Filter}
+	 * inside the index-only scan since it is an INCLUDE column, and adding one here
+	 * would fail this assertion for a reason that is not a regression.
 	 */
 	@Test
 	void everyPredicateOnTheDetailViewIsAnIndexCondition() {
 		for (Group group : detailGroups()) {
-			// The trend carries the same predicates, so it holds to the same claim — and
-			// `date_bin` appears in its grouping, not in its WHERE, so it seeks the same way.
+			// The trend seeks the same way: `date_bin` appears in its grouping, not its WHERE.
 			for (Map.Entry<String, QueryPlans.Built> statement : Map.of("detail", detail(group), "trend",
 					trend(group))
 				.entrySet()) {
@@ -457,13 +319,9 @@ class TransactionGroupPerformanceTest {
 
 	/**
 	 * The two groups whose detail the guard explains: the one holding the most
-	 * Transactions in the fixture, and one whose op is null.
-	 *
-	 * <p>Read from the fixture rather than named here, because the seeder builds its
-	 * names in SQL and a constant restating them would drift the day it changed. The
-	 * busiest group is the worst case for the aggregate; the null-op one takes the other
-	 * branch of the op predicate, which is a different index condition
-	 * ({@code IS NULL}, not {@code = ?}) and therefore a different plan.
+	 * Transactions in the fixture, and one whose op is null. Read from the fixture
+	 * rather than named here, since the seeder builds its names in SQL and a constant
+	 * restating them would drift the day it changed.
 	 */
 	private List<Group> detailGroups() {
 		return List.of(busiestGroup("busiest group", "op IS NOT NULL"), busiestGroup("null op", "op IS NULL"));

@@ -12,22 +12,10 @@ import org.springframework.stereotype.Component;
 
 /**
  * The MCP Surface's {@code list_projects} Tool: the Projects this installation
- * holds, the Environment Names telemetry has arrived under for each, and each
- * Project's most recently created release versions.
- *
- * <p>It is the first call an agent makes, because every other Tool names a
- * Project by slug, an Environment by string and a release by exact version, and
- * none of the three is guessable — a slug is chosen by whoever created the
- * Project, an Environment Name is whatever an SDK sent, and a version string
- * follows whatever convention a build pipeline chose. Returning all three
- * together is why this is one Tool rather than three: an agent that had to ask
- * per Project would make one call per Project before it could filter anything.
- *
- * <p>All three statements are the controllers' own (ADR-0016), and none is
- * guarded — see {@link ProjectController#buildProjectListQuery()} for why a
- * ceiling over {@code project} could not be set anywhere it was able to fail;
- * {@code environment} and {@code release} are the same kind of low-volume
- * catalogue table.
+ * holds, each with the Environment Names telemetry has arrived under and its
+ * most recently created release versions. Call this first — every other Tool
+ * names a Project by slug, an Environment by exact name and a release by exact
+ * version, none of which can be guessed.
  */
 @Component
 public class ProjectListTool {
@@ -40,12 +28,7 @@ public class ProjectListTool {
 			List<String> environments, List<String> recent_releases) {
 	}
 
-	/**
-	 * Release versions returned per Project, newest first. A handful rather than a
-	 * page: the list exists so an agent can name a release exactly, and the recent
-	 * ones are the ones a question is about — older versions remain valid filters,
-	 * which the caveat says whenever some were cut.
-	 */
+	/** Release versions returned per Project, newest first; older versions remain valid filters. */
 	static final int MAX_RECENT_RELEASES = 10;
 
 	private final JdbcTemplate jdbc;
@@ -93,9 +76,7 @@ public class ProjectListTool {
 					+ "Every other Tool will return nothing until one is created in the Outpost UI.");
 		}
 		else if (payloads.stream().anyMatch(project -> project.environments().isEmpty())) {
-			// Worth saying because the absence is ambiguous and the two readings lead
-			// somewhere different: an agent that reads it as "no environments exist" will
-			// stop looking, where the answer is usually that nothing has been sent yet.
+			// An empty list could be misread as "no environments exist" rather than "none sent yet".
 			caveats.add("An empty environments list means no telemetry carrying an Environment Name has been "
 					+ "received for that Project yet, not that it has no environments.");
 		}

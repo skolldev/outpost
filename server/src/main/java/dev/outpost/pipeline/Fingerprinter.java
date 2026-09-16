@@ -61,7 +61,7 @@ final class Fingerprinter {
 		}
 		List<JsonNode> inApp = frames.stream().filter(f -> f.path("in_app").asBoolean(false)).toList();
 		// No in-app frames (fully vendored trace): fall back to all frames so the
-		// fingerprint still reflects the stack rather than just the type.
+		// fingerprint isn't just the type.
 		for (JsonNode frame : inApp.isEmpty() ? frames : inApp) {
 			String module = frame.hasNonNull("module") ? frame.get("module").asText()
 					: frame.path("filename").asText("");

@@ -25,31 +25,10 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Guards {@link IngestQueue#outstanding()} against drift. The counter is
- * incremented in {@code offer} and decremented in three separate places —
- * {@code release} after a digest, {@code offer}'s own rollback when the buffer
- * is full, and {@code releaseRemaining} at shutdown — so a new path that removes
- * work without decrementing leaks a count silently. Nothing throws and no
- * envelope is lost; the damage shows up later, because {@code outstanding} is
- * what {@code IngestWorkers.stop()} reports as residual work. A counter stuck
- * above zero makes every subsequent clean shutdown log "N items still queued or
- * in flight", which is the only signal an operator has that a drain failed.
- *
- * <p>Unlike the spool files it moves in lockstep with, a drifted counter has no
- * safety net: {@code SpoolReaper} bounds leaked files to {@code spool-max-age},
- * but nothing reconciles the count. Hence a test per outcome the endpoint can
- * produce, each ending at zero.
- *
- * <p>Determinism comes from driving {@link IngestWorkers} directly rather than
- * from timing. Workers are stopped to hold the buffer still where a test needs a
- * full queue, and restarted to observe the drain.
- *
- * <p>Expect real drift to fail most of this class at once rather than one test
- * cleanly: {@code setUp} stops the workers and then asserts the counter is zero,
- * so a leak from one test surfaces as a failed precondition in the next. That is
- * deliberate — the counter is process-wide and never legitimately non-zero at
- * rest — but when diagnosing, read the test whose body failed, not the ones that
- * failed in {@code setUp}.
+ * Guards {@link IngestQueue#outstanding()}: every path that removes work must
+ * decrement it, or {@code IngestWorkers.stop()} reports phantom residual work at
+ * shutdown. One test per outcome the ingest endpoint can produce, each ending at
+ * zero, driven directly through {@link IngestWorkers} for determinism.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",
@@ -87,9 +66,7 @@ class IngestAccountingIntegrationTest {
 	@BeforeEach
 	void setUp() throws IOException {
 		rest.setErrorHandler(new NoOpResponseErrorHandler());
-		// Stopping first drains whatever a previous test left queued, so seeding
-		// below cannot race a worker writing rows for a project about to be
-		// deleted. Residual entries are discarded, not stored.
+		// Stop first: draining avoids racing a worker against the project deleted below.
 		workers.stop();
 		SpoolTestFiles.clear(SPOOL_DIRECTORY);
 		jdbc.sql("DELETE FROM event").update();
@@ -128,8 +105,7 @@ class IngestAccountingIntegrationTest {
 		ResponseEntity<String> rejected = post(envelopes.error("prod"));
 
 		assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
-		// The rejected envelope must roll its own increment back rather than ride
-		// on the accepted ones: the count is unchanged, not merely still positive.
+		// The rejected envelope's own increment must roll back, not just cancel against an accepted one.
 		assertThat(queue.outstanding()).isEqualTo(CAPACITY);
 		assertThat(SpoolTestFiles.count(SPOOL_DIRECTORY)).isEqualTo(CAPACITY);
 
@@ -141,9 +117,7 @@ class IngestAccountingIntegrationTest {
 
 	@Test
 	void envelopesThatNeverReachTheBufferLeaveAccountingUntouched() throws IOException {
-		// Every non-queued outcome the endpoint can produce. None of these should
-		// touch outstanding at all, and each deletes its spool file before
-		// responding, so no polling is needed.
+		// Non-queued outcomes only; each deletes its spool file synchronously, so no polling is needed.
 		assertThat(postRaw(envelopes.error("prod").getBytes(StandardCharsets.UTF_8), "ffffffffffffffffffffffffffffffff")
 			.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
 		assertThat(postRaw("not json\n{}".getBytes(StandardCharsets.UTF_8), publicKey).getStatusCode())
@@ -173,9 +147,7 @@ class IngestAccountingIntegrationTest {
 		}
 		assertThat(queue.outstanding()).isEqualTo(CAPACITY);
 
-		// A second stop() with no live workers and a non-empty queue is the state
-		// the drain timeout leaves behind, reached without a wall clock: the join
-		// loop finds nothing to wait for and the residual path runs immediately.
+		// A second stop() with a non-empty queue mimics the drain-timeout path without a real timeout.
 		workers.stop();
 
 		assertThat(queue.outstanding()).isZero();

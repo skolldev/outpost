@@ -11,10 +11,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * sentry-cli artifact-bundle assembly. Assembly is synchronous, so the
- * response is immediately final: {@code ok} (done — final for both the CLI's
- * default and {@code --wait} modes), {@code not_found} with the chunks to
- * re-upload, or {@code error}. camelCase keys are part of the wire contract.
+ * sentry-cli artifact-bundle assembly. Synchronous, so the response —
+ * {@code ok}, {@code not_found} with the missing chunks, or {@code error} —
+ * is immediately final; keys are camelCase per sentry-cli's wire format, not this app's usual snake_case.
  */
 @RestController
 public class AssembleController {

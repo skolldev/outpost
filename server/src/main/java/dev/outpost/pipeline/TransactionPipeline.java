@@ -13,12 +13,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Turns a {@code transaction} envelope item into one
- * {@link ProcessedTransaction} (the root span + transaction metadata) plus one
- * {@link ProcessedSpan} per entry in {@code spans[]}. Trace identity is read
- * from {@code contexts.trace}; the transaction name from the top-level
- * {@code transaction} field. No grouping, no ingest-time trace linking —
- * correlation to errors/logs happens at query time via {@code trace_id}.
+ * Turns a {@code transaction} envelope item into one {@link ProcessedTransaction} (root
+ * span + metadata, trace identity from {@code contexts.trace}) plus one
+ * {@link ProcessedSpan} per entry in {@code spans[]}. No ingest-time trace linking —
+ * correlation to errors and logs happens at query time via {@code trace_id}.
  */
 @Component
 public class TransactionPipeline {
@@ -86,15 +84,14 @@ public class TransactionPipeline {
 				durationMs(start, end), text(span, "status"), trimSpan(span));
 	}
 
-	// Fields promoted to their own columns; keeping them in the stored payload just
-	// duplicates every span's identity and timing over the wire and on disk.
+	// Promoted to columns; excluded from the stored payload to avoid duplicating them.
 	private static final Set<String> SPAN_PROMOTED = Set.of("span_id", "trace_id", "parent_span_id", "op",
 			"description", "status", "timestamp", "start_timestamp");
 
 	/**
-	 * Child spans are stored as their own rows, so re-embedding {@code spans[]} here
-	 * doubles storage — on a browser pageload it is the bulk of a 200 KB
-	 * transaction. The rest of the payload (contexts, measurements, request…) stays.
+	 * Child spans are stored as their own rows, so {@code spans[]} is stripped from the
+	 * payload to avoid duplicating them. The rest of the payload (contexts,
+	 * measurements, request…) stays.
 	 */
 	private JsonNode trimTxn(JsonNode payload) {
 		if (!payload.isObject()) {

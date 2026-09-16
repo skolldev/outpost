@@ -18,8 +18,7 @@ final class FrameNormalizer {
 		String m = module;
 		// JVM synthetic lambda classes: Foo$$Lambda$123/0x0000 → Foo
 		m = m.replaceAll("\\$\\$Lambda\\$?\\d*(/0x[0-9a-fA-F]+|/\\d+)?", "");
-		// JDK/CGLIB proxies: com.sun.proxy.$Proxy12, Foo$$EnhancerBySpringCGLIB$$ab12cd34,
-		// Foo$$FastClassBySpringCGLIB$$ab12cd34, Foo$$SpringCGLIB$$0
+		// JDK/CGLIB proxies, e.g. com.sun.proxy.$Proxy12, Foo$$EnhancerBySpringCGLIB$$ab12cd34
 		m = m.replaceAll("\\$Proxy\\d+", "\\$Proxy");
 		m = m.replaceAll("\\$\\$[A-Za-z]*CGLIB\\$\\$[0-9a-fA-F]+", "");
 		// Webpack/Angular CLI content hashes: main-ABC123DEF.js, chunk-X7K2P.mjs, main.abc123def0.js

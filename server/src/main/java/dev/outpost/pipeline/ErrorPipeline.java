@@ -143,7 +143,6 @@ public class ErrorPipeline {
 							Long.parseUnsignedLong(hex.substring(16), 16));
 				}
 				catch (NumberFormatException ignored) {
-					// fall through to random id
 				}
 			}
 		}

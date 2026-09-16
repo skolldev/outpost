@@ -8,8 +8,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * In-memory counters for SDK client reports: what the SDKs dropped
- * client-side, keyed by {@code reason:category}. Persistence and the stats UI
- * arrive in Phase 5.
+ * client-side, keyed by {@code reason:category}.
  */
 @Component
 public class ClientReportCounters {

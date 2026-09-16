@@ -9,13 +9,9 @@ import { Release, ReleaseArtifact } from '../../core/models';
 import { timeAgo } from '../../shared/ui';
 
 /**
- * Releases: versions per project with received artifact bundles — primarily a
- * "why isn't my stack trace symbolicated" debugging aid.
- *
- * A Release and its Artifact Bundles belong to exactly one Project+version, so
- * the page owns a page-local single-Project selector rather than reading the
- * global header filter (#81) — which stays correct now that the global filter is
- * multi-select (#76).
+ * Releases: versions per project with received artifact bundles — mainly a
+ * "why isn't my stack trace symbolicated" debugging aid. Uses a page-local
+ * single-Project selector (#81) since a Release belongs to exactly one Project+version.
  */
 @Component({
   selector: 'app-releases',
@@ -41,9 +37,7 @@ export class ReleasesPage {
   // The expanded release's version, or null when the list is collapsed.
   readonly expanded = signal<string | null>(null);
 
-  // Artifact bundles for the expanded release; skips the fetch while collapsed.
-  // Empty while loading so switching rows never shows the prior release's
-  // bundles (httpResource retains its last value across a re-fetch).
+  // Cleared to [] while loading (below) so switching rows doesn't show the prior release's bundles — httpResource keeps its last value across a refetch.
   private readonly artifactsResource = httpResource<ReleaseArtifact[]>(
     () => {
       const version = this.expanded();

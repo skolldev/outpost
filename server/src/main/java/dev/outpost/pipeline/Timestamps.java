@@ -8,15 +8,10 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 
 /**
- * SDK timestamp handling shared by the error and log pipelines: parse the two
- * wire formats (epoch seconds or ISO-8601) and clamp wildly skewed client
- * clocks to the server's received-at.
- *
- * <p>Clamping also truncates to microseconds, Postgres {@code timestamptz}'s
- * own resolution. An in-memory nanosecond an SDK sent could never survive a
- * round trip, so dropping it here keeps a processed timestamp equal to the one
- * that comes back out — which is what lets {@code EventStore} recognise a
- * redelivered event by its stored key.
+ * Parses the two wire timestamp formats (epoch seconds or ISO-8601) and clamps wildly
+ * skewed client clocks to the server's received-at. Also truncates to microseconds —
+ * Postgres {@code timestamptz}'s own resolution — so a redelivered event's timestamp
+ * matches the one under which it was originally stored.
  */
 final class Timestamps {
 

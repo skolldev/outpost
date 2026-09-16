@@ -109,10 +109,8 @@ describe('TracesPage', () => {
   });
 
   /**
-   * The duration band has no control on this page — it arrives from the Performance
-   * detail view's links to a Transaction Group's slow and typical Traces (#162), and
-   * `max_duration` is what makes "typical" mean anything: without an upper bound it
-   * would include every cache hit in the window.
+   * The duration band has no control on this page; it arrives via URL from the Performance
+   * view (#162). `max_duration` bounds "typical" so it excludes cache hits.
    */
   it('filters by a duration band carried in the URL', async () => {
     const seen: Record<string, string | null>[] = [];

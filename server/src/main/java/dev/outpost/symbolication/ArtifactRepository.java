@@ -67,8 +67,7 @@ public class ArtifactRepository {
 		}
 	}
 
-	// After commit (like the re-symbolication job), so a concurrent ingest
-	// worker can't re-cache a miss from the not-yet-visible bundle.
+	// After commit, so a concurrent ingest worker can't re-cache a miss from the not-yet-visible bundle.
 	@TransactionalEventListener(fallbackExecution = true)
 	public void onBundleAssembled(BundleAssembledEvent event) {
 		synchronized (byDebugId) {

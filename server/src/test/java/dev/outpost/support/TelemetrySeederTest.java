@@ -45,8 +45,7 @@ class TelemetrySeederTest {
 	void seedsTheRowCountsItWasAskedFor() {
 		TelemetrySeeder.Seeded result = seeded;
 
-		// The known-trace fixture adds a handful of rows on top of the requested
-		// volume, so this is a floor rather than an equality.
+		// The known-trace fixture adds a few rows on top, so this is a floor rather than an equality.
 		assertThat(result.events()).isGreaterThanOrEqualTo(SCALE.events());
 		assertThat(result.logs()).isGreaterThanOrEqualTo(SCALE.logs());
 		assertThat(result.txns()).isGreaterThanOrEqualTo(SCALE.txns());
@@ -63,8 +62,7 @@ class TelemetrySeederTest {
 		int expectedWeeks = SCALE.windowDays() / 7;
 
 		for (String table : List.of("event", "log_record", "txn", "span")) {
-			// Both halves matter: partitions that exist but hold nothing would let a
-			// pruning assertion pass while the whole dataset sat in one week.
+			// Both halves matter: partitions existing but empty would let a pruning assertion pass on a one-week dataset.
 			assertThat(partitionCount(table)).as("weekly partitions of " + table)
 				.isGreaterThanOrEqualTo(expectedWeeks);
 			assertThat(populatedWeeks(table)).as("weeks of " + table + " that actually hold rows")
@@ -100,10 +98,8 @@ class TelemetrySeederTest {
 	}
 
 	/**
-	 * The Performance leaderboard returns the top 100 Transaction Groups. A fixture
-	 * with fewer groups than that never exercises the limit, never builds a grouping
-	 * big enough to be worth sorting, and would certify a plan shape no real Project
-	 * produces — so the group count is asserted here rather than assumed by the guard.
+	 * The Performance leaderboard returns the top 100 Transaction Groups; a fixture
+	 * with fewer would never exercise that limit or the sort it requires.
 	 */
 	@Test
 	void seedsMoreTransactionGroupsThanTheLeaderboardReturns() {

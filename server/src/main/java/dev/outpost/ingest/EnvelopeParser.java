@@ -81,11 +81,6 @@ public class EnvelopeParser {
 	/**
 	 * The signal an item carries together with its object payload, or null when it
 	 * carries no signal or its payload is not a JSON object.
-	 *
-	 * <p>Intake accounting and worker digestion both classify through here. Their
-	 * needs differ — the endpoint counts, a worker materializes — but the rule for
-	 * what counts as a processable signal item is one rule, so what
-	 * {@code items.queued} promises cannot drift from what a worker delivers.
 	 */
 	public Envelope.SignalItem signalItem(Envelope.Item item) {
 		IngestMetrics.Signal signal = item.signal();

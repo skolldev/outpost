@@ -12,14 +12,8 @@ import static dev.outpost.bench.ReportWriter.round;
 
 /**
  * The <b>ingest</b> benchmark's columns: throughput, queue behaviour and
- * allocation. The Markdown is meant to be pasted into a PR body — {@code TODO.md}
- * item #3 asks for exactly that, a stated before/after under a repeatable
- * benchmark.
- *
- * <p>Stamping, the conditions block and the file writing live in
- * {@link ReportWriter}, shared with {@link RetrievalReport}. The written header
- * carries the caveats deliberately, because a throughput table detached from its
- * conditions is worse than no table.
+ * allocation. Stamping, the conditions block and file writing are shared with
+ * {@link RetrievalReport} via {@link ReportWriter}.
  */
 public final class BenchReport {
 
@@ -130,9 +124,8 @@ public final class BenchReport {
 	}
 
 	/**
-	 * Normalized by envelopes the server actually handled, which includes the 429s:
-	 * shedding happens after the parse, so a rejected envelope has already paid for
-	 * one. Dividing by 200s alone would make an overloaded step look profligate.
+	 * Normalized by envelopes actually handled (200s and 429s): shedding happens
+	 * after parsing, so a rejected envelope already paid its allocation cost.
 	 */
 	private static double allocatedKilobytesPerEnvelope(Row row) {
 		long handled = row.load().status(200) + row.load().status(429);

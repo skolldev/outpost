@@ -51,54 +51,12 @@ public class ReleaseController {
 
 	/**
 	 * The release-list query the controller runs, extracted per {@link SearchQuery}.
-	 *
-	 * <p>{@code issue_count} is the number of distinct Issues carrying at least one
-	 * <em>retained</em> Event on that Release — not the number ever seen on it. The
-	 * distinction is invisible until the Data Retention Policy expires an Event, at
-	 * which point the count drops; that was true of the aggregate over {@code event}
-	 * too, which could only count rows that still existed, and the rollup preserves it
-	 * because {@code DataRetentionService} rebuilds an affected Issue's rows from the
-	 * Events that survived the sweep.
-	 *
-	 * <p>It used to be {@code count(DISTINCT e.issue_id)} over {@code event},
-	 * correlated to the Release row and carrying no time bound — a fresh aggregate
-	 * over every weekly partition for each of up to {@link #PAGE_SIZE} rows, which
-	 * cost 16x a full scan of {@code event} to annotate eight Releases and 14.9
-	 * seconds at benchmark scale (#130).
-	 *
-	 * <p>It is now counted from {@code issue_release_stats}, which holds exactly one
-	 * row per (Issue, Release) with a retained Event — so {@code count(*)}
-	 * over a Release's rows <em>is</em> its distinct-Issue count, without a
-	 * {@code DISTINCT} and without reading a telemetry table at all. That is the
-	 * property that matters: the page's cost is a function of the Project's Issues
-	 * and Releases, not of how long Events are retained.
-	 *
-	 * <p>Two shapes here are load-bearing rather than stylistic.
-	 * {@code page} is materialized — Postgres materializes a CTE referenced more
-	 * than once — so the Releases are chosen once and every count is looked up for
-	 * that page rather than for every Release the Project has ever had. And each
-	 * count is one grouped pass joined onto the page, never a subquery per row: an
-	 * index makes {@link #PAGE_SIZE} correlated probes cheap enough to hide under any
-	 * ceiling a guard fixture can set, but it leaves in place the shape that made this
-	 * a bug.
-	 *
-	 * <p><b>The Project is bound into each branch rather than joined out of
-	 * {@code page}, and that repetition is deliberate.</b> Replacing
-	 * {@code project_id = ?} with {@code JOIN page p ON p.project_id = …} reads better
-	 * and binds the parameter once, and it was tried: the planner stops seeing a
-	 * constant it can open one index range with, drives the join from {@code page}
-	 * instead, and turns all three grouped passes back into a nested loop probing once
-	 * per Release. A full page went from 157 blocks to 3 368 — the same per-output-row
-	 * shape this whole change exists to remove, reintroduced by a tidier-looking query.
-	 * {@code ReleaseQueryPerformanceTest.fullPageCostsWhatAOneReleasePageCosts} is what
-	 * caught it, and is what will catch it again.
-	 *
-	 * <p>That is why the two artifact counts were rewritten as well. They read
-	 * low-volume, unpartitioned tables and were never the defect — but they were
-	 * correlated, and measured on a full page they were 8 blocks per row of the 1 731
-	 * the page cost once {@code issue_count} stopped dominating everything. Leaving
-	 * them would have meant a guard that could not honestly assert the page's cost
-	 * is a function of the page.
+	 * {@code issue_count} counts distinct Issues with a retained Event on that
+	 * Release, from {@code issue_release_stats} rather than {@code event} (cost
+	 * tracks Issues/Releases, not Event retention, #130); the Project is bound
+	 * into each branch rather than joined out of the {@code page} CTE, since
+	 * joining it out turns the grouped passes into a per-Release nested loop
+	 * ({@code ReleaseQueryPerformanceTest} guards against this).
 	 */
 	static SearchQuery buildReleaseListQuery(long project) {
 		return new SearchQuery("""
@@ -141,14 +99,8 @@ public class ReleaseController {
 	 * The most recently created release versions of every Project at once, for the
 	 * MCP Surface's {@code list_projects}: an agent filters by exact version string
 	 * and cannot guess one, so the catalogue call hands out the recent ones the way
-	 * it hands out Environment Names. Capped per Project in SQL because a Project
-	 * can hold thousands of Releases and the caller wants the newest handful, not a
-	 * page of each.
-	 *
-	 * <p>Guarded by the same reasoning as
-	 * {@link ProjectController#buildProjectListQuery()}: {@code release} holds one
-	 * row per (Project, version) and is neither partitioned nor telemetry, so there
-	 * is no honest ceiling to put on it.
+	 * it hands out Environment Names. Capped per Project in SQL since a Project can
+	 * hold thousands of Releases and the caller wants the newest handful, not a page of each.
 	 */
 	static SearchQuery buildRecentReleasesQuery(int perProject) {
 		return new SearchQuery("""
@@ -165,8 +117,7 @@ public class ReleaseController {
 	 * Whether any Project has a Release of this exact version, for the MCP
 	 * Surface's release-filter validation. Installation-wide on purpose: a version
 	 * that exists on another Project than the one filtered is a legitimate empty
-	 * answer, where a version that exists nowhere is a typo, and only the typo is
-	 * worth refusing.
+	 * answer, where a version that exists nowhere is a typo worth refusing.
 	 */
 	static SearchQuery buildKnownReleaseQuery(String version) {
 		return new SearchQuery("SELECT count(*) FROM release WHERE version = ?", List.of(version));

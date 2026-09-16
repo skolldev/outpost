@@ -22,29 +22,11 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Performance guards for the issue list — the most-visited screen in the product
- * and the one that issues the most queries per page load: the list itself, a
- * 14-day sparkline, a distinct-user count, and the environment rollup.
- *
- * <p>Each guard {@code EXPLAIN}s the controller's own SQL through
- * {@link QueryPlans} — never a copy, which would keep passing after the real
- * query regressed — and asserts on logical I/O and plan shape only. No wall
- * clock. {@link QueryGuard} documents how the ceilings are calibrated and why
- * one of these is {@code @Disabled}.
- *
- * <p><b>The list guards send what the UI sends.</b> Every real page load carries a
- * status and a time range, because both are defaults the user never has to pick —
- * see {@link #uiList}. A guard that left them out would be measuring a request the
- * product cannot make, and #126 shipped once already having indexed exactly that
- * imaginary shape: the Resolved tab was left costing 15x a full table scan while a
- * green guard asserted the list was indexed.
- *
- * <p>Baselines below were measured on 2026-08-01 against
- * {@link TelemetrySeeder.Scale#GUARD}: 40 003 events over 10 weekly partitions,
- * 200 issues — except the list and release-filter figures, re-measured 2026-08-02
- * when #126 indexed the list's orderings. A full scan of {@code event} costs
- * ~15 000 blocks on that dataset, which is the number every ceiling over a
- * telemetry table has to sit below.
+ * Performance guards for the issue list, its 14-day sparkline, distinct-user
+ * count, and environment rollup: EXPLAINs the controller's own SQL through
+ * {@link QueryPlans} and asserts on logical I/O and plan shape only, sending
+ * the status and time range the UI always sends (see {@link #uiList}).
+ * See {@link QueryGuard} for how ceilings are calibrated.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -53,36 +35,15 @@ import org.springframework.transaction.support.TransactionTemplate;
 class IssueQueryPerformanceTest {
 
 	/*
-	 * The list query has no buffer ceiling, deliberately, and QueryGuard's own rule
-	 * is why: a ceiling has to sit below the cost of reading the table or it cannot
-	 * fail. The list touches only `issue`, which a full scan reads in ~23 blocks at
-	 * guard scale, while the healthy indexed plan costs ~78 — fifty random heap
-	 * fetches into a ten-block table legitimately cost more than reading the ten
-	 * blocks. Every ceiling that clears the healthy plan is therefore already above
-	 * the scan, and no honest number exists.
-	 *
-	 * The ceiling that used to be here validated itself against `event`, which this
-	 * query never reads, so it passed vacuously — and could not have caught the
-	 * sorting plan it was nominally guarding, which cost 30 blocks. Plan shape is
-	 * the guard for this query; see issueListSortIsIndexSupported.
+	 * No buffer ceiling here: `issue` full-scans in ~23 blocks vs ~78 for the
+	 * healthy plan, so any ceiling above the healthy plan already sits above the
+	 * scan and can't fail. Plan shape is guarded instead, in issueListSortIsIndexSupported.
 	 */
 
-	/**
-	 * Healthy is ~9 470 blocks — high because at guard scale the 14-day window holds
-	 * most of the events. 10x would be 94 700, above the ~15 000 a full scan of
-	 * {@code event} costs, and a ceiling above the scan cost cannot fail. 14 000 is
-	 * what fits: 1.5x headroom for plan drift, still under the scan, and comfortably
-	 * under the 20 045 the same aggregate costs once its time bound is removed —
-	 * which is the regression this exists to catch.
-	 */
+	/** Healthy is ~9 470 blocks. Catches the time bound going missing (costs ~20 045 without it). */
 	private static final long MAX_SPARKLINE_BLOCKS = 14_000;
 
-	/**
-	 * The healthy <em>target</em>, not today's cost: this path is knowingly broken
-	 * (#131). The sparkline is the same aggregate over the same 50 issues with a
-	 * time bound and passes under 14 000, so a bounded users-affected query should
-	 * too. Today it costs ~20 040.
-	 */
+	/** The target once bounded (#131 — today this path has no time bound and costs ~20 040). */
 	private static final long MAX_USERS_AFFECTED_BLOCKS = MAX_SPARKLINE_BLOCKS;
 
 	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
@@ -91,7 +52,7 @@ class IssueQueryPerformanceTest {
 	/** What {@code ui/src/app/pages/issues/issues.ts} sends when the user has picked nothing. */
 	private static final String DEFAULT_STATUS = "unresolved";
 
-	/** Both tabs the UI offers. The Resolved one is the shape #126 originally missed. */
+	/** Both tabs the UI offers. */
 	private static final List<String> STATUSES = List.of("unresolved", "resolved");
 
 	/** Both orderings the list offers, as {@code IssueController.issuePage} reads them. */
@@ -116,14 +77,10 @@ class IssueQueryPerformanceTest {
 		seeded = new TelemetrySeeder(jdbc, partitions).seed(TelemetrySeeder.Scale.GUARD);
 	}
 
-	// -------------------------------------------------------------------- list
-
 	/**
-	 * Keyset pagination's whole promise is that page 50 costs what page 1 costs. The
-	 * <em>ratio</em> is what survives a change of dataset scale, so that — not an
-	 * absolute number — is what this asserts. The cursor is walked rather than
-	 * synthesized: it is the journey a user actually takes, and it needs no
-	 * production visibility widened to reach it.
+	 * Keyset pagination's promise is that page 50 costs what page 1 costs, so the
+	 * ratio — not an absolute number — is what this asserts. The cursor is walked
+	 * rather than synthesized.
 	 */
 	@Test
 	void deepPageCostsWhatPageOneCosts() {
@@ -137,15 +94,10 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * The default tab, which is what almost every page load is: the list orders by
-	 * {@code (last_seen, id)} or {@code (event_count, id)}, and before #126 no index
-	 * covered either, so it sorted the whole table on every page. A {@code Sort} node
-	 * is the shape that says so, and it says it at any dataset size — which is why
-	 * this asserts on the plan rather than on a block count guard scale keeps small.
-	 *
-	 * <p>It also asserts no temp file, which is the other thing a page-sized result
-	 * should never need and the only part of the deleted buffer-ceiling guard that
-	 * could ever fail.
+	 * The list orders by {@code (last_seen, id)} or {@code (event_count, id)}; a
+	 * {@code Sort} node means an index isn't covering the ordering, which holds at
+	 * any dataset size unlike a block-count ceiling. Also asserts no temp file,
+	 * the other thing a page-sized result should never need.
 	 */
 	@Test
 	void issueListSortIsIndexSupported() {
@@ -158,24 +110,11 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * Every shape the UI can ask for, against the index meant to serve it. The UI
-	 * always sends a status and always sends a time range, so the four shapes are
-	 * {unresolved, resolved} × {global, project-scoped}, each in two sort orders —
-	 * and each has its own index because leaving {@code status} out of them is what
-	 * made the Resolved tab cost 15x a full table scan.
-	 *
-	 * <p>Naming the index is the point. Asserting only the absence of a {@code Sort}
-	 * passes with the project-scoped indexes dropped, because Postgres will walk a
-	 * global index and apply {@code project_id} as a filter — ordered, sort-free, and
-	 * exactly the plan those indexes exist to avoid. "Some index was used" cannot
-	 * fail when a redundant index is added; "<em>this</em> index was used" can.
-	 *
-	 * <p>What it deliberately does not assert is that these are the plans chosen
-	 * <em>today</em>. At guard scale three of the four are not: 200 issues live in
-	 * ten blocks, and reading ten blocks legitimately beats an index walk. Whether
-	 * the crossover has been passed is a question about dataset size; pricing the
-	 * sort out of reach isolates the half that is structural.
-	 * {@code docs/performance/measuring-retrieval.md}, finding 6, has the numbers.
+	 * Every UI shape — {unresolved, resolved} x {global, project-scoped}, each in
+	 * two sort orders — against the index meant to serve it, named explicitly
+	 * because "some index was used" would still pass on a global-index fallback.
+	 * At guard scale a table scan can beat an index walk, so the sort is priced
+	 * out of reach (see {@link #explainWithoutSort}) to isolate the structural claim.
 	 */
 	@Test
 	void everyIssueListShapeWalksItsOwnIndex() {
@@ -201,9 +140,9 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * The shape is served by {@code index} and served <em>in order</em> — the second
-	 * half matters because a bitmap scan of the same index would satisfy the first
-	 * and still hand its rows over in heap order to be sorted.
+	 * Served by {@code index}, and served in order: a bitmap scan of the same
+	 * index would satisfy the first but still hand rows back in heap order to be
+	 * sorted.
 	 */
 	private static void assertWalks(String shape, PlanFacts facts, String index) {
 		assertThat(facts.indexesUsed())
@@ -213,16 +152,10 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * {@code EXPLAIN} with sorting priced out of reach — not forbidden, so a query
-	 * with no ordered path still plans a {@code Sort} and is still visible as one. It
-	 * has to be the sort that is priced out rather than the scan: disabling
-	 * sequential scans alone just moves Postgres onto a bitmap scan of the
-	 * {@code (project_id, fingerprint)} unique index, which returns rows in heap
-	 * order and sorts them anyway.
-	 *
-	 * <p>{@code SET LOCAL} inside a rolled-back transaction so the setting reverts
-	 * with it: a session {@code SET} would leak to whichever test next drew the same
-	 * pooled connection.
+	 * Prices sorting out of reach rather than forbidding it (disabling sequential
+	 * scans would just make Postgres fall back to a bitmap scan that still sorts).
+	 * {@code SET LOCAL} runs inside a rolled-back transaction so the setting
+	 * doesn't leak to the next test on the same pooled connection.
 	 */
 	private PlanFacts explainWithoutSort(QueryPlans.Built built) {
 		TransactionTemplate transaction = new TransactionTemplate(transactions);
@@ -233,8 +166,6 @@ class IssueQueryPerformanceTest {
 			return built.explain(jdbc);
 		});
 	}
-
-	// -------------------------------------------------------------- aggregates
 
 	/**
 	 * The sparkline is bounded to the last 14 days, so it must read only the weekly
@@ -252,13 +183,8 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * {@code count(DISTINCT user_ident)} for the page's 50 issues, with <b>no time
-	 * bound</b>, on every issue-list page load. Every partition ever created is
-	 * read, so the cost grows with retention rather than with the page.
-	 *
-	 * <p>The pruning assertion comes first deliberately: it is the one that states
-	 * the defect, and it holds at any dataset size. The ceiling behind it is the
-	 * sparkline's — the same aggregate over the same issues, bounded.
+	 * {@code count(DISTINCT user_ident)} for the page's issues, with no time bound,
+	 * on every page load — cost grows with retention, not with the page.
 	 */
 	@Test
 	@Disabled("#131 — users-affected has no time bound and reads every partition")
@@ -271,22 +197,12 @@ class IssueQueryPerformanceTest {
 		QueryGuard.assertCeilingCanFail(jdbc, MAX_USERS_AFFECTED_BLOCKS, "event");
 	}
 
-	// ----------------------------------------------------------------- filters
-
 	/**
-	 * Release and environment filtering ask the same question — whether an Issue has
-	 * Events carrying one value — and both answer it from low-volume rollups rather
-	 * than reading the partitioned {@code event} table.
-	 *
-	 * <p>Plan shape, no buffer ceiling, for the reason the list query has none: now
-	 * that this reads only {@code issue} and {@code issue_release_stats}, every
-	 * ceiling that clears the healthy plan (~217 blocks) already sits above the ~30
-	 * a full scan of both tables costs, and a ceiling above the scan cannot fail.
-	 * The ceiling this guard carried while it was {@code @Disabled} was the healthy
-	 * <em>target</em> (10x the environment filter, per {@link QueryGuard}); with the
-	 * target met, the honest guard is the one below. Validating that ceiling against
-	 * {@code event} would have been vacuous twice over — the assertion on the next
-	 * line is that {@code event} is never read at all.
+	 * Release and environment filtering both answer "does this Issue have Events
+	 * carrying one value" from low-volume rollups rather than the partitioned
+	 * {@code event} table. No buffer ceiling: any ceiling clearing the healthy
+	 * plan (~217 blocks) already sits above the ~30 a full scan of both rollup
+	 * tables costs.
 	 */
 	@Test
 	void releaseFilterCostsWhatTheEnvironmentFilterCosts() {
@@ -308,21 +224,11 @@ class IssueQueryPerformanceTest {
 			.noneMatch(relation -> relation.startsWith("event"));
 	}
 
-	// ----------------------------------------------------------------- helpers
-
 	/**
-	 * A list request shaped the way the UI sends one. Both filters are defaults the
-	 * user never has to pick, so a guard that omitted them would measure a query the
-	 * product cannot produce: {@code issues.ts} defaults {@code status} to
-	 * {@link #DEFAULT_STATUS}, and {@code filters.ts} defaults the range to
-	 * {@link #UI_RANGE_DAYS} days, which reaches the server as a {@code last_seen}
-	 * lower bound.
-	 *
-	 * <p>Of the two it is {@code status} that changes the plan — it is an equality
-	 * predicate no index covered before #126, and the Resolved tab is the shape that
-	 * exposed it. The range bound is a range start on the same index and would be
-	 * harmless to omit; it is here because sending one and not the other would be a
-	 * shape nothing produces either.
+	 * A list request shaped the way the UI sends one: {@code status} defaults to
+	 * {@link #DEFAULT_STATUS} ({@code issues.ts}) and the range defaults to
+	 * {@link #UI_RANGE_DAYS} days ({@code filters.ts}), arriving as a
+	 * {@code last_seen} lower bound.
 	 */
 	private QueryPlans.Built uiList(List<Long> project, String status, String sort, String cursor) {
 		Instant from = Instant.now().minus(UI_RANGE_DAYS, ChronoUnit.DAYS);

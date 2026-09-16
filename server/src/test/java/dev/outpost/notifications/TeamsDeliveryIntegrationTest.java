@@ -30,15 +30,10 @@ import org.springframework.web.client.RestTemplate;
 
 /**
  * The Teams channel type end to end (issue #46): a real Sentry envelope through
- * the ingest HTTP boundary → a new Issue → an HTTP POST to a matching
- * <em>teams</em> channel carrying an Adaptive Card in the Teams Workflows
- * envelope, plus the persisted history row. Proves the formatter seam delivers a
- * second channel type through the exact same matching, history, and delivery
- * machinery as Generic JSON — nothing in that path changed to add Teams.
- *
- * <p>Asserts external behavior only (the POST body Teams would receive, the
- * recorded row), never notify internals. Reuses the stub {@link HttpServer}
- * receiver fixture (prior art: {@code NotificationDeliveryIntegrationTest}).
+ * the ingest HTTP boundary produces a new Issue and an HTTP POST to a matching
+ * teams channel carrying an Adaptive Card in the Teams Workflows envelope, plus
+ * the persisted history row. Asserts external behavior only, never notify
+ * internals.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"outpost.admin.email=admin@test.local", "outpost.admin.password=test-password",

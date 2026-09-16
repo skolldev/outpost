@@ -19,22 +19,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * What the log timeline's covering index costs and buys at benchmark scale
- * (#141). Opt-in like the other benchmarks:
+ * (#141): how long the build blocks ingest, what it costs on disk, and what it
+ * costs every insert thereafter. Reports and asserts nothing — the numbers
+ * decide whether the migration is worth writing.
  * {@snippet lang = shell : ./gradlew retrievalBenchmark --tests '*LogTimelineIndexProbe' -Pbench.scale=0.4 }
- *
- * <p>The guard-tier measurement in {@code LogTimelinePerformanceTest} answers
- * whether the plan is the right <em>shape</em>. It cannot answer what a seventh
- * index on the highest-volume table in the product costs, because 40 000 records
- * make every storage and write number too small to extrapolate from — which is
- * exactly the mistake {@code V11}'s notes warn against when they decline to turn
- * one build time into a rate. So this asks the three questions a migration has to
- * answer, at the ~2 000 000 records {@code V11} quoted its own numbers against:
- * how long the build blocks ingest, what the index costs on disk, and what it
- * costs every insert thereafter.
- *
- * <p>It reports and asserts nothing. The numbers decide whether the migration is
- * worth writing, and a threshold here would be a guess standing in for that
- * judgement.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
@@ -124,9 +112,8 @@ class LogTimelineIndexProbe {
 
 	/**
 	 * Appends {@value #WRITE_PROBE_ROWS} rows to the current week and returns the
-	 * milliseconds it took. A proxy for ingest cost, not a throughput measurement:
-	 * it isolates per-row index maintenance from everything else {@code LogStore}
-	 * does, which is the only part a new index changes.
+	 * milliseconds it took. Isolates per-row index maintenance from everything else
+	 * {@code LogStore} does, since that's the only part a new index changes.
 	 */
 	private long timedBulkInsert() {
 		long started = System.currentTimeMillis();
