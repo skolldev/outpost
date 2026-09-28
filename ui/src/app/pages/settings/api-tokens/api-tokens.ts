@@ -15,6 +15,7 @@ import { API_BASE } from '../../../core/api-base';
 import { Feedback } from '../../../core/feedback';
 import { Session } from '../../../core/session';
 import { ApiToken, TokenScope } from '../../../core/models';
+import { PostHogService } from '../../../core/posthog.service';
 
 /** Ownership of a new token — the two kinds ADR-0017 distinguishes. */
 type Ownership = 'personal' | 'installation';
@@ -41,6 +42,7 @@ type Ownership = 'personal' | 'installation';
 export class ApiTokensSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
+  private readonly posthogService = inject(PostHogService);
   readonly session = inject(Session);
 
   /** Already scoped server-side — an Admin gets every token, a Member only their own. */
@@ -96,6 +98,10 @@ export class ApiTokensSettings {
               }),
             );
             this.createdToken.set(created);
+            this.posthogService.posthog.capture('api_token_created', {
+              ownership: model.ownership,
+              scope_count: created.scopes.length,
+            });
             this.tokenForm().reset(blankToken());
             this.tokensResource.reload();
           } catch {
@@ -109,6 +115,7 @@ export class ApiTokensSettings {
   async deleteToken(token: ApiToken): Promise<void> {
     try {
       await firstValueFrom(this.api.deleteToken(token.id));
+      this.posthogService.posthog.capture('api_token_deleted');
       if (this.createdToken()?.id === token.id) {
         this.createdToken.set(null);
       }

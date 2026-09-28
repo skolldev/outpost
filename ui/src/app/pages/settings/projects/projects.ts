@@ -12,6 +12,7 @@ import { Api } from '../../../core/api';
 import { Feedback } from '../../../core/feedback';
 import { ProjectKey } from '../../../core/models';
 import { ProjectsStore } from '../../../core/projects';
+import { PostHogService } from '../../../core/posthog.service';
 
 /** Projects tab: the Project list, DSN keys, and SDK setup snippets. */
 @Component({
@@ -31,6 +32,7 @@ import { ProjectsStore } from '../../../core/projects';
 export class ProjectsSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
+  private readonly posthogService = inject(PostHogService);
   readonly projectsStore = inject(ProjectsStore);
 
   readonly expandedProject = signal<number | null>(null);
@@ -75,6 +77,7 @@ export class ProjectsSettings {
             await firstValueFrom(
               this.api.createProject(slug, slug, platform === 'other' ? null : platform),
             );
+            this.posthogService.posthog.capture('project_created', { platform });
             this.projectForm().reset({ slug: '', platform: '' });
             this.projectsStore.reload();
             this.feedback.success('Project created.');

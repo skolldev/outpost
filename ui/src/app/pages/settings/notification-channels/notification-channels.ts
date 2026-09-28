@@ -23,6 +23,7 @@ import {
   NotificationTrigger,
 } from '../../../core/models';
 import { ProjectsStore } from '../../../core/projects';
+import { PostHogService } from '../../../core/posthog.service';
 
 /** Notification channels tab: webhook destinations, their scope, and delivery history. */
 @Component({
@@ -44,6 +45,7 @@ import { ProjectsStore } from '../../../core/projects';
 export class NotificationChannelsSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
+  private readonly posthogService = inject(PostHogService);
   readonly projectsStore = inject(ProjectsStore);
 
   private readonly channelsResource = httpResource<NotificationChannel[]>(
@@ -115,6 +117,14 @@ export class NotificationChannelsSettings {
             } else {
               await firstValueFrom(this.api.updateNotificationChannel(editing, body));
             }
+            this.posthogService.posthog.capture(
+              editing === null ? 'notification_channel_created' : 'notification_channel_updated',
+              {
+                channel_type: body.type,
+                trigger_count: body.triggers.length,
+                project_scope_count: body.project_filter.length,
+              },
+            );
             this.resetChannelForm();
             this.channelsResource.reload();
             this.feedback.success(editing === null ? 'Channel created.' : 'Channel updated.');
@@ -246,6 +256,9 @@ export class NotificationChannelsSettings {
       if (this.editingChannelId() === channel.id) {
         this.model.update((m) => ({ ...m, enabled: !channel.enabled }));
       }
+      this.posthogService.posthog.capture(
+        channel.enabled ? 'notification_channel_disabled' : 'notification_channel_enabled',
+      );
       this.channelsResource.reload();
     } catch {
       this.feedback.error('Could not update notification channel.');
@@ -263,6 +276,7 @@ export class NotificationChannelsSettings {
   async deleteChannel(channel: NotificationChannel): Promise<void> {
     try {
       await firstValueFrom(this.api.deleteNotificationChannel(channel.id));
+      this.posthogService.posthog.capture('notification_channel_deleted');
       if (this.editingChannelId() === channel.id) this.resetChannelForm();
       this.confirmDeleteChannelId.set(null);
       this.channelsResource.reload();
@@ -281,6 +295,9 @@ export class NotificationChannelsSettings {
     try {
       const result = await firstValueFrom(this.api.testNotificationChannel(channel.id));
       this.channelTestResult.update((map) => ({ ...map, [channel.id]: result }));
+      this.posthogService.posthog.capture('notification_channel_tested', {
+        channel_type: channel.type,
+      });
       this.channelsResource.reload();
       if (this.expandedChannelId() === channel.id) {
         this.historyResource.reload();

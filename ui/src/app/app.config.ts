@@ -11,6 +11,7 @@ import { catchError, throwError } from 'rxjs';
 
 import { routes } from './app.routes';
 import { provideSpartanHlm } from '@spartan-ng/helm/utils';
+import { providePostHogErrorHandler } from './core/posthog-error-handler';
 
 /** Redirect to /login when the session expires mid-use. */
 const unauthorizedInterceptor: HttpInterceptorFn = (req, next) => {
@@ -32,6 +33,7 @@ const unauthorizedInterceptor: HttpInterceptorFn = (req, next) => {
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
+    providePostHogErrorHandler(),
     provideRouter(routes, withComponentInputBinding()),
     provideHttpClient(withInterceptors([unauthorizedInterceptor])),
     provideSpartanHlm(),

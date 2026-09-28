@@ -12,6 +12,7 @@ import { API_BASE } from '../../../core/api-base';
 import { Feedback } from '../../../core/feedback';
 import { UptimeMonitor, UptimeTestResult } from '../../../core/models';
 import { ProjectsStore } from '../../../core/projects';
+import { PostHogService } from '../../../core/posthog.service';
 
 /** Uptime monitors tab: configure the URLs Outpost polls for availability. */
 @Component({
@@ -23,6 +24,7 @@ import { ProjectsStore } from '../../../core/projects';
 export class UptimeMonitorsSettings {
   private readonly api = inject(Api);
   private readonly feedback = inject(Feedback);
+  private readonly posthogService = inject(PostHogService);
   readonly projectsStore = inject(ProjectsStore);
 
   private readonly monitorsResource = httpResource<UptimeMonitor[]>(
@@ -74,6 +76,10 @@ export class UptimeMonitorsSettings {
             } else {
               await firstValueFrom(this.api.updateUptimeMonitor(editing, body));
             }
+            this.posthogService.posthog.capture(
+              editing === null ? 'uptime_monitor_created' : 'uptime_monitor_updated',
+              { interval_seconds: body.interval_seconds, timeout_seconds: body.timeout_seconds },
+            );
             this.resetMonitorForm();
             this.monitorsResource.reload();
             this.feedback.success(editing === null ? 'Monitor created.' : 'Monitor updated.');
@@ -137,6 +143,7 @@ export class UptimeMonitorsSettings {
   async deleteMonitor(monitor: UptimeMonitor): Promise<void> {
     try {
       await firstValueFrom(this.api.deleteUptimeMonitor(monitor.id));
+      this.posthogService.posthog.capture('uptime_monitor_deleted');
       if (this.editingMonitorId() === monitor.id) {
         this.resetMonitorForm();
       }
@@ -152,6 +159,9 @@ export class UptimeMonitorsSettings {
     const { url, timeout } = this.model();
     try {
       this.testResult.set(await firstValueFrom(this.api.testUptimeMonitor(url, Number(timeout))));
+      this.posthogService.posthog.capture('uptime_monitor_tested', {
+        timeout_seconds: Number(timeout),
+      });
     } catch {
       this.testResult.set(null);
       this.feedback.error('Test request failed — check the URL.');
