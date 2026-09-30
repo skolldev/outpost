@@ -10,7 +10,7 @@
 # supported — put the reverse proxy at a subdomain instead.
 
 # ── Stage 1: Angular bundle ─────────────────────────────────────────
-FROM node:24-alpine AS ui
+FROM node:25-alpine AS ui
 WORKDIR /ui
 RUN corepack enable
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
