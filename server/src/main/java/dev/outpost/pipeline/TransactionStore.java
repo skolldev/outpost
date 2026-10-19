@@ -7,7 +7,6 @@ import dev.outpost.db.PartitionManager;
 import dev.outpost.ingest.IngestMetrics;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -78,6 +77,23 @@ public class TransactionStore {
 	}
 
 	/**
+	 * Stores streamed child spans, which arrive independently of their segment's txn
+	 * row; {@link #store} covers the segments themselves.
+	 */
+	public void storeSpans(List<ProcessedSpan> batch) {
+		if (batch.isEmpty()) {
+			return;
+		}
+		partitions.ensurePartitions(PartitionManager.SPAN, batch.stream().map(ProcessedSpan::startTs).toList());
+		PoisonIsolation.run(log, batch,
+				spans -> transaction.executeWithoutResult(status -> jdbc.batchUpdate(SPAN_INSERT, spanRows(spans))),
+				(span, failure) -> {
+					metrics.dropped(IngestMetrics.DropStage.STORE);
+					log.warn("dropping unstorable span {}: {}", span.id(), failure.toString());
+				});
+	}
+
+	/**
 	 * Requires every txn and span partition to exist already; retries recurse here
 	 * rather than into {@link #store} to avoid re-checking partitions per transaction
 	 * on the already-degraded path.
@@ -99,17 +115,18 @@ public class TransactionStore {
 			.toList();
 		jdbc.batchUpdate(TXN_INSERT, txnRows);
 
-		List<Object[]> spanRows = new ArrayList<>();
-		for (ProcessedTransaction txn : batch) {
-			for (ProcessedSpan span : txn.spans()) {
-				spanRows.add(new Object[] { span.id(), span.txnId(), span.projectId(), span.traceId(), span.spanId(),
-						span.parentSpanId(), span.op(), span.description(), Timestamp.from(span.startTs()),
-						Timestamp.from(span.endTs()), span.durationMs(), span.status(), json(span.data()) });
-			}
-		}
+		List<Object[]> spanRows = spanRows(batch.stream().flatMap(txn -> txn.spans().stream()).toList());
 		if (!spanRows.isEmpty()) {
 			jdbc.batchUpdate(SPAN_INSERT, spanRows);
 		}
+	}
+
+	private List<Object[]> spanRows(List<ProcessedSpan> spans) {
+		return spans.stream()
+			.map(span -> new Object[] { span.id(), span.txnId(), span.projectId(), span.traceId(), span.spanId(),
+					span.parentSpanId(), span.op(), span.description(), Timestamp.from(span.startTs()),
+					Timestamp.from(span.endTs()), span.durationMs(), span.status(), json(span.data()) })
+			.toList();
 	}
 
 	private String json(JsonNode data) {

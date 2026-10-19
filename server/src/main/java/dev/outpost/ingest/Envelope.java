@@ -8,7 +8,7 @@ public final class Envelope {
 	}
 
 	public enum ItemKind {
-		EVENT, LOG, TRANSACTION, ATTACHMENT, CLIENT_REPORT, OTHER
+		EVENT, LOG, TRANSACTION, SPAN, ATTACHMENT, CLIENT_REPORT, OTHER
 	}
 
 	/** One envelope item: JSON header line + payload bytes. */
@@ -20,6 +20,7 @@ public final class Envelope {
 				case "event" -> ItemKind.EVENT;
 				case "log" -> ItemKind.LOG;
 				case "transaction" -> ItemKind.TRANSACTION;
+				case "span" -> ItemKind.SPAN;
 				case "attachment" -> ItemKind.ATTACHMENT;
 				case "client_report" -> ItemKind.CLIENT_REPORT;
 				default -> ItemKind.OTHER;
@@ -35,6 +36,7 @@ public final class Envelope {
 				case EVENT -> IngestMetrics.Signal.ERROR;
 				case LOG -> IngestMetrics.Signal.LOG;
 				case TRANSACTION -> IngestMetrics.Signal.TRANSACTION;
+				case SPAN -> IngestMetrics.Signal.SPAN;
 				case ATTACHMENT, CLIENT_REPORT, OTHER -> null;
 			};
 		}

@@ -5,8 +5,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A single span within a transaction after pipeline processing, ready for
- * storage. One row per entry in the transaction's {@code spans[]} array.
+ * A single span after pipeline processing, ready for storage: an entry of a
+ * transaction's {@code spans[]} array, or a streamed (v2) non-segment span.
  */
 public record ProcessedSpan(UUID id, UUID txnId, long projectId, String traceId, String spanId, String parentSpanId,
 		String op, String description, Instant startTs, Instant endTs, double durationMs, String status, JsonNode data) {

@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 class LogPipelineTest {
 
 	private final ObjectMapper mapper = new ObjectMapper();
-	private final LogPipeline pipeline = new LogPipeline(mapper);
+	private final LogPipeline pipeline = new LogPipeline();
 
 	private final Instant receivedAt = Instant.parse("2026-07-04T12:00:00Z");
 

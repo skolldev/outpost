@@ -23,7 +23,7 @@ public class IngestMetrics {
 	/** The signal a queued item carries. Tag value on the per-signal meters. */
 	public enum Signal {
 
-		ERROR("error"), LOG("log"), TRANSACTION("transaction");
+		ERROR("error"), LOG("log"), TRANSACTION("transaction"), SPAN("span");
 
 		private final String tag;
 

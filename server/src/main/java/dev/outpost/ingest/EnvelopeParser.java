@@ -80,7 +80,8 @@ public class EnvelopeParser {
 
 	/**
 	 * The signal an item carries together with its object payload, or null when it
-	 * carries no signal or its payload is not a JSON object.
+	 * carries no signal or its payload is not a JSON object. Only v2 span items (an
+	 * {@code items} container) count; v1 single-span payloads are left unprocessed.
 	 */
 	public Envelope.SignalItem signalItem(Envelope.Item item) {
 		IngestMetrics.Signal signal = item.signal();
@@ -88,7 +89,10 @@ public class EnvelopeParser {
 			return null;
 		}
 		JsonNode payload = parseObjectPayload(item);
-		return payload == null ? null : new Envelope.SignalItem(signal, payload);
+		if (payload == null || (signal == IngestMetrics.Signal.SPAN && !payload.path("items").isArray())) {
+			return null;
+		}
+		return new Envelope.SignalItem(signal, payload);
 	}
 
 	public JsonNode parseObjectPayload(Envelope.Item item) {
