@@ -12,6 +12,7 @@ import dev.outpost.pipeline.EventStore;
 import dev.outpost.pipeline.LogPipeline;
 import dev.outpost.pipeline.LogStore;
 import dev.outpost.pipeline.ProcessedEvent;
+import dev.outpost.pipeline.StreamedSpanPipeline;
 import dev.outpost.pipeline.TransactionPipeline;
 import dev.outpost.pipeline.TransactionStore;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -79,6 +80,6 @@ class IngestWorkersTest {
 	private IngestWorkers workers(EnvelopeParser parser) {
 		return new IngestWorkers(queue, spool, parser, mock(ClientReportCounters.class), pipeline, store,
 				mock(LogPipeline.class), mock(LogStore.class), mock(TransactionPipeline.class),
-				mock(TransactionStore.class), metrics, 0, 10, 0, Duration.ZERO);
+				mock(StreamedSpanPipeline.class), mock(TransactionStore.class), metrics, 0, 10, 0, Duration.ZERO);
 	}
 }

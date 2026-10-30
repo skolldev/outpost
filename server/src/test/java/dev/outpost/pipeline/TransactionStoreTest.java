@@ -73,6 +73,34 @@ class TransactionStoreTest {
 		verify(jdbc, times(4)).batchUpdate(contains("INTO txn"), any(List.class));
 	}
 
+	@Test
+	void storesStreamedSpansInOneBatchWithOnePartitionCheck() {
+		store.storeSpans(spans(200));
+
+		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.SPAN), any(Collection.class));
+		verify(jdbc, times(1)).batchUpdate(contains("INTO span"), any(List.class));
+		verify(jdbc, times(0)).batchUpdate(contains("INTO txn"), any(List.class));
+	}
+
+	@Test
+	void aPoisonStreamedSpanDoesNotSinkItsBatch() {
+		when(jdbc.batchUpdate(contains("INTO span"), any(List.class)))
+			.thenThrow(new DataIntegrityViolationException("poison span"));
+
+		store.storeSpans(spans(3));
+
+		verify(partitions, times(1)).ensurePartitions(eq(PartitionManager.SPAN), any(Collection.class));
+		verify(jdbc, times(4)).batchUpdate(contains("INTO span"), any(List.class));
+	}
+
+	private List<ProcessedSpan> spans(int size) {
+		return IntStream.range(0, size).mapToObj(i -> {
+			Instant start = START.plusSeconds(i);
+			return new ProcessedSpan(UUID.randomUUID(), UUID.randomUUID(), 1L, "trace", "span" + i, null, "db",
+					"SELECT 1", start, start.plusMillis(5), 5.0, "ok", mapper.createObjectNode());
+		}).toList();
+	}
+
 	private List<ProcessedTransaction> batch(int size) {
 		return IntStream.range(0, size).mapToObj(i -> {
 			UUID txnId = UUID.randomUUID();

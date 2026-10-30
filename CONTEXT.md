@@ -125,7 +125,7 @@ A series of causally connected operations identified by one Trace ID, showing ho
 _Avoid_: Request (when the operation crosses more than one request)
 
 **Transaction**:
-A single instance of an activity a Project measures within a Trace, such as a page load, navigation, request, or asynchronous task. It may contain child Spans and need not be the root of the whole Trace.
+A single instance of an activity a Project measures within a Trace, such as a page load, navigation, request, or asynchronous task. It may contain child Spans and need not be the root of the whole Trace. SDKs that stream spans send it as a segment span rather than a `transaction` item; both are the same Transaction.
 _Avoid_: Database transaction, business transaction
 
 **Transaction Group**:

@@ -12,11 +12,9 @@ async function bootstrap(): Promise<void> {
     dsn: cfg.sentryDsn,
     environment: cfg.environment,
     release: cfg.release,
-    sendDefaultPii: true,
     tracesSampleRate: 1.0,
     // Lets browser and server transactions join into one distributed trace.
     tracePropagationTargets: [new URL(cfg.apiBase).host, /^\//],
-    enableLogs: true,
     integrations: [
       Sentry.browserTracingIntegration(),
       Sentry.consoleLoggingIntegration({ levels: ['log', 'warn', 'error'] }),

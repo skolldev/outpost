@@ -115,11 +115,11 @@ See [`demo/README.md`](demo/README.md) for the project-seeding and DSN steps.
 
 Outpost implements the subset of the Sentry protocol that its features need:
 
-| Endpoint                                                        | Status                                                                                               |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `POST /api/{project}/envelope/`                                 | Errors, transactions, spans, logs, attachments. Client reports are accepted and counted, not stored. |
-| `POST /api/0/.../chunk-upload/`, `.../artifactbundle/assemble/` | `sentry-cli` source map upload                                                                       |
-| `POST /api/{project}/security/`, `/minidump/`                   | Not implemented (`404`)                                                                              |
+| Endpoint                                                        | Status                                                                                                                                                  |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/{project}/envelope/`                                 | Errors, transactions, streamed spans (v2 `span` items, the JS SDK v11 default), logs, attachments. Client reports are accepted and counted, not stored. |
+| `POST /api/0/.../chunk-upload/`, `.../artifactbundle/assemble/` | `sentry-cli` source map upload                                                                                                                          |
+| `POST /api/{project}/security/`, `/minidump/`                   | Not implemented (`404`)                                                                                                                                 |
 
 "Sentry-compatible" means SDK ingest and `sentry-cli` artifact upload work. It is **not** a
 drop-in replacement for the Sentry API or feature set.

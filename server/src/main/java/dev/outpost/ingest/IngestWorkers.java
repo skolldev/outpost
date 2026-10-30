@@ -6,7 +6,10 @@ import dev.outpost.pipeline.LogPipeline;
 import dev.outpost.pipeline.LogStore;
 import dev.outpost.pipeline.ProcessedEvent;
 import dev.outpost.pipeline.ProcessedLog;
+import dev.outpost.pipeline.ProcessedSpan;
 import dev.outpost.pipeline.ProcessedTransaction;
+import dev.outpost.pipeline.StreamedSpanPipeline;
+import dev.outpost.pipeline.StreamedSpans;
 import dev.outpost.pipeline.TransactionPipeline;
 import dev.outpost.pipeline.TransactionStore;
 import tools.jackson.databind.JsonNode;
@@ -44,6 +47,7 @@ public class IngestWorkers implements SmartLifecycle {
 	private final LogPipeline logPipeline;
 	private final LogStore logStore;
 	private final TransactionPipeline transactionPipeline;
+	private final StreamedSpanPipeline spanPipeline;
 	private final TransactionStore transactionStore;
 	private final IngestMetrics metrics;
 	private final int workerCount;
@@ -55,8 +59,9 @@ public class IngestWorkers implements SmartLifecycle {
 
 	public IngestWorkers(IngestQueue queue, EnvelopeSpool spool, EnvelopeParser parser,
 			ClientReportCounters clientReports, ErrorPipeline pipeline, EventStore store, LogPipeline logPipeline,
-			LogStore logStore, TransactionPipeline transactionPipeline, TransactionStore transactionStore,
-			IngestMetrics metrics, @Value("${outpost.ingest.workers:2}") int workerCount,
+			LogStore logStore, TransactionPipeline transactionPipeline, StreamedSpanPipeline spanPipeline,
+			TransactionStore transactionStore, IngestMetrics metrics,
+			@Value("${outpost.ingest.workers:2}") int workerCount,
 			@Value("${outpost.ingest.max-batch:500}") int maxBatch,
 			@Value("${outpost.ingest.linger-millis:1000}") long lingerMillis,
 			@Value("${outpost.ingest.shutdown-timeout:" + DEFAULT_SHUTDOWN_TIMEOUT + "}") Duration shutdownTimeout) {
@@ -69,6 +74,7 @@ public class IngestWorkers implements SmartLifecycle {
 		this.logPipeline = logPipeline;
 		this.logStore = logStore;
 		this.transactionPipeline = transactionPipeline;
+		this.spanPipeline = spanPipeline;
 		this.transactionStore = transactionStore;
 		this.metrics = metrics;
 		this.workerCount = workerCount;
@@ -113,16 +119,20 @@ public class IngestWorkers implements SmartLifecycle {
 		}
 	}
 
+	/** Processed telemetry gathered across one drained batch, stored per signal at the end. */
+	private record Collected(List<ProcessedEvent> events, List<ProcessedLog> logs,
+			List<ProcessedTransaction> transactions, List<ProcessedSpan> spans) {
+	}
+
 	void digest(List<QueuedEnvelope> batch) {
 		try {
 			metrics.batchDrained(batch.size());
-			List<ProcessedEvent> events = new ArrayList<>(batch.size());
-			List<ProcessedLog> logs = new ArrayList<>();
-			List<ProcessedTransaction> transactions = new ArrayList<>();
+			Collected collected = new Collected(new ArrayList<>(batch.size()), new ArrayList<>(), new ArrayList<>(),
+					new ArrayList<>());
 			Instant dequeuedAt = Instant.now();
 			for (QueuedEnvelope envelope : batch) {
 				try {
-					processEnvelope(envelope, dequeuedAt, events, logs, transactions);
+					processEnvelope(envelope, dequeuedAt, collected);
 				}
 				catch (IOException | RuntimeException e) {
 					metrics.dropped(IngestMetrics.DropStage.PIPELINE);
@@ -130,17 +140,18 @@ public class IngestWorkers implements SmartLifecycle {
 							envelope.spoolFile().path(), e.toString());
 				}
 			}
-			storeTimed(IngestMetrics.Signal.ERROR, events, store::store);
-			storeTimed(IngestMetrics.Signal.LOG, logs, logStore::store);
-			storeTimed(IngestMetrics.Signal.TRANSACTION, transactions, transactionStore::store);
+			storeTimed(IngestMetrics.Signal.ERROR, collected.events(), store::store);
+			storeTimed(IngestMetrics.Signal.LOG, collected.logs(), logStore::store);
+			// Streamed segments are transactions, so they are stored (and timed) as such.
+			storeTimed(IngestMetrics.Signal.TRANSACTION, collected.transactions(), transactionStore::store);
+			storeTimed(IngestMetrics.Signal.SPAN, collected.spans(), transactionStore::storeSpans);
 		}
 		finally {
 			queue.release(batch);
 		}
 	}
 
-	private void processEnvelope(QueuedEnvelope queued, Instant dequeuedAt, List<ProcessedEvent> events,
-			List<ProcessedLog> logs, List<ProcessedTransaction> transactions) throws IOException {
+	private void processEnvelope(QueuedEnvelope queued, Instant dequeuedAt, Collected collected) throws IOException {
 		List<IngestItem.Attachment> attachments = new ArrayList<>();
 		try (InputStream in = spool.open(queued.spoolFile())) {
 			parser.parse(in, item -> {
@@ -154,7 +165,7 @@ public class IngestWorkers implements SmartLifecycle {
 							clientReports.record(queued.projectId(), report);
 						}
 					}
-					case EVENT, LOG, TRANSACTION, OTHER -> {
+					case EVENT, LOG, TRANSACTION, SPAN, OTHER -> {
 					}
 				}
 			});
@@ -173,21 +184,27 @@ public class IngestWorkers implements SmartLifecycle {
 					case LOG -> new IngestItem.LogBatch(queued.projectId(), queued.receivedAt(), payload);
 					case TRANSACTION ->
 						new IngestItem.TransactionEvent(queued.projectId(), queued.receivedAt(), payload);
+					case SPAN -> new IngestItem.SpanBatch(queued.projectId(), queued.receivedAt(), payload);
 				};
-				process(signalItem.signal(), ingestItem, dequeuedAt, events, logs, transactions);
+				process(signalItem.signal(), ingestItem, dequeuedAt, collected);
 			});
 		}
 	}
 
-	private void process(IngestMetrics.Signal signal, IngestItem item, Instant dequeuedAt, List<ProcessedEvent> events,
-			List<ProcessedLog> logs, List<ProcessedTransaction> transactions) {
+	private void process(IngestMetrics.Signal signal, IngestItem item, Instant dequeuedAt, Collected collected) {
 		metrics.queueWait(signal, item.receivedAt(), dequeuedAt);
 		long startedAt = System.nanoTime();
 		try {
 			switch (item) {
-				case IngestItem.ErrorEvent event -> events.add(pipeline.process(event));
-				case IngestItem.LogBatch logBatch -> logs.addAll(logPipeline.process(logBatch));
-				case IngestItem.TransactionEvent txn -> transactions.add(transactionPipeline.process(txn));
+				case IngestItem.ErrorEvent event -> collected.events().add(pipeline.process(event));
+				case IngestItem.LogBatch logBatch -> collected.logs().addAll(logPipeline.process(logBatch));
+				case IngestItem.TransactionEvent txn ->
+					collected.transactions().add(transactionPipeline.process(txn));
+				case IngestItem.SpanBatch spanBatch -> {
+					StreamedSpans streamed = spanPipeline.process(spanBatch);
+					collected.transactions().addAll(streamed.segments());
+					collected.spans().addAll(streamed.spans());
+				}
 			}
 			metrics.processed(signal, System.nanoTime() - startedAt);
 		}

@@ -155,8 +155,12 @@ templates the same file from the `DEMO_*` variables).
 ## What this demo deliberately does NOT cover
 
 Outpost accepts-but-drops these envelope item types, so the SDK features are pointless to
-enable here: **session replay, profiling, cron check-ins, release-health sessions**, plus
-the unimplemented **CSP/security-report and minidump endpoints**.
+enable here: **session replay, profiling, cron check-ins, release-health sessions, metrics**,
+plus the unimplemented **CSP/security-report and minidump endpoints**.
+
+The frontend runs `@sentry/angular` v11, which streams spans (v2 `span` items) instead of
+sending `transaction` items. Browser web-vital spans (INP, LCP, CLS) show up in the trace
+waterfall, not as Transactions.
 
 ## Troubleshooting
 

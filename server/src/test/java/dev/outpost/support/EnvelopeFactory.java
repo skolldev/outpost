@@ -106,6 +106,53 @@ public final class EnvelopeFactory {
 		return envelope("transaction", txn);
 	}
 
+	/**
+	 * A v2 span item as the JS SDK (v11+) streams it: {@code spans} children of one
+	 * pageload segment, the segment last as it finishes last. Like the SDK, the item
+	 * header carries no {@code length}, so the payload is newline-delimited.
+	 */
+	public String streamedSpans(String environment, int spans) {
+		long n = sequence.getAndIncrement();
+		Instant start = Instant.now().minusMillis(400);
+		String traceId = hexId();
+		String segmentId = spanId(n);
+		StringBuilder items = new StringBuilder();
+		for (int i = 0; i < spans; i++) {
+			items.append(streamedSpan(traceId, spanId(n * 1000L + i + 1), segmentId, segmentId, "GET api.example.com",
+					"http.client", false, start.plusMillis(20), start.plusMillis(90), environment)).append(',');
+		}
+		items.append(streamedSpan(traceId, segmentId, null, segmentId, "/products/:id", "pageload", true, start,
+				start.plusMillis(120), environment));
+		return streamedSpanEnvelope(traceId, spans + 1, items.toString());
+	}
+
+	/** One streamed span with the attributes the JS SDK puts on every span. */
+	public static String streamedSpan(String traceId, String spanId, String parentSpanId, String segmentId,
+			String name, String op, boolean segment, Instant start, Instant end, String environment) {
+		return """
+				{"trace_id":"%s","span_id":"%s",%s"name":"%s","start_timestamp":%s,"end_timestamp":%s,\
+				"status":"ok","is_segment":%s,"attributes":{\
+				"sentry.op":{"type":"string","value":"%s"},\
+				"sentry.origin":{"type":"string","value":"auto"},\
+				"sentry.environment":{"type":"string","value":"%s"},\
+				"sentry.release":{"type":"string","value":"bench@1.0.0"},\
+				"sentry.segment.id":{"type":"string","value":"%s"},\
+				"sentry.sdk.name":{"type":"string","value":"sentry.javascript.angular"},\
+				"sentry.sdk.version":{"type":"string","value":"11.8.0"}}}"""
+			.formatted(traceId, spanId, parentSpanId == null ? "" : "\"parent_span_id\":\"" + parentSpanId + "\",",
+					name, epochSeconds(start), epochSeconds(end), segment, op, environment, segmentId);
+	}
+
+	/** Wraps comma-joined {@link #streamedSpan} JSON objects in a v2 span envelope. */
+	public static String streamedSpanEnvelope(String traceId, int itemCount, String items) {
+		return "{\"sent_at\":\"" + Instant.now() + "\",\"trace\":{\"trace_id\":\"" + traceId
+				+ "\"},\"sdk\":{\"name\":\"sentry.javascript.angular\",\"version\":\"11.8.0\"}}\n"
+				+ "{\"type\":\"span\",\"item_count\":" + itemCount
+				+ ",\"content_type\":\"application/vnd.sentry.items.span.v2+json\"}\n"
+				+ "{\"version\":2,\"ingest_settings\":{\"infer_ip\":\"auto\",\"infer_user_agent\":\"auto\"},\"items\":["
+				+ items + "]}\n";
+	}
+
 	private static String envelope(String type, String item) {
 		return "{\"event_id\":\"" + hexId() + "\",\"sent_at\":\"" + Instant.now() + "\"}\n" + "{\"type\":\"" + type
 				+ "\",\"length\":" + utf8Length(item) + "}\n" + item + "\n";

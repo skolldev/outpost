@@ -33,6 +33,13 @@ public sealed interface IngestItem {
 	record TransactionEvent(long projectId, Instant receivedAt, JsonNode payload) implements IngestItem {
 	}
 
+	/**
+	 * A v2 {@code span} envelope item (span streaming): {@code {"items": [...]}}
+	 * with a batch of independently finished spans, segment and child alike.
+	 */
+	record SpanBatch(long projectId, Instant receivedAt, JsonNode payload) implements IngestItem {
+	}
+
 	record Attachment(String filename, String contentType, byte[] content) {
 	}
 }
