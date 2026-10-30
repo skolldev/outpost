@@ -34,20 +34,28 @@ public final class EnvelopeFactory {
 	/**
 	 * A Java-SDK-shaped error event. The in-app frame's function name cycles over
 	 * {@code distinctFingerprints}, which is what {@code Fingerprinter} groups on.
+	 * Every event carries a user keyed by an IP no other event shares — anonymous
+	 * traffic, the worst case for users-affected membership, where each event is
+	 * a new (issue, user) row and bumps the issue's counter.
 	 */
 	public String error(String environment) {
 		long n = sequence.getAndIncrement();
 		String event = """
 				{"event_id":"%s","timestamp":"%s","platform":"java","level":"error","environment":"%s",\
 				"release":"bench@1.0.0","logentry":{"formatted":"Unhandled exception in request"},\
-				"contexts":{"trace":{"trace_id":"%s","span_id":"%s"}},\
+				"contexts":{"trace":{"trace_id":"%s","span_id":"%s"}},"user":{"ip_address":"%s"},\
 				"exception":{"values":[{"type":"IllegalStateException","value":"order has no customer",\
 				"module":"java.lang","stacktrace":{"frames":[\
 				{"module":"org.apache.catalina.core.StandardEngineValve","function":"invoke","in_app":false,"lineno":74},\
 				{"module":"dev.bench.OrderService","function":"loadCustomer%d","in_app":true,"lineno":88}\
-				]}}]}}""".formatted(hexId(), Instant.now(), environment, hexId(), spanId(n),
+				]}}]}}""".formatted(hexId(), Instant.now(), environment, hexId(), spanId(n), ipAddress(n),
 				n % distinctFingerprints);
 		return envelope("event", event);
+	}
+
+	/** A distinct IPv4 address per sequence number, from 10.0.0.0 up. */
+	private static String ipAddress(long n) {
+		return "10.%d.%d.%d".formatted((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
 	}
 
 	/**

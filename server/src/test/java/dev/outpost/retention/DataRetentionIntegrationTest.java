@@ -384,6 +384,44 @@ class DataRetentionIntegrationTest {
 			.list()).containsExactly(Map.of("environment", "staging", "event_count", 1L));
 	}
 
+	/**
+	 * Users-affected is built on ingest, so retention must rebuild it from the
+	 * surviving events: a user seen only in expired events stops counting, one
+	 * seen on both sides of the cutoff still counts once, and a fully expired
+	 * issue takes its membership with it.
+	 */
+	@Test
+	void retentionRebuildsUsersAffectedFromSurvivingEvents() {
+		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
+		Instant expired = cutoff.minusSeconds(60);
+		Instant retained = cutoff.plusSeconds(60);
+		long projectId = insertProject();
+		eventStore.store(List.of(
+				userEvent(projectId, "partial", "gone", expired),
+				userEvent(projectId, "partial", "both", expired),
+				userEvent(projectId, "partial", "both", retained),
+				userEvent(projectId, "partial", "kept", retained),
+				userEvent(projectId, "partial", null, retained),
+				userEvent(projectId, "expired", "both", expired),
+				userEvent(projectId, "expired", "lost", expired)));
+		long partialIssue = issueId(projectId, "partial");
+		long expiredIssue = issueId(projectId, "expired");
+		assertThat(usersAffected(partialIssue)).isEqualTo(3);
+		assertThat(usersAffected(expiredIssue)).isEqualTo(2);
+
+		cleanup.cleanup(cutoff);
+
+		assertThat(usersAffected(partialIssue)).isEqualTo(2).isEqualTo(distinctSurvivingUsers(partialIssue));
+		assertThat(jdbc.sql("SELECT user_ident_hash FROM issue_user_stats WHERE issue_id = ?")
+			.param(partialIssue).query(UUID.class).list())
+			.containsExactlyInAnyOrderElementsOf(jdbc.sql("SELECT md5(u)::uuid FROM unnest(ARRAY['both', 'kept']) u")
+				.query(UUID.class).list());
+		assertThat(jdbc.sql("SELECT count(*) FROM issue WHERE id = ?").param(expiredIssue).query(Long.class).single())
+			.isZero();
+		assertThat(jdbc.sql("SELECT count(*) FROM issue_user_stats WHERE issue_id = ?")
+			.param(expiredIssue).query(Long.class).single()).isZero();
+	}
+
 	@Test
 	void retentionDefersBusyProjectAndContinuesOtherCleanup() throws Exception {
 		Instant cutoff = Instant.parse("2026-05-20T02:00:00Z");
@@ -680,6 +718,25 @@ class DataRetentionIntegrationTest {
 	private ProcessedEvent processedEvent(long projectId, Instant timestamp, String fingerprint) {
 		return new ProcessedEvent(UUID.randomUUID(), projectId, "prod", null, timestamp, null, "error",
 				fingerprint, null, fingerprint, null, fingerprint, null, mapper.createObjectNode(), null, null);
+	}
+
+	private ProcessedEvent userEvent(long projectId, String fingerprint, String userIdent, Instant timestamp) {
+		return new ProcessedEvent(UUID.randomUUID(), projectId, "prod", null, timestamp, null, "error",
+				fingerprint, null, fingerprint, null, fingerprint, userIdent, mapper.createObjectNode(), null, null);
+	}
+
+	private long issueId(long projectId, String fingerprint) {
+		return jdbc.sql("SELECT id FROM issue WHERE project_id = ? AND fingerprint = ?")
+			.param(projectId).param(fingerprint).query(Long.class).single();
+	}
+
+	private long usersAffected(long issueId) {
+		return jdbc.sql("SELECT users_affected FROM issue WHERE id = ?").param(issueId).query(Long.class).single();
+	}
+
+	private long distinctSurvivingUsers(long issueId) {
+		return jdbc.sql("SELECT count(DISTINCT user_ident) FROM event WHERE issue_id = ?")
+			.param(issueId).query(Long.class).single();
 	}
 
 	private CompletableFuture<Void> holdProjectLock(long projectId, CountDownLatch acquired, CountDownLatch release,

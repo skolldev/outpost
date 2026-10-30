@@ -10,7 +10,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,8 +21,8 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Performance guards for the issue list, its 14-day sparkline, distinct-user
- * count, and environment rollup: EXPLAINs the controller's own SQL through
+ * Performance guards for the issue list (which carries its distinct-user
+ * count), its 14-day sparkline, and environment rollup: EXPLAINs the controller's own SQL through
  * {@link QueryPlans} and asserts on logical I/O and plan shape only, sending
  * the status and time range the UI always sends (see {@link #uiList}).
  * See {@link QueryGuard} for how ceilings are calibrated.
@@ -42,9 +41,6 @@ class IssueQueryPerformanceTest {
 
 	/** Healthy is ~9 470 blocks. Catches the time bound going missing (costs ~20 045 without it). */
 	private static final long MAX_SPARKLINE_BLOCKS = 14_000;
-
-	/** The target once bounded (#131 — today this path has no time bound and costs ~20 040). */
-	private static final long MAX_USERS_AFFECTED_BLOCKS = MAX_SPARKLINE_BLOCKS;
 
 	/** Page 1 and page N differ by the keyset predicate alone, so a small constant covers the noise. */
 	private static final int DEEP_PAGE_TOLERANCE = 4;
@@ -183,18 +179,21 @@ class IssueQueryPerformanceTest {
 	}
 
 	/**
-	 * {@code count(DISTINCT user_ident)} for the page's issues, with no time bound,
-	 * on every page load — cost grows with retention, not with the page.
+	 * Users-affected is a column of {@code issue}, maintained on ingest and rebuilt
+	 * by retention (#131), so the list query that already reads {@code issue}
+	 * carries it. Asserts the absence of {@code event}, not a pruning window: a
+	 * subset-of-allowed-partitions check passes vacuously on zero partitions.
 	 */
 	@Test
-	@Disabled("#131 — users-affected has no time bound and reads every partition")
-	void usersAffectedIsTimeBounded() {
-		PlanFacts facts = QueryPlans.usersAffected(pageIds()).explain(jdbc);
+	void usersAffectedReadsNoEventPartition() {
+		QueryPlans.Built list = pageOne();
 
-		QueryGuard.assertPrunesFrom(jdbc, facts, "event", QueryPlans.sparklineSince(),
-				"the issue-list users-affected aggregate");
-		QueryGuard.assertUnderCeiling(facts, MAX_USERS_AFFECTED_BLOCKS, "the issue-list users-affected aggregate");
-		QueryGuard.assertCeilingCanFail(jdbc, MAX_USERS_AFFECTED_BLOCKS, "event");
+		assertThat(list.rows(jdbc)).as("rows of the issue list page").isNotEmpty()
+			.allSatisfy(row -> assertThat(row).containsKey("users_affected"));
+		PlanFacts facts = list.explain(jdbc);
+		assertThat(facts.relationsScanned())
+			.as("relations read by the issue list, which carries users-affected%n%s", facts.plan())
+			.noneMatch(relation -> relation.startsWith("event"));
 	}
 
 	/**

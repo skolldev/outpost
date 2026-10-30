@@ -105,7 +105,8 @@ public class IssueController {
 			Instant from, Instant to, String query, String sort, String cursor) {
 
 		StringBuilder sql = new StringBuilder("""
-				SELECT id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count
+				SELECT id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count,
+				       users_affected
 				FROM issue WHERE 1=1
 				""");
 		List<Object> params = new ArrayList<>();
@@ -144,11 +145,7 @@ public class IssueController {
 		return new SearchQuery(sql.toString(), params);
 	}
 
-	/**
-	 * Daily event counts for the page's issues over the sparkline window. Kept
-	 * separate from {@link #buildUsersAffectedQuery}, which carries no time bound
-	 * and therefore has a very different query plan.
-	 */
+	/** Daily event counts for the page's issues over the sparkline window. */
 	static SearchQuery buildSparklineQuery(List<Long> issueIds, Instant since) {
 		List<Object> params = new ArrayList<>(issueIds);
 		params.add(java.sql.Timestamp.from(since));
@@ -159,17 +156,6 @@ public class IssueController {
 				""".formatted(QuerySupport.placeholders(issueIds.size())), params);
 	}
 
-	/**
-	 * Distinct users per issue for the page. Carries no time bound, so it reads
-	 * every partition ever created for every issue on the page.
-	 */
-	static SearchQuery buildUsersAffectedQuery(List<Long> issueIds) {
-		return new SearchQuery(
-				"SELECT issue_id, count(DISTINCT user_ident) AS n FROM event WHERE issue_id IN (%s) GROUP BY issue_id"
-					.formatted(QuerySupport.placeholders(issueIds.size())),
-				new ArrayList<>(issueIds));
-	}
-
 	static SearchQuery buildEnvironmentRollupQuery(List<Long> issueIds) {
 		return new SearchQuery(
 				"SELECT issue_id, environment FROM issue_env_stats WHERE issue_id IN (%s) ORDER BY environment"
@@ -177,7 +163,11 @@ public class IssueController {
 				new ArrayList<>(issueIds));
 	}
 
-	/** Sparkline (daily counts, last 14 days) + users affected + environments, per page of issues. */
+	/**
+	 * Sparkline (daily counts, last 14 days) + environments, per page of issues.
+	 * Users affected is not here: it is a column of {@code issue}, maintained on
+	 * ingest and rebuilt by retention, so the list query already carries it.
+	 */
 	private void attachAggregates(List<Map<String, Object>> rows) {
 		if (rows.isEmpty()) {
 			return;
@@ -195,12 +185,6 @@ public class IssueController {
 			}
 		}, sparkline.params().toArray());
 
-		Map<Long, Long> usersAffected = new HashMap<>();
-		SearchQuery users = buildUsersAffectedQuery(ids);
-		jdbc.query(users.sql(), rs -> {
-			usersAffected.put(rs.getLong("issue_id"), rs.getLong("n"));
-		}, users.params().toArray());
-
 		Map<Long, List<String>> environments = new HashMap<>();
 		SearchQuery rollup = buildEnvironmentRollupQuery(ids);
 		jdbc.query(rollup.sql(), rs -> {
@@ -210,7 +194,6 @@ public class IssueController {
 		for (Map<String, Object> row : rows) {
 			Long id = (Long) row.get("id");
 			row.put("sparkline", sparklines.getOrDefault(id, new long[SPARKLINE_DAYS]));
-			row.put("users_affected", usersAffected.getOrDefault(id, 0L));
 			row.put("environments", environments.getOrDefault(id, List.of()));
 		}
 	}
@@ -218,7 +201,8 @@ public class IssueController {
 	@GetMapping("/issues/{id}")
 	public ResponseEntity<Map<String, Object>> issue(@PathVariable long id) {
 		List<Map<String, Object>> rows = jdbc.query("""
-				SELECT id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count
+				SELECT id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, event_count,
+				       users_affected
 				FROM issue WHERE id = ?
 				""", this::mapIssue, id);
 		if (rows.isEmpty()) {
@@ -354,6 +338,7 @@ public class IssueController {
 		row.put("first_seen", rs.getTimestamp("first_seen").toInstant());
 		row.put("last_seen", rs.getTimestamp("last_seen").toInstant());
 		row.put("event_count", rs.getLong("event_count"));
+		row.put("users_affected", rs.getLong("users_affected"));
 		return row;
 	}
 }
