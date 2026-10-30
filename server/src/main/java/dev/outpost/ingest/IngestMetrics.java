@@ -92,6 +92,8 @@ public class IngestMetrics {
 
 	private final DistributionSummary batchSize;
 
+	private final DistributionSummary flushRows;
+
 	public IngestMetrics(MeterRegistry registry) {
 		this.registry = registry;
 		for (Outcome outcome : Outcome.values()) {
@@ -127,6 +129,10 @@ public class IngestMetrics {
 			.register(registry);
 		this.batchSize = DistributionSummary.builder("outpost.ingest.batch.size")
 			.description("Envelope references drained per worker batch")
+			.publishPercentiles(0.5, 0.95)
+			.register(registry);
+		this.flushRows = DistributionSummary.builder("outpost.ingest.flush.rows")
+			.description("Rows handed to the stores per flush, bounded by outpost.ingest.max-batch-rows")
 			.publishPercentiles(0.5, 0.95)
 			.register(registry);
 	}
@@ -171,6 +177,10 @@ public class IngestMetrics {
 
 	public void batchDrained(int size) {
 		batchSize.record(size);
+	}
+
+	public void flushed(int rows) {
+		flushRows.record(rows);
 	}
 
 	public void queueWait(Signal signal, Instant receivedAt, Instant dequeuedAt) {

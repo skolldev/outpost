@@ -41,7 +41,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = { "outpost.admin.email=admin@test.local", "outpost.admin.password=test-password" })
-@Import(TestcontainersConfiguration.class)
+@Import({ TestcontainersConfiguration.class, StoreLatencyProbe.Registries.class })
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("benchmark")
 @Tag("ingest")
@@ -97,12 +97,15 @@ class IngestBenchmark {
 
 	final AllocationProbe allocation = new AllocationProbe();
 
+	StoreLatencyProbe storeLatency;
+
 	List<Long> projectIds = new ArrayList<>();
 
 	List<String> keys = new ArrayList<>();
 
 	@BeforeEach
 	void seedProjects() throws InterruptedException {
+		storeLatency = new StoreLatencyProbe(meters);
 		// Drain before dropping projects: queued items still reference them, and deleting first just logs FK failures.
 		awaitDrain(Duration.ofMinutes(2));
 		clearTelemetry();
@@ -163,6 +166,25 @@ class IngestBenchmark {
 	}
 
 	/**
+	 * The log counterpart, at the top of {@link #LOG_RATES}. {@code LogStore} takes
+	 * no advisory lock, so unlike errors this should not scale with projects; a
+	 * gain here would mean per-project work (origin upserts) is the bottleneck.
+	 */
+	@Test
+	void singleVersusMultiProjectLogThroughput() throws Exception {
+		int rate = LOG_RATES[LOG_RATES.length - 1];
+		Supplier<String> envelope = () -> envelopes.log("prod", LOG_RECORDS_PER_ITEM);
+		warmUp(envelope, 0);
+
+		drainAndClear();
+		REPORT.add(measure("log x" + LOG_RECORDS_PER_ITEM + ", 1 project", "log_record", rate, request(0, envelope)));
+
+		drainAndClear();
+		REPORT.add(measure("log x" + LOG_RECORDS_PER_ITEM + ", " + PROJECTS + " projects", "log_record", rate,
+				roundRobinRequest(envelope)));
+	}
+
+	/**
 	 * Deliberate overload: offers {@link #BURST_QUEUE_MULTIPLE} buffers' worth of
 	 * envelopes at a fixed rate and checks the server sheds rather than falls over
 	 * (ADR 0002). Rate stays fixed as capacity grows — duration carries the extra
@@ -177,6 +199,7 @@ class IngestBenchmark {
 		LoadDriver.Step step = burstStep(queue.capacity());
 		QueueWaitMark waitBefore = queueWaitMark("error");
 		allocation.start();
+		storeLatency.start();
 		LoadDriver.Result result = driver.run(step, request(0, () -> envelopes.error("prod")));
 		allocation.finishAcceptPhase();
 
@@ -192,7 +215,7 @@ class IngestBenchmark {
 		awaitDrain(Duration.ofMinutes(2));
 		double waitAverage = queueWaitAverageMillis("error", waitBefore);
 		REPORT.add(new BenchReport.Row("burst", step.ratePerSecond() + "/s for " + step.duration().toSeconds() + "s",
-				result, Double.NaN, depth, waitAverage, allocation.stop()));
+				result, Double.NaN, depth, waitAverage, allocation.stop(), storeLatency.stop("error")));
 
 		long serverErrors = result.statusCounts()
 			.entrySet()
@@ -233,6 +256,7 @@ class IngestBenchmark {
 		Instant startedAt = Instant.now();
 		QueueWaitMark waitBefore = queueWaitMark(signalOf(table));
 		allocation.start();
+		storeLatency.start();
 		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), requests);
 		allocation.finishAcceptPhase();
 		double elapsedSeconds = Duration.between(startedAt, Instant.now()).toMillis() / 1000.0;
@@ -243,10 +267,14 @@ class IngestBenchmark {
 		awaitDrain(Duration.ofMinutes(2));
 		double waitAverage = queueWaitAverageMillis(signalOf(table), waitBefore);
 		long allocated = allocation.stop();
-		System.out.printf("%-14s %5d/s offered → %6d ok, %6d 429, depth %5d, %.0f rows/s, %.0f MB allocated%n", scenario,
-				rate, result.status(200), result.status(429), depth, stored, allocated / (1024.0 * 1024.0));
+		StoreLatencyProbe.Window store = storeLatency.stop(signalOf(table));
+		System.out.printf(
+				"%-14s %5d/s offered → %6d ok, %6d 429, depth %5d, %.0f rows/s, %.0f MB allocated, "
+						+ "%d store calls (p99 %.0f ms)%n",
+				scenario, rate, result.status(200), result.status(429), depth, stored, allocated / (1024.0 * 1024.0),
+				store.calls(), store.p99Millis());
 		assertDriverHealthy(result, scenario + " @ " + rate + "/s");
-		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitAverage, allocated);
+		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitAverage, allocated, store);
 	}
 
 	/**

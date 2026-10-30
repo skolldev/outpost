@@ -59,6 +59,14 @@ outpost:
     # Queue entries point at raw wire bodies in this ephemeral directory.
     spool-directory: ${OUTPOST_INGEST_SPOOL_DIRECTORY:${java.io.tmpdir}/outpost-ingest}
     queue-capacity: ${OUTPOST_INGEST_QUEUE_CAPACITY:50000}
+    # Envelope references a worker takes off the queue per drain.
+    max-batch: ${OUTPOST_INGEST_MAX_BATCH:500}
+    # Rows (an event, a log record, a txn, a span) per store call and transaction,
+    # and the most processed telemetry a worker holds. This is the bound on work:
+    # one log envelope carries up to 100 records, so max-batch alone would allow
+    # 50 000 log rows in one transaction. A drain larger than this is stored in
+    # several calls, and its envelopes are released as their rows are stored.
+    max-batch-rows: ${OUTPOST_INGEST_MAX_BATCH_ROWS:5000}
     # Kept below the shutdown-phase timeout so residual work can be reported.
     shutdown-timeout: ${OUTPOST_INGEST_SHUTDOWN_TIMEOUT:25s}
     # Crashes and drain timeouts leave spool files with no queue entry behind.
