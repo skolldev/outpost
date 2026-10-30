@@ -119,6 +119,21 @@ class IssueUsersAffectedIntegrationTest {
 		assertThat(usersAffected()).containsExactlyEntriesOf(Map.of("checkout", 2L));
 	}
 
+	/**
+	 * {@code user.id} arrives from the SDK unbounded. Keyed on the raw text, one
+	 * past the btree entry limit (~2.7 KB) would fail the membership insert and
+	 * drop an event that stored fine before.
+	 */
+	@Test
+	void anOversizedUserIdStoresAndCountsOnce() {
+		String huge = incompressible(10_000);
+		store.store(List.of(event("checkout", huge, DAY_ONE), event("checkout", huge, DAY_ONE.plusSeconds(1)),
+				event("checkout", huge + "x", DAY_ONE)));
+
+		assertThat(jdbc.sql("SELECT count(*) FROM event").query(Long.class).single()).isEqualTo(3);
+		assertThat(usersAffected()).containsExactlyEntriesOf(Map.of("checkout", 2L));
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	/** users_affected per issue title, from the page the UI loads. */
@@ -162,5 +177,14 @@ class IssueUsersAffectedIntegrationTest {
 
 	private String url(String path) {
 		return "http://localhost:" + port + path;
+	}
+
+	/** Random hex, so neither TOAST nor index compression can shrink it under the btree entry limit. */
+	private static String incompressible(int length) {
+		StringBuilder text = new StringBuilder(length + 36);
+		while (text.length() < length) {
+			text.append(UUID.randomUUID());
+		}
+		return text.substring(0, length);
 	}
 }

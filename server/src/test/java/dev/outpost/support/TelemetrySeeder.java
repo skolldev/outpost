@@ -506,8 +506,8 @@ public final class TelemetrySeeder {
 				""").update();
 		jdbc.sql("""
 				WITH members AS (
-				    INSERT INTO issue_user_stats (issue_id, user_ident)
-				    SELECT DISTINCT issue_id, user_ident FROM event WHERE user_ident IS NOT NULL
+				    INSERT INTO issue_user_stats (issue_id, user_ident_hash)
+				    SELECT DISTINCT issue_id, md5(user_ident)::uuid FROM event WHERE user_ident IS NOT NULL
 				    RETURNING issue_id
 				)
 				UPDATE issue i SET users_affected = t.n

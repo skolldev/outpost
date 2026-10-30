@@ -82,10 +82,11 @@ public class EventStore {
 	// matching count(DISTINCT user_ident). One statement per batch, so each
 	// Issue row is updated at most once however many new users the batch brings;
 	// DO NOTHING (unlike DO UPDATE) tolerates a pair repeated within the batch.
+	// Hashed as V18 explains: user_ident is unbounded and the key must not be.
 	private static final String USER_MEMBERSHIP_INSERT = """
 			WITH member AS (
-			    INSERT INTO issue_user_stats (issue_id, user_ident)
-			    SELECT * FROM unnest(?::bigint[], ?::text[])
+			    INSERT INTO issue_user_stats (issue_id, user_ident_hash)
+			    SELECT issue_id, md5(user_ident)::uuid FROM unnest(?::bigint[], ?::text[]) AS u (issue_id, user_ident)
 			    ON CONFLICT DO NOTHING
 			    RETURNING issue_id
 			)

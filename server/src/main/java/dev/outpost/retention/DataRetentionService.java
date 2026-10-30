@@ -170,7 +170,7 @@ public class DataRetentionService {
 				FROM (
 				    SELECT e.issue_id,
 				           count(*) AS event_count,
-				           count(DISTINCT e.user_ident) AS users_affected,
+				           count(DISTINCT md5(e.user_ident)::uuid) AS users_affected,
 				           min(e."timestamp") AS first_seen,
 				           max(e."timestamp") AS last_seen,
 				           (array_agg(e.level ORDER BY e."timestamp" DESC, e.id DESC)
@@ -195,15 +195,15 @@ public class DataRetentionService {
 				GROUP BY e.issue_id, e.environment
 				""").update();
 		// Membership, not a count: rebuilt from the survivors exactly as
-		// count(DISTINCT user_ident) above counts them, so the two agree.
+		// count(DISTINCT md5(user_ident)) above counts them, so the two agree.
 		jdbc.sql("""
 				DELETE FROM issue_user_stats stats
 				USING retention_affected_issue affected
 				WHERE stats.issue_id = affected.issue_id
 				""").update();
 		jdbc.sql("""
-				INSERT INTO issue_user_stats (issue_id, user_ident)
-				SELECT DISTINCT e.issue_id, e.user_ident
+				INSERT INTO issue_user_stats (issue_id, user_ident_hash)
+				SELECT DISTINCT e.issue_id, md5(e.user_ident)::uuid
 				FROM event e
 				JOIN retention_affected_issue affected ON affected.issue_id = e.issue_id
 				JOIN issue i ON i.id = e.issue_id

@@ -53,6 +53,8 @@ class UsersAffectedBackfillMigrationTest {
 		event(project, checkout, null, "2026-06-02T00:00:00Z");
 		event(project, login, "alice", "2026-06-03T00:00:00Z");
 		event(project, anonymous, null, "2026-06-03T00:00:00Z");
+		// Past the btree entry limit if it were the key itself; must not block startup.
+		event(project, login, incompressible(10_000), "2026-06-03T00:00:00Z");
 		// event carries no FK to issue, so an orphan can exist and must not fail the migration.
 		event(project, 999_999, "ghost", "2026-06-03T00:00:00Z");
 
@@ -60,9 +62,9 @@ class UsersAffectedBackfillMigrationTest {
 
 		assertThat(jdbc.sql("SELECT fingerprint, users_affected FROM %s.issue".formatted(SCHEMA))
 			.query((rs, i) -> Map.entry(rs.getString(1), rs.getLong(2))).list())
-			.containsExactlyInAnyOrder(Map.entry("checkout", 2L), Map.entry("login", 1L), Map.entry("anonymous", 0L));
+			.containsExactlyInAnyOrder(Map.entry("checkout", 2L), Map.entry("login", 2L), Map.entry("anonymous", 0L));
 		assertThat(jdbc.sql("SELECT count(*) FROM %s.issue_user_stats".formatted(SCHEMA)).query(Long.class).single())
-			.isEqualTo(3);
+			.isEqualTo(4);
 	}
 
 	private void migrateTo(String version) {
@@ -89,5 +91,14 @@ class UsersAffectedBackfillMigrationTest {
 				VALUES (?, ?, ?, 'prod', ?::timestamptz, ?, '{}'::jsonb)
 				""".formatted(SCHEMA)).param(UUID.randomUUID()).param(project).param(issueId).param(timestamp)
 			.param(userIdent).update();
+	}
+
+	/** Random hex, so neither TOAST nor index compression can shrink it under the btree entry limit. */
+	private static String incompressible(int length) {
+		StringBuilder text = new StringBuilder(length + 36);
+		while (text.length() < length) {
+			text.append(UUID.randomUUID());
+		}
+		return text.substring(0, length);
 	}
 }

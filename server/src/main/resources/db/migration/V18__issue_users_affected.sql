@@ -10,7 +10,7 @@
 --
 -- Distinct users are not additive — one user on several days counts once — so a
 -- counter alone cannot be maintained incrementally. `issue_user_stats` holds the
--- membership: EventStore inserts (issue_id, user_ident) ON CONFLICT DO NOTHING and
+-- membership: EventStore inserts (issue_id, user) ON CONFLICT DO NOTHING and
 -- bumps `issue.users_affected` only when that insert actually inserted. Retention
 -- rebuilds both from the surviving events. Events with a null `user_ident` never
 -- enter membership, matching what `count(DISTINCT …)` did.
@@ -19,10 +19,11 @@
 -- leave with their Issue via the cascade or with retention's rebuild.
 --
 -- Storage, measured on TelemetrySeeder.Scale.GUARD (40 003 events, 49 MB of `event`
--- across its partitions): 25 571 membership rows in 2.6 MB with their primary key —
+-- across its partitions): 25 359 membership rows in 2.7 MB with their primary key —
 -- about 5% of `event`. `user_ident` falls back to the client IP for anonymous
 -- traffic, so the worst case is one row per event; forcing that on the same data
--- gives 40 003 rows in 4.5 MB (~112 bytes a row), about 9% of `event`.
+-- gives 40 003 rows in 4.4 MB (~109 bytes a row), about 9% of `event`. The hashed key
+-- makes that per-row figure a ceiling however long the identifiers are.
 --
 -- Backfill is a full pass over `event` (every partition), aggregated once. Flyway
 -- runs before the application starts serving, so this blocks startup — not ingest
@@ -36,16 +37,22 @@
 
 ALTER TABLE issue ADD COLUMN users_affected bigint NOT NULL DEFAULT 0;
 
+-- Keyed on md5(user_ident), not the text: `user_ident` is the SDK's user.id / email /
+-- username / ip_address with no length cap, and a value past the btree entry limit
+-- (~2.7 KB) would fail the insert, dropping the event on ingest and this backfill at
+-- startup. The hash is a fixed 16 bytes; distinct users only merge on an md5
+-- collision. Every writer (EventStore, DataRetentionService, this backfill) hashes
+-- the same way.
 CREATE TABLE issue_user_stats (
-    issue_id   bigint NOT NULL REFERENCES issue (id) ON DELETE CASCADE,
-    user_ident text NOT NULL,
-    PRIMARY KEY (issue_id, user_ident)
+    issue_id        bigint NOT NULL REFERENCES issue (id) ON DELETE CASCADE,
+    user_ident_hash uuid NOT NULL,
+    PRIMARY KEY (issue_id, user_ident_hash)
 );
 
 -- `event` carries no FK to `issue` (it is partitioned), so the join keeps an orphaned
 -- event from failing the migration on this table's FK.
-INSERT INTO issue_user_stats (issue_id, user_ident)
-SELECT DISTINCT e.issue_id, e.user_ident
+INSERT INTO issue_user_stats (issue_id, user_ident_hash)
+SELECT DISTINCT e.issue_id, md5(e.user_ident)::uuid
 FROM event e
 JOIN issue i ON i.id = e.issue_id
 WHERE e.user_ident IS NOT NULL;

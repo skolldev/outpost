@@ -412,8 +412,10 @@ class DataRetentionIntegrationTest {
 		cleanup.cleanup(cutoff);
 
 		assertThat(usersAffected(partialIssue)).isEqualTo(2).isEqualTo(distinctSurvivingUsers(partialIssue));
-		assertThat(jdbc.sql("SELECT user_ident FROM issue_user_stats WHERE issue_id = ? ORDER BY user_ident")
-			.param(partialIssue).query(String.class).list()).containsExactly("both", "kept");
+		assertThat(jdbc.sql("SELECT user_ident_hash FROM issue_user_stats WHERE issue_id = ?")
+			.param(partialIssue).query(UUID.class).list())
+			.containsExactlyInAnyOrderElementsOf(jdbc.sql("SELECT md5(u)::uuid FROM unnest(ARRAY['both', 'kept']) u")
+				.query(UUID.class).list());
 		assertThat(jdbc.sql("SELECT count(*) FROM issue WHERE id = ?").param(expiredIssue).query(Long.class).single())
 			.isZero();
 		assertThat(jdbc.sql("SELECT count(*) FROM issue_user_stats WHERE issue_id = ?")
