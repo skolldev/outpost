@@ -90,7 +90,7 @@ class TraceQueryIntegrationTest {
 		postEnvelope(backendProject, backendKey, errorEnvelope());
 		postEnvelope(backendProject, backendKey, logEnvelope());
 
-		Map<String, Object> trace = awaitTrace(2, 1, 1);
+		Map<String, Object> trace = awaitTrace(2, 2, 1, 1);
 
 		List<Map<String, Object>> transactions = cast(trace.get("transactions"));
 		assertThat(transactions).hasSize(2);
@@ -119,7 +119,7 @@ class TraceQueryIntegrationTest {
 		postEnvelope(frontendProject, frontendKey, browserTransactionEnvelope());
 		postEnvelope(backendProject, backendKey, backendTransactionEnvelope());
 		postEnvelope(backendProject, backendKey, errorEnvelope());
-		awaitTrace(2);
+		awaitTrace(2, 2, 1, 0);
 
 		// One distributed trace, represented by its root (the browser pageload),
 		// despite two transactions across two services.
@@ -238,17 +238,15 @@ class TraceQueryIntegrationTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 	}
 
-	private Map<String, Object> awaitTrace(int expectedTransactions) {
-		return awaitTrace(expectedTransactions, 0, 0);
-	}
-
-	private Map<String, Object> awaitTrace(int expectedTransactions, int expectedErrors, int expectedLogs) {
+	private Map<String, Object> awaitTrace(int expectedTransactions, int expectedSpans, int expectedErrors,
+			int expectedLogs) {
 		Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
 		while (Instant.now().isBefore(deadline)) {
 			ResponseEntity<Map> response = getEntity("/api/internal/traces/" + TRACE_ID);
 			if (response.getStatusCode() == HttpStatus.OK) {
 				Map<String, Object> body = cast(response.getBody());
 				if (((List<?>) body.get("transactions")).size() >= expectedTransactions
+						&& ((List<?>) body.get("spans")).size() >= expectedSpans
 						&& ((List<?>) body.get("errors")).size() >= expectedErrors
 						&& ((List<?>) body.get("logs")).size() >= expectedLogs) {
 					return body;
