@@ -18,17 +18,21 @@
 -- Plain, not partitioned: membership has no timestamp to range over, and its rows
 -- leave with their Issue via the cascade or with retention's rebuild.
 --
--- Storage: two narrow columns per distinct (Issue, user). `user_ident` falls back to
--- the client IP for anonymous traffic, so the worst case approaches one row per
--- event — still ~60 bytes a row (tuple header, bigint, short text, plus its primary
--- key entry) against `event`'s jsonb payload and gzipped raw bytea.
+-- Storage, measured on TelemetrySeeder.Scale.GUARD (40 003 events, 49 MB of `event`
+-- across its partitions): 25 571 membership rows in 2.6 MB with their primary key —
+-- about 5% of `event`. `user_ident` falls back to the client IP for anonymous
+-- traffic, so the worst case is one row per event; forcing that on the same data
+-- gives 40 003 rows in 4.5 MB (~112 bytes a row), about 9% of `event`.
 --
 -- Backfill is a full pass over `event` (every partition), aggregated once. Flyway
 -- runs before the application starts serving, so this blocks startup — not ingest
--- traffic, which is not being accepted yet — for the length of that pass. On the
--- guard dataset it is a sequential read of what the old per-page-load query already
--- read; an install with years of unretained events should expect a startup measured
--- in that scan.
+-- traffic, which is not being accepted yet — for the length of that pass: one read of
+-- what the old query read on every issue-list page load. An install holding years of
+-- unretained events should expect the upgrade's startup to take that long.
+--
+-- Ingest cost: one extra statement per stored batch, which inserts the batch's
+-- memberships and bumps each touched Issue once. See the PR for #131 for the
+-- IngestBenchmark error ladder before and after.
 
 ALTER TABLE issue ADD COLUMN users_affected bigint NOT NULL DEFAULT 0;
 

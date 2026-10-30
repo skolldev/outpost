@@ -6,6 +6,7 @@ import dev.outpost.db.PartitionManager;
 import dev.outpost.ingest.IngestMetrics;
 import dev.outpost.notifications.NotificationOccurrence;
 import dev.outpost.notifications.NotificationPublisher;
+import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -77,17 +78,20 @@ public class EventStore {
 			""";
 
 	// Distinct users are not additive, so membership decides: the counter moves
-	// only when this (issue, user) pair is new. Null users never get here,
-	// matching count(DISTINCT user_ident).
-	private static final String USER_STATS_UPSERT = """
+	// only for (issue, user) pairs that are new. Null users never get here,
+	// matching count(DISTINCT user_ident). One statement per batch, so each
+	// Issue row is updated at most once however many new users the batch brings;
+	// DO NOTHING (unlike DO UPDATE) tolerates a pair repeated within the batch.
+	private static final String USER_MEMBERSHIP_INSERT = """
 			WITH member AS (
 			    INSERT INTO issue_user_stats (issue_id, user_ident)
-			    VALUES (?, ?)
+			    SELECT * FROM unnest(?::bigint[], ?::text[])
 			    ON CONFLICT DO NOTHING
 			    RETURNING issue_id
 			)
-			UPDATE issue SET users_affected = users_affected + 1
-			WHERE id IN (SELECT issue_id FROM member)
+			UPDATE issue SET users_affected = users_affected + added.n
+			FROM (SELECT issue_id, count(*) AS n FROM member GROUP BY issue_id) added
+			WHERE issue.id = added.issue_id
 			""";
 
 	// Probes on exactly the key EVENT_INSERT conflicts on, so "found here" means
@@ -168,7 +172,8 @@ public class EventStore {
 		}
 		origins.ensure(batch);
 		List<Object[]> releaseRows = new ArrayList<>(batch.size());
-		List<Object[]> userRows = new ArrayList<>(batch.size());
+		List<Long> userIssues = new ArrayList<>(batch.size());
+		List<String> userIdents = new ArrayList<>(batch.size());
 		List<Object[]> eventRows = batch.stream().map(event -> {
 			IssueUpsert upsert = jdbc.queryForObject(ISSUE_UPSERT,
 					(rs, i) -> new IssueUpsert(rs.getLong("id"), rs.getBoolean("inserted")), event.projectId(),
@@ -193,7 +198,8 @@ public class EventStore {
 						new Object[] { issueId, event.projectId(), event.release(), Timestamp.from(event.timestamp()) });
 			}
 			if (event.userIdent() != null) {
-				userRows.add(new Object[] { issueId, event.userIdent() });
+				userIssues.add(issueId);
+				userIdents.add(event.userIdent());
 			}
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
@@ -205,7 +211,14 @@ public class EventStore {
 		// can't affect the same row twice in one statement, and a batch commonly
 		// repeats (issue_id, release) pairs within one deploy.
 		jdbc.batchUpdate(RELEASE_STATS_UPSERT, releaseRows);
-		jdbc.batchUpdate(USER_STATS_UPSERT, userRows);
+		if (!userIssues.isEmpty()) {
+			jdbc.update(con -> {
+				PreparedStatement statement = con.prepareStatement(USER_MEMBERSHIP_INSERT);
+				statement.setArray(1, con.createArrayOf("bigint", userIssues.toArray()));
+				statement.setArray(2, con.createArrayOf("text", userIdents.toArray()));
+				return statement;
+			});
+		}
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);
 	}
 

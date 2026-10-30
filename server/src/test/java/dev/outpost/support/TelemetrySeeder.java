@@ -477,8 +477,9 @@ public final class TelemetrySeeder {
 
 	/**
 	 * Issue counters and per-environment/release/user stats, derived from the
-	 * Events in three passes. {@code last_seen} and {@code event_count} are the Issue list's sort
-	 * keys, so inventing them would page over an order the data doesn't have.
+	 * Events in three passes. {@code last_seen} and {@code event_count} are the
+	 * Issue list's sort keys, so inventing them would page over an order the
+	 * data doesn't have.
 	 */
 	private void rollUpIssueCounters() {
 		jdbc.sql("""
