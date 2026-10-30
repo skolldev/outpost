@@ -33,7 +33,7 @@ export interface Issue {
   last_seen: string;
   event_count: number;
   sparkline?: number[];
-  users_affected?: number;
+  users_affected: number;
   environments?: string[];
 }
 

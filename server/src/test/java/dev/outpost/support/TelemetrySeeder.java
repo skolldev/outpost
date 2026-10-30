@@ -169,7 +169,7 @@ public final class TelemetrySeeder {
 	 */
 	public void clear() {
 		jdbc.sql("""
-				TRUNCATE event, log_record, txn, span, issue_env_stats, issue_release_stats, issue,
+				TRUNCATE event, log_record, txn, span, issue_env_stats, issue_release_stats, issue_user_stats, issue,
 				         uptime_check, uptime_incident, uptime_monitor,
 				         release, environment, project_key, project CASCADE
 				""").update();
@@ -476,8 +476,8 @@ public final class TelemetrySeeder {
 	}
 
 	/**
-	 * Issue counters and per-environment/release stats, derived from the Events in
-	 * two passes. {@code last_seen} and {@code event_count} are the Issue list's sort
+	 * Issue counters and per-environment/release/user stats, derived from the
+	 * Events in three passes. {@code last_seen} and {@code event_count} are the Issue list's sort
 	 * keys, so inventing them would page over an order the data doesn't have.
 	 */
 	private void rollUpIssueCounters() {
@@ -503,11 +503,21 @@ public final class TelemetrySeeder {
 				WHERE release IS NOT NULL AND btrim(release) <> ''
 				GROUP BY issue_id, project_id, release
 				""").update();
+		jdbc.sql("""
+				WITH members AS (
+				    INSERT INTO issue_user_stats (issue_id, user_ident)
+				    SELECT DISTINCT issue_id, user_ident FROM event WHERE user_ident IS NOT NULL
+				    RETURNING issue_id
+				)
+				UPDATE issue i SET users_affected = t.n
+				FROM (SELECT issue_id, count(*) AS n FROM members GROUP BY issue_id) t
+				WHERE i.id = t.issue_id
+				""").update();
 	}
 
 	private void analyze() {
 		jdbc.sql("VACUUM ANALYZE " + String.join(", ", PartitionManager.TABLES)
-				+ ", issue, issue_env_stats, issue_release_stats, release, uptime_check").update();
+				+ ", issue, issue_env_stats, issue_release_stats, issue_user_stats, release, uptime_check").update();
 	}
 
 	private interface Chunk {

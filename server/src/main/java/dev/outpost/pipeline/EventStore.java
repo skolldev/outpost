@@ -25,9 +25,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Persists processed error events: environment/release auto-upsert, issue
- * upsert with regression handling, per-environment stats, then a JDBC batch
- * insert. New-issue notifications publish only after the transaction commits;
- * redelivered events (same {@code event_id}) are deduped before writing.
+ * upsert with regression handling, per-environment stats and users-affected
+ * membership, then a JDBC batch insert. New-issue notifications publish only
+ * after the transaction commits; redelivered events (same {@code event_id})
+ * are deduped before writing.
  */
 @Component
 public class EventStore {
@@ -73,6 +74,20 @@ public class EventStore {
 			ON CONFLICT (issue_id, release) DO UPDATE SET
 			    event_count = issue_release_stats.event_count + 1,
 			    last_seen = GREATEST(issue_release_stats.last_seen, EXCLUDED.last_seen)
+			""";
+
+	// Distinct users are not additive, so membership decides: the counter moves
+	// only when this (issue, user) pair is new. Null users never get here,
+	// matching count(DISTINCT user_ident).
+	private static final String USER_STATS_UPSERT = """
+			WITH member AS (
+			    INSERT INTO issue_user_stats (issue_id, user_ident)
+			    VALUES (?, ?)
+			    ON CONFLICT DO NOTHING
+			    RETURNING issue_id
+			)
+			UPDATE issue SET users_affected = users_affected + 1
+			WHERE id IN (SELECT issue_id FROM member)
 			""";
 
 	// Probes on exactly the key EVENT_INSERT conflicts on, so "found here" means
@@ -153,6 +168,7 @@ public class EventStore {
 		}
 		origins.ensure(batch);
 		List<Object[]> releaseRows = new ArrayList<>(batch.size());
+		List<Object[]> userRows = new ArrayList<>(batch.size());
 		List<Object[]> eventRows = batch.stream().map(event -> {
 			IssueUpsert upsert = jdbc.queryForObject(ISSUE_UPSERT,
 					(rs, i) -> new IssueUpsert(rs.getLong("id"), rs.getBoolean("inserted")), event.projectId(),
@@ -176,6 +192,9 @@ public class EventStore {
 				releaseRows.add(
 						new Object[] { issueId, event.projectId(), event.release(), Timestamp.from(event.timestamp()) });
 			}
+			if (event.userIdent() != null) {
+				userRows.add(new Object[] { issueId, event.userIdent() });
+			}
 			return new Object[] { event.id(), event.projectId(), issueId, event.environment(), event.release(),
 					Timestamp.from(event.timestamp()), event.traceId(), event.level(), event.message(),
 					event.exceptionType(), event.userIdent(), json(event), event.rawGzip(),
@@ -186,6 +205,7 @@ public class EventStore {
 		// can't affect the same row twice in one statement, and a batch commonly
 		// repeats (issue_id, release) pairs within one deploy.
 		jdbc.batchUpdate(RELEASE_STATS_UPSERT, releaseRows);
+		jdbc.batchUpdate(USER_STATS_UPSERT, userRows);
 		jdbc.batchUpdate(EVENT_INSERT, eventRows);
 	}
 

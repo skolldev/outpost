@@ -189,17 +189,17 @@ class RetrievalBenchmark {
 	}
 
 	/**
-	 * An issue-list page load is four queries — the list, a 14-day sparkline, a
-	 * distinct-user count, and the environment rollup — so all four are summed
-	 * rather than just the list query's plan. Ids come from {@code list} itself
-	 * (not an unfiltered stand-in), since a filtered scenario returns different
-	 * issues.
+	 * An issue-list page load is three queries — the list (which carries the
+	 * distinct-user count), a 14-day sparkline, and the environment rollup — so
+	 * all three are summed rather than just the list query's plan. Ids come from
+	 * {@code list} itself (not an unfiltered stand-in), since a filtered scenario
+	 * returns different issues.
 	 */
 	private PlanFacts issuePagePlan(QueryPlans.Built list) {
 		List<Long> ids = QueryPlans.issueIdsOnPage(jdbc, list);
 		// The aggregates take an IN list, so an empty page has no plan to report.
 		assertThat(ids).as("issues matched by the scenario's own list query").isNotEmpty();
-		return sum(List.of(list, QueryPlans.sparkline(ids, QueryPlans.sparklineSince()), QueryPlans.usersAffected(ids),
+		return sum(List.of(list, QueryPlans.sparkline(ids, QueryPlans.sparklineSince()),
 				QueryPlans.environmentRollup(ids)));
 	}
 

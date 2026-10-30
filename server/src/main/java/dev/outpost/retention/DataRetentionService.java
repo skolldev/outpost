@@ -165,10 +165,12 @@ public class DataRetentionService {
 				    event_count = aggregate.event_count,
 				    first_seen = aggregate.first_seen,
 				    last_seen = aggregate.last_seen,
-				    level = COALESCE(aggregate.latest_level, i.level)
+				    level = COALESCE(aggregate.latest_level, i.level),
+				    users_affected = aggregate.users_affected
 				FROM (
 				    SELECT e.issue_id,
 				           count(*) AS event_count,
+				           count(DISTINCT e.user_ident) AS users_affected,
 				           min(e."timestamp") AS first_seen,
 				           max(e."timestamp") AS last_seen,
 				           (array_agg(e.level ORDER BY e."timestamp" DESC, e.id DESC)
@@ -191,6 +193,21 @@ public class DataRetentionService {
 				JOIN retention_affected_issue affected ON affected.issue_id = e.issue_id
 				JOIN issue i ON i.id = e.issue_id
 				GROUP BY e.issue_id, e.environment
+				""").update();
+		// Membership, not a count: rebuilt from the survivors exactly as
+		// count(DISTINCT user_ident) above counts them, so the two agree.
+		jdbc.sql("""
+				DELETE FROM issue_user_stats stats
+				USING retention_affected_issue affected
+				WHERE stats.issue_id = affected.issue_id
+				""").update();
+		jdbc.sql("""
+				INSERT INTO issue_user_stats (issue_id, user_ident)
+				SELECT DISTINCT e.issue_id, e.user_ident
+				FROM event e
+				JOIN retention_affected_issue affected ON affected.issue_id = e.issue_id
+				JOIN issue i ON i.id = e.issue_id
+				WHERE e.user_ident IS NOT NULL
 				""").update();
 		jdbc.sql("""
 				DELETE FROM issue_release_stats stats

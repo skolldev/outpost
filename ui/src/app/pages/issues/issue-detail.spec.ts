@@ -22,6 +22,7 @@ const ISSUE: IssueDetail = {
   first_seen: '2026-06-01T00:00:00Z',
   last_seen: '2026-07-01T00:00:00Z',
   event_count: 42,
+  users_affected: 7,
   env_stats: [{ environment: 'prod', event_count: 42, last_seen: '2026-07-01T00:00:00Z' }],
 };
 

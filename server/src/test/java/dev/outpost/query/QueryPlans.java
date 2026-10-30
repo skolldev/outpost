@@ -67,10 +67,6 @@ public final class QueryPlans {
 		return Built.of(IssueController.buildSparklineQuery(issueIds, since));
 	}
 
-	public static Built usersAffected(List<Long> issueIds) {
-		return Built.of(IssueController.buildUsersAffectedQuery(issueIds));
-	}
-
 	public static Built environmentRollup(List<Long> issueIds) {
 		return Built.of(IssueController.buildEnvironmentRollupQuery(issueIds));
 	}
