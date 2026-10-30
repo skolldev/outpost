@@ -24,9 +24,11 @@ public final class BenchReport {
 	 *
 	 * @param allocatedBytes bytes allocated by server-side threads over the
 	 * plateau <em>and its drain</em> — see {@link AllocationProbe}
+	 * @param store store calls over the same window, for the scenario's signal —
+	 * see {@link StoreLatencyProbe}
 	 */
 	public record Row(String scenario, String step, LoadDriver.Result load, double storedPerSecond, long queueDepthAtEnd,
-			double queueWaitAverageMillis, long allocatedBytes) {
+			double queueWaitAverageMillis, long allocatedBytes, StoreLatencyProbe.Window store) {
 	}
 
 	private final ReportWriter writer;
@@ -70,6 +72,11 @@ public final class BenchReport {
 				Unlike `stored/s` it is not a rate, and it is GC-independent, so it is the column to
 				quote when a change claims to have removed a copy.
 
+				`store calls`, `store p99 ms` and `store max ms` describe the individual calls into the
+				scenario's store (`outpost_ingest_store_seconds`) over the same plateau-plus-drain
+				window, exactly rather than through the production timer's decaying percentiles. A
+				batch that grows with the backlog shows up here first: few calls, each slower.
+
 				""");
 		out.append("\n## Results\n\n");
 		out.append("`scheduled/s` is the pace requested by the benchmark; `dispatched/s` excludes work the load "
@@ -77,8 +84,8 @@ public final class BenchReport {
 				+ "server-capacity comparison.\n\n");
 		out.append("| scenario | step | offered/s | scheduled/s | dispatched/s | 200 | 429 | failed | shed "
 				+ "| accepted/s | stored/s | p50 ms | p95 ms | p99 ms | max ms | queue depth "
-				+ "| queue wait avg ms | alloc MB | alloc KB/env |\n");
-		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
+				+ "| queue wait avg ms | alloc MB | alloc KB/env | store calls | store p99 ms | store max ms |\n");
+		out.append("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n");
 		for (Row row : rows) {
 			LoadDriver.Result load = row.load();
 			out.append("| ").append(row.scenario()).append(" | ").append(row.step());
@@ -99,6 +106,9 @@ public final class BenchReport {
 			out.append(" | ").append(round(row.queueWaitAverageMillis()));
 			out.append(" | ").append(round(allocatedMegabytes(row)));
 			out.append(" | ").append(round(allocatedKilobytesPerEnvelope(row)));
+			out.append(" | ").append(row.store().calls() == 0 ? "—" : row.store().calls());
+			out.append(" | ").append(round(row.store().p99Millis()));
+			out.append(" | ").append(round(row.store().maxMillis()));
 			out.append(" |\n");
 		}
 		Map<String, Long> failures = new LinkedHashMap<>();
@@ -156,6 +166,9 @@ public final class BenchReport {
 			out.append(", \"queue_wait_average_ms\": ").append(number(row.queueWaitAverageMillis()));
 			out.append(", \"allocated_bytes\": ").append(row.allocatedBytes());
 			out.append(", \"allocated_kb_per_envelope\": ").append(number(allocatedKilobytesPerEnvelope(row)));
+			out.append(", \"store_calls\": ").append(row.store().calls());
+			out.append(", \"store_p99_ms\": ").append(number(row.store().p99Millis()));
+			out.append(", \"store_max_ms\": ").append(number(row.store().maxMillis()));
 			out.append('}');
 			separator = ",";
 		}

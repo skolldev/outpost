@@ -61,7 +61,8 @@ class RemoteIngestBenchmark {
 			System.out.printf("%5d/s offered → %6d ok, %6d 429, p99 %.1f ms%n", rate, result.status(200),
 					result.status(429), result.p99Millis());
 			// Storage, queue and allocation columns stay blank: not visible from here.
-			report.add(new BenchReport.Row("error", rate + "/s", result, Double.NaN, -1, Double.NaN, -1));
+			report.add(new BenchReport.Row("error", rate + "/s", result, Double.NaN, -1, Double.NaN, -1,
+					StoreLatencyProbe.Window.NONE));
 		}
 	}
 

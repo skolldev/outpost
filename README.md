@@ -247,6 +247,8 @@ All configuration is environment variables.
 | `OUTPOST_INGEST_MAX_ENVELOPE_DECOMPRESSED_BYTES`  | `20971520` (20 MiB)                        | maximum decoded envelope bytes; uncompressed requests use the smaller of both envelope limits               |
 | `OUTPOST_INGEST_SPOOL_DIRECTORY`                  | `${java.io.tmpdir}/outpost-ingest`         | ephemeral directory for accepted envelope bodies while they await digest                                    |
 | `OUTPOST_INGEST_QUEUE_CAPACITY`                   | `50000`                                    | maximum envelope spool references buffered before SDK backpressure                                           |
+| `OUTPOST_INGEST_MAX_BATCH`                        | `500`                                      | envelope references a worker drains from the queue at once                                                 |
+| `OUTPOST_INGEST_MAX_BATCH_ROWS`                   | `5000`                                     | rows (event, log record, txn or span) per store call and database transaction; bounds the work of a drain  |
 | `OUTPOST_INGEST_SHUTDOWN_TIMEOUT`                 | `25s`                                      | maximum time to drain acknowledged telemetry during graceful shutdown                                      |
 | `OUTPOST_INGEST_SPOOL_MAX_AGE`                    | `1h`                                       | how long a spool file sits untouched before the sweep reaps it; must exceed the shutdown timeout           |
 | `OUTPOST_INGEST_SPOOL_SWEEP_INTERVAL`             | `5m`                                       | how often the spool directory is swept for orphaned files                                                  |
