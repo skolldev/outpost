@@ -89,22 +89,26 @@ class ReportWriterTest {
 			.hasToString("retrieval-benchmark");
 	}
 
-	/** The ingest table's columns are quoted in `measuring-ingest.md`; the split must not have moved them. */
+	/**
+	 * The ingest table's columns are quoted in `measuring-ingest.md`; new ones are
+	 * appended so the quoted ones never move.
+	 */
 	@Test
-	void keepsTheIngestTableColumnsUnchanged() {
+	void keepsTheIngestTableColumnsInPlace() {
 		BenchReport report = new BenchReport("Outpost ingest benchmark");
 		report.add(new BenchReport.Row("error", "200/s",
 				new LoadDriver.Result(200, 3000, 2999, 199.4, Map.of(200, 2900L), Map.of(), 0, 1.25, 9.5, 22.75, 190.5),
-				812.5, 1234, 44.25, 1_234_567_890L));
+				812.5, 1234, 44.25, 1_234_567_890L, new StoreLatencyProbe.Window(12, 85.5, 120.25)));
 
 		String markdown = read(report.write());
 
 		String header = "| scenario | step | offered/s | scheduled/s | dispatched/s | 200 | 429 | failed | shed "
 				+ "| accepted/s | stored/s | p50 ms | p95 ms | p99 ms | max ms | queue depth | queue wait avg ms "
-				+ "| alloc MB | alloc KB/env |";
+				+ "| alloc MB | alloc KB/env | store calls | store p99 ms | store max ms |";
 		assertThat(markdown).contains(header);
 		// The data row has to line up with that header, or the table renders shifted.
 		assertThat(markdown).contains("| error | 200/s | 200 | 199.4 |");
+		assertThat(markdown).contains("| 12 | 85.5 | 120.3 |");
 		assertThat(columnsOf(markdown, "| error |")).isEqualTo(columnsOf(header, "| scenario |"));
 	}
 
