@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import dev.outpost.TestcontainersConfiguration;
 import dev.outpost.ingest.IngestQueue;
 import dev.outpost.support.EnvelopeFactory;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.net.URI;
@@ -255,6 +256,7 @@ class IngestBenchmark {
 		long rowsBefore = rowCount(table);
 		Instant startedAt = Instant.now();
 		QueueWaitMark waitBefore = queueWaitMark(signalOf(table));
+		double storeDropsBefore = storeDrops();
 		allocation.start();
 		storeLatency.start();
 		LoadDriver.Result result = driver.run(new LoadDriver.Step(rate, STEP_DURATION), requests);
@@ -274,6 +276,9 @@ class IngestBenchmark {
 				scenario, rate, result.status(200), result.status(429), depth, stored, allocated / (1024.0 * 1024.0),
 				store.calls(), store.p99Millis());
 		assertDriverHealthy(result, scenario + " @ " + rate + "/s");
+		// The store columns time successful calls only, so a step that dropped rows would understate them.
+		assertThat(storeDrops() - storeDropsBefore).as("rows dropped by failed store calls during " + scenario)
+			.isZero();
 		return new BenchReport.Row(scenario, rate + "/s", result, stored, depth, waitAverage, allocated, store);
 	}
 
@@ -386,6 +391,11 @@ class IngestBenchmark {
 		QueueWaitMark after = queueWaitMark(signal);
 		long count = after.count() - before.count();
 		return count == 0 ? Double.NaN : (after.totalMillis() - before.totalMillis()) / count;
+	}
+
+	private double storeDrops() {
+		Counter dropped = meters.find("outpost.ingest.dropped").tag("stage", "store").counter();
+		return dropped == null ? 0 : dropped.count();
 	}
 
 	private static void assertDriverHealthy(LoadDriver.Result result, String scenario) {

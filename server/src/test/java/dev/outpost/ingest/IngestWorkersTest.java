@@ -1,6 +1,7 @@
 package dev.outpost.ingest;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -41,6 +42,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
@@ -66,6 +68,8 @@ class IngestWorkersTest {
 	private final EnvelopeFactory envelopes = new EnvelopeFactory();
 	/** Every store call, in order, as the rows it was handed. */
 	private final List<StoreCall> storeCalls = new ArrayList<>();
+
+	private final List<ProcessedLog> storedLogs = new ArrayList<>();
 
 	private record StoreCall(String signal, int rows, List<Long> projects) {
 	}
@@ -107,6 +111,9 @@ class IngestWorkersTest {
 		budgeted(10).digest(queue.nextBatch(10, 0));
 
 		assertThat(storeCalls).extracting(StoreCall::rows).containsExactly(10, 10, 5);
+		// Every record exactly once, in order: no slice repeats or skips an entry.
+		assertThat(storedLogs).extracting(ProcessedLog::body)
+			.containsExactlyElementsOf(IntStream.range(0, 25).mapToObj(i -> "handling checkout step " + i).toList());
 		// The bound holds before storage too: the pipeline never sees more records than one batch may hold.
 		verify(logPipeline, times(3)).process(argThat(batch -> batch.payload().path("items").size() <= 10));
 	}
@@ -151,6 +158,9 @@ class IngestWorkersTest {
 		assertThat(rows).containsEntry("error", 1).containsEntry("log", 37);
 		assertThat(rows.get("transaction") + rows.get("span")).isEqualTo(54);
 		assertThat(storeCalls.stream().flatMap(call -> call.projects().stream()).distinct()).containsOnly(1L, 2L);
+		// Each log keeps its own envelope's project: 30 from project 2, 7 from project 1.
+		assertThat(storedLogs.stream().collect(Collectors.groupingBy(ProcessedLog::projectId, Collectors.counting())))
+			.containsOnly(entry(2L, 30L), entry(1L, 7L));
 		assertThat(queue.outstanding()).isZero();
 	}
 
@@ -186,8 +196,11 @@ class IngestWorkersTest {
 				events -> events.stream().map(ProcessedEvent::projectId).toList(), List::size))
 			.when(store)
 			.store(any());
-		doAnswer(invocation -> record("log", invocation.<List<ProcessedLog>>getArgument(0),
-				logs -> logs.stream().map(ProcessedLog::projectId).toList(), List::size))
+		doAnswer(invocation -> {
+			storedLogs.addAll(invocation.<List<ProcessedLog>>getArgument(0));
+			return record("log", invocation.<List<ProcessedLog>>getArgument(0),
+					logs -> logs.stream().map(ProcessedLog::projectId).toList(), List::size);
+		})
 			.when(logStore)
 			.store(any());
 		doAnswer(invocation -> record("transaction", invocation.<List<ProcessedTransaction>>getArgument(0),

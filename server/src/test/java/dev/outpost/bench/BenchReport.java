@@ -75,7 +75,9 @@ public final class BenchReport {
 				`store calls`, `store p99 ms` and `store max ms` describe the individual calls into the
 				scenario's store (`outpost_ingest_store_seconds`) over the same plateau-plus-drain
 				window, exactly rather than through the production timer's decaying percentiles. A
-				batch that grows with the backlog shows up here first: few calls, each slower.
+				batch that grows with the backlog shows up here first: few calls, each slower. They
+				count successful calls only; a failed one is counted in `outpost_ingest_dropped`
+				instead, and the run fails if any stored row was dropped.
 
 				""");
 		out.append("\n## Results\n\n");
