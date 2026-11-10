@@ -12,4 +12,10 @@ import java.util.UUID;
 public record ProcessedTransaction(UUID id, long projectId, String environment, String release, String traceId,
 		String spanId, String parentSpanId, String name, String op, Instant startTs, Instant endTs, double durationMs,
 		String status, JsonNode data, List<ProcessedSpan> spans) implements ProcessedTelemetry {
+
+	/** This transaction carrying {@code spans} instead of its own. */
+	public ProcessedTransaction withSpans(List<ProcessedSpan> spans) {
+		return new ProcessedTransaction(id, projectId, environment, release, traceId, spanId, parentSpanId, name, op,
+				startTs, endTs, durationMs, status, data, spans);
+	}
 }

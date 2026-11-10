@@ -16,11 +16,12 @@ POST /api/{project}/envelope/
   → 200
                                   ⋮  asynchronous
   ingest-worker-N               ← outpost.ingest.workers (2)
-  → nextBatch(max-batch 500, linger 1 s)
+  → nextBatch(max-batch 500 envelopes, linger 1 s)
   → stream-parse each spool
-  → pipeline.process per item
-  → store.store per signal      ← per-project advisory lock, then the inserts
-  → remove successfully digested spools
+  → pipeline.process per item   ← log/span items in slices of ≤ max-batch-rows
+  → StoreBatch fills up to max-batch-rows (5 000) rows, then flushes:
+      store.store per signal    ← per-project advisory lock, then the inserts
+      remove the spools whose rows that flush covered
 
   ingest-spool-reaper           ← outpost.ingest.spool-sweep-interval (5 min)
   → remove spool files with no live queue entry, untouched for spool-max-age (1 h)
@@ -69,6 +70,7 @@ deliberately **not** published by `docker-compose.yml` — `SecurityConfig` ends
 | `outpost_ingest_queue_depth` / `_capacity` | **The leading indicator.** Depth climbs long before the first 429 |
 | `outpost_ingest_queue_wait_seconds{signal}` | Dwell time in the buffer. The delay an SDK cannot see |
 | `outpost_ingest_batch_size` | Envelope references per worker drain — small batches mean the linger is dominating |
+| `outpost_ingest_flush_rows` | Rows per store flush. Pinned at `max-batch-rows` means drains are being split; one drain can produce several flushes |
 | `outpost_ingest_process_seconds{signal}` | Pipeline cost |
 | `outpost_ingest_store_seconds{signal}` | Persistence cost — usually where the time is |
 | `outpost_ingest_dropped_total{stage}` | Items lost at `pipeline` or `store`. Should be zero |
@@ -105,6 +107,7 @@ Scenarios, in `server/src/test/java/dev/outpost/bench/IngestBenchmark.java`:
 | `logEnvelopeStepLoad` | Log records per second (100 per envelope, as the SDKs batch them) |
 | `transactionEnvelopeStepLoad` | Transactions per second, each fanning out into spans |
 | `singleVersusMultiProjectThroughput` | Does throughput scale with projects? Isolates the per-project advisory lock |
+| `singleVersusMultiProjectLogThroughput` | The same comparison for logs, which take no advisory lock — a gain would point at per-project work elsewhere |
 | `burstBeyondQueueCapacity` | Does an overload shed cleanly instead of falling over? Uses a driver-safe 3 200/s and extends duration to offer three queue capacities |
 
 The report distinguishes the target `offered/s`, the actual scheduler pace,
@@ -236,6 +239,9 @@ reproduce elsewhere. The five findings are structural and will.**
    environment upsert before the batch insert. Log throughput therefore *degrades*
    past 40 envelopes/s instead of plateauing, and at 160/s a single batch did not
    finish inside the 15 s measurement window at all (0 rows stored).
+   **Fixed in #106:** a worker now flushes to the stores every
+   `outpost.ingest.max-batch-rows` (5 000) rows, whatever the signal, and
+   `max-batch` only bounds envelopes per drain — see the 2026-10-30 section below.
 
 4. **One error event costs ~110 KB of allocation.** Measured on the error ladder
    (2026-07-30, `alloc KB/env`): 116 KB at 200/s, holding within a few percent up
@@ -332,6 +338,68 @@ records the two indexes occupy 78 MB and 95 MB against a 651 MB heap and the
 374 MB the original four already cost — 90 bytes per record, a ~46 % increase in
 index storage for `log_record`. See `V11__log_stream_indexes.sql` for why each of
 the two is there and why a third for `environment` is not.
+
+## A row budget for every store call, measured 2026-10-30
+
+#106: `max-batch` bounded the **envelopes** a worker drained, not the work. A log
+envelope carries 100 records, so a full drain could put 50 000 log rows into one
+store call and one transaction. The fix adds `outpost.ingest.max-batch-rows`
+(5 000): `StoreBatch` hands telemetry to the stores whenever it holds that many
+rows, counting an event, a log record, a txn and a span as one row each, and the
+envelopes whose rows a flush covered are released right then. `max-batch` keeps
+its meaning, envelopes per drain. Log and span items longer than what the batch
+can still take are processed in slices, so the processed rows a worker holds are
+bounded too. That last part is guarded deterministically in CI, in
+`IngestWorkersTest` and `StoreBatchTest`, by an item larger than the budget and
+by mixed signals across projects. The benchmark only prices the trade.
+
+**The collapse in finding 3 no longer reproduces on `main`.** It needed #107's
+per-row environment upserts as well. With those batched, the oversized
+transaction still showed, but as **latency** rather than lost throughput: past
+the knee, the log store ran ~40 calls a plateau at a p99 of 2.4 s.
+
+The `store p99 ms` column is exact per plateau. `StoreLatencyProbe` joins a
+fresh registry to the application's for one plateau and its drain, because the
+production timer's percentiles decay over two minutes and cannot be reset.
+Three runs each, the median with the range, on a 14-core laptop:
+
+| scenario | step | stored/s before | stored/s after | store calls before | after | store p99 ms before | after |
+| --- | --- | --: | --: | --: | --: | --: | --: |
+| log x100 | 160/s | 15 994 (15 992–15 995) | 15 994 (15 993–15 994) | 2 400 | 2 400 | 21 | 20 |
+| log x100 | 320/s | 31 978 (31 945–31 980) | 31 987 (31 985–31 991) | 4 341 | 4 538 | 22 | 21 |
+| log x100 | **640/s** | 37 678 (34 680–41 440) | **42 956** (42 946–43 103) | 40 | 208 | **2 416** | **268** |
+| log x100, 1 project | 640/s | 42 864 (42 639–44 455) | 46 515 (46 395–46 555) | 49 | 213 | 2 147 | 243 |
+| log x100, 4 projects | 640/s | 40 612 (38 288–41 242) | 40 896 (40 858–41 485) | 34 | 205 | 2 416 | 285 |
+| transaction | 1600/s | 1 600 | 1 600 | 12 881 | 14 590 | 5 | 3 |
+| error | 3200/s | 1 378 (1 172–1 763) | 1 718 (1 596–1 722) | 103 | 104 | 704 | 570 |
+
+Read it with different confidence per signal:
+
+- **Logs past the knee: store p99 fell ninefold, 2.4 s to 0.27 s**, because each
+  call now carries ≤ 5 000 rows instead of whatever the backlog had grown to. That
+  is the mechanism the issue named, and it reproduced on every run. Throughput at
+  640/s did not drop and probably rose: the median is +14 % on the ladder and
+  +8.5 % on the single-project rerun. The baseline's own spread is 19 %, though, so
+  the reliable claim is "no throughput was paid for the bounded latency".
+  Below the knee nothing moved, as expected, since drains there are under the
+  budget anyway.
+- **Errors and transactions: unchanged by construction.** An error drain is at
+  most 500 rows and a 5-span transaction drain at most 3 000, both under the
+  budget, so neither ever splits. The error ceiling did read ~25 % higher, but
+  there is no mechanism for that. The baseline runs were also the noisiest of
+  the set; run 1 overlapped other test work on the machine. Treat it as noise,
+  not a win.
+- **Multi-project logs** behave like single-project ones before and after.
+  `LogStore` takes no per-project lock, so this was a check that the budget does
+  not interact with project count, and it does not.
+
+Every ladder stayed monotonic in `stored/s` and never read 0 with a non-empty
+queue. All three burst runs stored exactly what they acknowledged.
+
+What the budget does **not** bound is one transaction in hand. A transaction with
+more spans than the budget is still processed whole. Only then is it stored as the
+txn with its first spans, with the rest as separate span rows. Its size is bounded
+by the 20 MiB envelope limit, not by `max-batch-rows`.
 
 ## The release rollup, measured 2026-08-02
 
